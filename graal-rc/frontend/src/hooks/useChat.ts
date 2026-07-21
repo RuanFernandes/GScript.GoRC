@@ -1,12 +1,20 @@
 // useChat owns the chat surface for the active server session. It mirrors the
-// reference C++ client (TRemoteFrame::appendChannelMessage) exactly:
+// reference C++ client (TRemoteFrame::appendChannelMessage). All grclib events
+// arrive on a single uniform "rc:evt" carrying {seq,name,data}; this hook
+// applies them through a seq-keyed reorder buffer (Wails v3 dispatches each
+// Emit on its own goroutine, so without reordering the server's login chat
+// burst would scramble). Dispatched event names:
 //   - rc:message            -> server ("RC Chat") tab.
 //   - rc:irc (channel,line) -> channel tab, created lazily on the first message
-//     for that channel; never auto-removed (the reference doesn't destroy tabs
-//     on part either). Empty channel -> server tab.
+//     for that channel. Empty channel -> server tab.
 //   - rc:serverdata         -> nc_message renders as [NC]; other types gray.
-// There is no join/left parsing: those are just regular lines rendered in the
-// channel tab, which is what the official client does.
+//
+// Tab lifecycle for IRC channels is NOT derived from parsing the join/left
+// text lines here. Go (connection.Service) owns the authoritative joined set
+// and debounces parts (a PART waits channelLeaveCooldown before removing; a
+// rejoin JOIN cancels it) since the server always sends PART before JOIN. It
+// emits rc:channels snapshots; this hook reconciles its tabs against each
+// snapshot.
 //
 // Sending in a channel tab uses the server command:
 //   /npc channelchat <channel> .<message>   (leading dot required).
@@ -45,11 +53,6 @@ export function useChat(service: RcService): UseChatResult {
     {channel: SERVER_CHANNEL, label: "RC Chat", messages: []},
   ])
   const [activeChannel, setActiveChannel] = useState(SERVER_CHANNEL)
-  // joined tracks which channels we're currently in (ref, not state, so it's
-  // updated synchronously per-event and is immune to React batching). The
-  // server burst sends Left then Joined per channel on login: Left is ignored
-  // (not joined yet), Joined creates the tab, then the welcome lands.
-  const joined = useRef<Set<string>>(new Set([SERVER_CHANNEL]))
 
   // push appends a line to a tab, creating the tab lazily for a new channel
   // (mirrors appendChannelMessage's lazy GtkWidget creation).
@@ -70,60 +73,124 @@ export function useChat(service: RcService): UseChatResult {
     [nextId]
   )
 
-  // ensureChannel creates an empty tab for a channel if it doesn't exist yet
-  // (used on IRC join).
-  const ensureChannel = useCallback((channel: string) => {
-    const target = channel || SERVER_CHANNEL
-    setTabs((prev) => (prev.some((t) => t.channel === target) ? prev : [...prev, {channel: target, label: target, messages: []}]))
-  }, [])
-
-  // removeChannel destroys a channel's tab (IRC part). If it was the active
-  // tab, fall back to the server tab so the view isn't left empty.
-  const removeChannel = useCallback((channel: string) => {
-    const target = channel || SERVER_CHANNEL
-    setTabs((prev) => prev.filter((t) => t.channel !== target))
-    setActiveChannel((cur) => (cur === target ? SERVER_CHANNEL : cur))
+  // reconcileChannels mirrors the tabs against Go's authoritative joined-set
+  // snapshot: keep the server tab plus any tab still joined, append tabs for
+  // newly joined channels, drop tabs for channels no longer joined.
+  const reconcileChannels = useCallback((channels: string[]) => {
+    const want = new Set(channels)
+    setTabs((prev) => {
+      let next = prev.filter((t) => t.channel === SERVER_CHANNEL || want.has(t.channel))
+      for (const ch of channels) {
+        if (!next.some((t) => t.channel === ch)) {
+          next = [...next, {channel: ch, label: ch, messages: []}]
+        }
+      }
+      return next
+    })
+    setActiveChannel((cur) => (cur !== SERVER_CHANNEL && !want.has(cur) ? SERVER_CHANNEL : cur))
   }, [])
 
   useEffect(() => {
-    const offMessage = Events.On("rc:message", (e: {data: string}) => {
-      const [text] = JSON.parse(e.data) as [string]
-      push(SERVER_CHANNEL, text, "rc")
-    })
-    const offIrc = Events.On("rc:irc", (e: {data: string}) => {
-      const [channel, line] = JSON.parse(e.data) as [string, string]
-      const text = (line ?? "").trim()
-      if (text.startsWith("* Joined")) {
-        // Join only if not already joined (idempotent against bursts).
-        if (!joined.current.has(channel)) {
-          joined.current.add(channel)
-          ensureChannel(channel)
+    // Every grclib event arrives as one uniform "rc:evt" carrying {seq,name,data}.
+    // Wails v3 dispatches each Emit to the webview on its own goroutine, so
+    // events can land out of order; a sliding-window reorder buffer keyed by seq
+    // applies them strictly in sequence, restoring deterministic ordering (the
+    // server's login chat burst otherwise scrambles).
+    type Evt = {seq: number; name: string; data: unknown[]}
+    let nextSeq = 1
+    let lastAdvance = Date.now()
+    const pending = new Map<number, Evt>()
+    // If this listener subscribes after the server's initial burst has already
+    // been emitted, the earliest seqs never arrive and nextSeq would stall
+    // forever waiting for them. After this long with no forward progress we
+    // assume the gap was missed pre-subscription and fast-forward.
+    const stallMs = 300
+
+    const dispatch = (m: Evt) => {
+      switch (m.name) {
+        case "rc:message": {
+          const [text] = m.data as [string]
+          push(SERVER_CHANNEL, text, "rc")
+          break
         }
-      } else if (text.startsWith("* Left")) {
-        // Leave only if currently joined (ignores the login Left that precedes
-        // the matching Joined).
-        if (joined.current.has(channel)) {
-          joined.current.delete(channel)
-          removeChannel(channel)
+        case "rc:irc": {
+          const [channel, line] = m.data as [string, string]
+          const text = (line ?? "").trim()
+          // Join/left markers drive tab lifecycle via the rc:channels snapshot
+          // from Go; skip them here so they don't render as chat lines.
+          if (text.startsWith("* Joined") || text.startsWith("* Left")) {
+            break
+          }
+          push(channel, text, "irc")
+          break
         }
-      } else {
-        push(channel, text, "irc")
+        case "rc:channels": {
+          // rc:channels is a [channels] 1-tuple whose sole element is the
+          // joined-channel array (the emitter marshals each event's args as a
+          // JSON array).
+          const [channels] = m.data as [string[]]
+          reconcileChannels(channels ?? [])
+          break
+        }
+        case "rc:serverdata": {
+          const [dataType, content] = m.data as [string, string]
+          if (dataType === "nc_message") {
+            push(SERVER_CHANNEL, content, "nc")
+          } else {
+            push(SERVER_CHANNEL, `[${dataType}] ${content}`, "system")
+          }
+          break
+        }
+        default:
+          break
       }
-    })
-    const offData = Events.On("rc:serverdata", (e: {data: string}) => {
-      const [dataType, content] = JSON.parse(e.data) as [string, string]
-      if (dataType === "nc_message") {
-        push(SERVER_CHANNEL, content, "nc")
-      } else {
-        push(SERVER_CHANNEL, `[${dataType}] ${content}`, "system")
-      }
-    })
-    return () => {
-      offMessage()
-      offIrc()
-      offData()
     }
-  }, [push, ensureChannel, removeChannel])
+
+    const drainPending = () => {
+      let p = pending.get(nextSeq)
+      while (p) {
+        pending.delete(nextSeq)
+        dispatch(p)
+        nextSeq++
+        lastAdvance = Date.now()
+        p = pending.get(nextSeq)
+      }
+    }
+
+    const deliver = (m: Evt) => {
+      // Stalled on a gap that won't fill (missed pre-subscription): jump to the
+      // oldest buffered event and resume from there.
+      if (pending.size > 0 && Date.now() - lastAdvance > stallMs) {
+        nextSeq = Math.min(...pending.keys())
+      }
+      if (m.seq < nextSeq) return // duplicate / stale
+      if (m.seq === nextSeq) {
+        dispatch(m)
+        nextSeq++
+        lastAdvance = Date.now()
+        drainPending()
+        return
+      }
+      // Out-of-order: buffer until the gap fills.
+      pending.set(m.seq, m)
+    }
+
+    const off = Events.On("rc:evt", (e: {data: string}) => {
+      deliver(JSON.parse(e.data) as Evt)
+    })
+    // Fast-forward check on a timer too, so a burst that goes quiet right after
+    // a missed-start gap still resumes (deliver wouldn't be called again).
+    const stallTimer = window.setInterval(() => {
+      if (pending.size > 0 && Date.now() - lastAdvance > stallMs) {
+        nextSeq = Math.min(...pending.keys())
+        drainPending()
+      }
+    }, stallMs)
+    return () => {
+      off()
+      window.clearInterval(stallTimer)
+    }
+  }, [push, reconcileChannels])
 
   // clearChannel wipes one channel's rendered messages (frontend only).
   const clearChannel = useCallback((channel: string) => {

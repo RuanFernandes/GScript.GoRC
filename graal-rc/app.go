@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -53,16 +54,29 @@ func NewApp() *App {
 
 // attach wires the v3 application handle and the event emitter (grclib
 // callbacks → app.Event.Emit) once application.New has returned. Unexported so
-// it is not exposed to the frontend as a binding. Each event payload is
-// JSON-encoded as a single string so the frontend can uniformly JSON.parse it.
+// it is not exposed to the frontend as a binding.
+//
+// Every grclib event is wrapped into a single uniform "rc:evt" event carrying a
+// monotonic sequence number plus the original name/data. Wails v3 dispatches
+// each app.Event.Emit to the webview on its own goroutine, so rapid emissions
+// race and can arrive out of order; the frontend holds a reorder buffer keyed
+// by seq and applies events strictly in seq order, restoring deterministic
+// ordering (the chat burst otherwise scrambles).
 func (a *App) attach(app *application.App) {
 	a.app = app
+	var seq uint64
 	a.sessions.SetEmitter(func(name string, data ...any) {
-		b, err := json.Marshal(data)
+		s := atomic.AddUint64(&seq, 1)
+		payload := struct {
+			Seq  uint64 `json:"seq"`
+			Name string `json:"name"`
+			Data []any  `json:"data"`
+		}{Seq: s, Name: name, Data: data}
+		b, err := json.Marshal(payload)
 		if err != nil {
 			return
 		}
-		app.Event.Emit(name, string(b))
+		app.Event.Emit("rc:evt", string(b))
 	})
 }
 

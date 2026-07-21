@@ -8,6 +8,8 @@ import (
 	"context"
 	"errors"
 	"log"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,7 +42,27 @@ type Service struct {
 	pumpCancel  context.CancelFunc
 	ncAttempted bool
 	emit        func(name string, data ...any)
+	// channels is the authoritative set of joined IRC channels, derived from the
+	// join/left marker lines. It is the single source of truth for which IRC
+	// tabs the frontend should show; the frontend reconciles its tabs against a
+	// snapshot of this set, so React batching/event ordering cannot desync them.
+	// Removals are debounced (channelLeaveCooldown): the server always sends a
+	// PART before the matching JOIN (to avoid duplicates), so a leave is only
+	// committed after the cooldown elapses with no rejoin — a JOIN in the window
+	// cancels the pending leave and the tab survives.
+	channels map[string]*channelState
 }
+
+// channelState tracks one IRC channel's join state plus a pending (debounced)
+// leave deadline. leaveAt is the zero time when no leave is pending.
+type channelState struct {
+	joined  bool
+	leaveAt time.Time
+}
+
+// channelLeaveCooldown is how long a PART waits before it actually removes the
+// channel, giving a rejoin (JOIN) time to cancel it.
+const channelLeaveCooldown = 600 * time.Millisecond
 
 // NewService returns an empty service.
 func NewService() *Service { return &Service{} }
@@ -55,6 +77,110 @@ func (s *Service) emitEvent(name string, data ...any) {
 	if s.emit != nil {
 		s.emit(name, data...)
 	}
+}
+
+// handleIrcMessage forwards every IRC line to the frontend for rendering and,
+// for join/left marker lines, updates the authoritative joined-channel set and
+// emits a rc:channels snapshot the frontend reconciles its tabs against.
+func (s *Service) handleIrcMessage(channel, line string) {
+	snapshot := s.applyChannelDelta(channel, line)
+	s.emitEvent("rc:irc", channel, line)
+	if snapshot != nil {
+		s.emitEvent("rc:channels", snapshot)
+	}
+}
+
+// applyChannelDelta updates the joined set per the marker line and returns the
+// new sorted snapshot if the visibly-joined set changed, nil otherwise.
+//   - JOIN: cancels any pending leave, marks joined. Snapshot emitted only on a
+//     real false->true transition.
+//   - PART: ignored for a channel we're not in (handles the login burst's
+//     part-before-join). For a joined channel it schedules a debounced leave
+//     (no immediate snapshot); settleChannelLeaves commits it after the cooldown
+//     unless a JOIN cancels it first.
+//   - chat lines (no marker) do not touch the set.
+func (s *Service) applyChannelDelta(channel, line string) []string {
+	if channel == "" {
+		return nil
+	}
+	text := strings.TrimSpace(line)
+	isJoin := strings.HasPrefix(text, "* Joined")
+	isPart := strings.HasPrefix(text, "* Left")
+	if !isJoin && !isPart {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.channels == nil {
+		s.channels = map[string]*channelState{}
+	}
+	cs := s.channels[channel]
+	switch {
+	case isJoin:
+		if cs == nil {
+			s.channels[channel] = &channelState{joined: true}
+			return s.snapshotLocked()
+		}
+		cs.leaveAt = time.Time{} // cancel any pending leave (rejoin)
+		if !cs.joined {
+			cs.joined = true
+			return s.snapshotLocked()
+		}
+		return nil // already joined: nothing visibly changed
+	case isPart:
+		if cs == nil || !cs.joined {
+			return nil // not joined: ignore
+		}
+		if cs.leaveAt.IsZero() {
+			cs.leaveAt = time.Now().Add(channelLeaveCooldown)
+		}
+		return nil // deferred: settleChannelLeaves emits the snapshot
+	}
+	return nil
+}
+
+// snapshotLocked returns the sorted list of currently-joined channels. Caller
+// must hold s.mu.
+func (s *Service) snapshotLocked() []string {
+	out := make([]string, 0, len(s.channels))
+	for ch, cs := range s.channels {
+		if cs.joined {
+			out = append(out, ch)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// settleChannelLeaves commits any debounced leaves whose cooldown has elapsed,
+// emitting a single rc:channels snapshot if anything was removed. Called from
+// the pump goroutine.
+func (s *Service) settleChannelLeaves() {
+	s.mu.Lock()
+	now := time.Now()
+	changed := false
+	for ch, cs := range s.channels {
+		if !cs.leaveAt.IsZero() && now.After(cs.leaveAt) {
+			delete(s.channels, ch)
+			changed = true
+		}
+	}
+	if !changed {
+		s.mu.Unlock()
+		return
+	}
+	snap := s.snapshotLocked()
+	s.mu.Unlock()
+	s.emitEvent("rc:channels", snap)
+}
+
+// resetChannels clears the joined set under lock and returns the empty snapshot
+// to emit, used on disconnect/logout/relogin so the frontend drops all IRC tabs.
+func (s *Service) resetChannels() []string {
+	s.mu.Lock()
+	s.channels = nil
+	s.mu.Unlock()
+	return []string{}
 }
 
 // NCStatus is the NC (script) socket snapshot for the frontend.
@@ -83,6 +209,7 @@ func (s *Service) startPump(h rclib.Handle) {
 			case <-ticker.C:
 				rclib.ProcessEvents(h)
 				s.maybeConnectNC(h)
+				s.settleChannelLeaves()
 			}
 		}
 	}()
@@ -157,6 +284,7 @@ func (s *Service) Login(creds Credentials) ([]rclib.Server, error) {
 	}
 	s.handle = h
 	s.creds = creds
+	s.channels = nil
 	s.mu.Unlock()
 
 	return servers, nil
@@ -203,11 +331,10 @@ func (s *Service) ConnectToServer(index int) error {
 			default:
 			}
 			s.emitEvent("rc:disconnected", reason)
+			s.emitEvent("rc:channels", s.resetChannels())
 		},
 		Message: func(text string) { s.emitEvent("rc:message", text) },
-		IrcMessage: func(channel, line string) {
-			s.emitEvent("rc:irc", channel, line)
-		},
+		IrcMessage: func(channel, line string) { s.handleIrcMessage(channel, line) },
 		ServerData: func(dataType, content string) { s.emitEvent("rc:serverdata", dataType, content) },
 	})
 	s.startPump(h)
@@ -350,6 +477,7 @@ func (s *Service) Logout() {
 		s.handle = 0
 	}
 	s.creds = Credentials{}
+	s.channels = nil
 	s.mu.Unlock()
 }
 
