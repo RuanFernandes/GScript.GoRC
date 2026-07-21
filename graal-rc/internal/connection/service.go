@@ -34,20 +34,43 @@ type Status struct {
 // Service manages the grclib connection handle and the credentials in use.
 // Methods are safe to call from Wails-bound goroutines.
 type Service struct {
-	mu         sync.Mutex
-	handle     rclib.Handle
-	creds      Credentials
-	pumpCancel context.CancelFunc
+	mu          sync.Mutex
+	handle      rclib.Handle
+	creds       Credentials
+	pumpCancel  context.CancelFunc
+	ncAttempted bool
+	emit        func(name string, data ...any)
 }
 
 // NewService returns an empty service.
 func NewService() *Service { return &Service{} }
 
+// SetEmitter wires the bridge used to push grclib callbacks to the frontend
+// (Wails runtime.EventsEmit). Must be set before ConnectToServer so chat/IRC/
+// server-data events raised on the pump goroutine can reach the UI.
+func (s *Service) SetEmitter(fn func(name string, data ...any)) { s.emit = fn }
+
+// emitEvent is a nil-safe helper for the pump-goroutine callbacks.
+func (s *Service) emitEvent(name string, data ...any) {
+	if s.emit != nil {
+		s.emit(name, data...)
+	}
+}
+
+// NCStatus is the NC (script) socket snapshot for the frontend.
+type NCStatus struct {
+	HasNc        bool `json:"hasNc"`
+	Connected    bool `json:"connected"`
+	Authenticated bool `json:"authenticated"`
+}
+
 // startPump spawns a goroutine that pumps rc_process_events for the handle so
-// connection callbacks (on_connected/on_disconnected) are delivered. A previous
-// pump is stopped first.
+// connection + chat/IRC/data callbacks are delivered. A previous pump is
+// stopped first. It also lazily opens the NC (script) socket once the server
+// reports one (mirroring the reference client's pump loop).
 func (s *Service) startPump(h rclib.Handle) {
 	s.stopPump()
+	s.ncAttempted = false
 	ctx, cancel := context.WithCancel(context.Background())
 	s.pumpCancel = cancel
 	go func() {
@@ -59,9 +82,30 @@ func (s *Service) startPump(h rclib.Handle) {
 				return
 			case <-ticker.C:
 				rclib.ProcessEvents(h)
+				s.maybeConnectNC(h)
 			}
 		}
 	}()
+}
+
+// maybeConnectNC opens the NC socket once per session when the server exposes
+// one and it is not yet connected.
+func (s *Service) maybeConnectNC(h rclib.Handle) {
+	s.mu.Lock()
+	attempt := !s.ncAttempted
+	s.mu.Unlock()
+	if !attempt {
+		return
+	}
+	if !rclib.HasNCServer(h) || rclib.IsNCConnected(h) {
+		return
+	}
+	s.mu.Lock()
+	s.ncAttempted = true
+	s.mu.Unlock()
+	if err := rclib.ConnectToNCServer(h); err != nil {
+		log.Printf("nc connect: %v", err)
+	}
 }
 
 // stopPump stops the active event pump, if any.
@@ -84,14 +128,12 @@ func (s *Service) Login(creds Credentials) ([]rclib.Server, error) {
 	}
 
 	h, err := rclib.Connect(rclib.DefaultListserverHost, rclib.DefaultListserverPort, creds.Account, creds.Password)
-	log.Printf("login account=%q rc_connect handle=%d err=%v", creds.Account, h, err)
 	if err != nil {
 		return nil, err
 	}
 
 	servers, err := rclib.GetServers(h)
 	lastErr := rclib.LastError(h)
-	log.Printf("login account=%q rc_get_servers count=%d err=%v last_error=%q", creds.Account, len(servers), err, lastErr)
 	if err != nil {
 		rclib.Disconnect(h)
 		return nil, err
@@ -160,7 +202,13 @@ func (s *Service) ConnectToServer(index int) error {
 			case disconnected <- reason:
 			default:
 			}
+			s.emitEvent("rc:disconnected", reason)
 		},
+		Message: func(text string) { s.emitEvent("rc:message", text) },
+		IrcMessage: func(channel, line string) {
+			s.emitEvent("rc:irc", channel, line)
+		},
+		ServerData: func(dataType, content string) { s.emitEvent("rc:serverdata", dataType, content) },
 	})
 	s.startPump(h)
 
@@ -171,6 +219,13 @@ func (s *Service) ConnectToServer(index int) error {
 
 	select {
 	case <-connected:
+		// The server does not adopt our nickname until we send it (mirrors the
+		// reference client, which calls rc_set_nickname in its onConnected).
+		if nick := s.creds.Nickname; nick != "" {
+			if err := rclib.SetNickname(h, nick); err != nil {
+				log.Printf("set nickname %q: %v", nick, err)
+			}
+		}
 		return nil
 	case reason := <-disconnected:
 		if reason == "" {
@@ -191,6 +246,98 @@ func (s *Service) SetNewProtocol(enable bool) error {
 		return errors.New("not connected: log in first")
 	}
 	return rclib.SetNewProtocol(h, enable)
+}
+
+// ConnectToNCServer explicitly opens the NC (script) socket.
+func (s *Service) ConnectToNCServer() error {
+	s.mu.Lock()
+	h := s.handle
+	s.mu.Unlock()
+	if h == 0 {
+		return errors.New("not connected: log in first")
+	}
+	return rclib.ConnectToNCServer(h)
+}
+
+// DisconnectNC closes the NC socket.
+func (s *Service) DisconnectNC() error {
+	s.mu.Lock()
+	h := s.handle
+	s.mu.Unlock()
+	if h == 0 {
+		return errors.New("not connected: log in first")
+	}
+	return rclib.DisconnectNC(h)
+}
+
+// NCStatus returns the NC socket snapshot for the active handle.
+func (s *Service) NCStatus() NCStatus {
+	s.mu.Lock()
+	h := s.handle
+	s.mu.Unlock()
+	if h == 0 {
+		return NCStatus{}
+	}
+	return NCStatus{
+		HasNc:         rclib.HasNCServer(h),
+		Connected:     rclib.IsNCConnected(h),
+		Authenticated: rclib.IsNCAuthenticated(h),
+	}
+}
+
+// IrcLogin starts the IRC session for the active handle.
+func (s *Service) IrcLogin() error {
+	s.mu.Lock()
+	h := s.handle
+	s.mu.Unlock()
+	if h == 0 {
+		return errors.New("not connected: log in first")
+	}
+	return rclib.IrcLogin(h)
+}
+
+// SendIrcText sends a raw IRC command on the active handle.
+func (s *Service) SendIrcText(command, p1, p2, p3 string) error {
+	s.mu.Lock()
+	h := s.handle
+	s.mu.Unlock()
+	if h == 0 {
+		return errors.New("not connected: log in first")
+	}
+	return rclib.SendIrcText(h, command, p1, p2, p3)
+}
+
+// Execute sends a chat line or slash command to the active server.
+func (s *Service) Execute(message string) error {
+	s.mu.Lock()
+	h := s.handle
+	s.mu.Unlock()
+	if h == 0 {
+		return errors.New("not connected: log in first")
+	}
+	return rclib.Execute(h, message)
+}
+
+// SetNickname changes the RC nickname on the active handle.
+func (s *Service) SetNickname(nickname string) error {
+	s.mu.Lock()
+	h := s.handle
+	s.mu.Unlock()
+	if h == 0 {
+		return errors.New("not connected: log in first")
+	}
+	return rclib.SetNickname(h, nickname)
+}
+
+// GetPlayers returns the cached player list for the active server.
+func (s *Service) GetPlayers() ([]rclib.Player, error) {
+	s.mu.Lock()
+	h := s.handle
+	s.mu.Unlock()
+	if h == 0 {
+		return nil, errors.New("not connected: log in first")
+	}
+	return rclib.GetPlayers(h)
 }
 
 // Logout drops the active handle and clears credentials.

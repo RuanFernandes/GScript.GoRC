@@ -51,6 +51,28 @@ type Server struct {
 	Homepage    string `json:"homepage"`
 }
 
+// RCPlayer mirrors grclib's RCPlayer struct (include/grclib.h):
+//
+//	struct { char* account; int id; char* nick; char* level; }
+//
+// x64 layout: account@0, id@8, (pad@12), nick@16, level@24 -> 32 bytes.
+// The int32 pad aligns nick to the next 8-byte boundary.
+type RCPlayer struct {
+	Account *byte
+	ID      int32
+	_       int32
+	Nick    *byte
+	Level   *byte
+}
+
+// Player is the Go-friendly copy of an RCPlayer entry.
+type Player struct {
+	Account string `json:"account"`
+	ID      int    `json:"id"`
+	Nick    string `json:"nick"`
+	Level   string `json:"level"`
+}
+
 var (
 	once    sync.Once
 	loadErr error
@@ -68,6 +90,20 @@ var (
 	procProcessEvents   *syscall.Proc
 	procOnConnected     *syscall.Proc
 	procOnDisconnected  *syscall.Proc
+
+	procConnectToNcServer *syscall.Proc
+	procDisconnectNc      *syscall.Proc
+	procIsNcConnected     *syscall.Proc
+	procIsNcAuthenticated *syscall.Proc
+	procHasNcServer       *syscall.Proc
+	procIrcLogin          *syscall.Proc
+	procSendIrcText       *syscall.Proc
+	procExecute           *syscall.Proc
+	procSetNickname       *syscall.Proc
+	procGetPlayers        *syscall.Proc
+	procOnMessage         *syscall.Proc
+	procOnIrcMessage      *syscall.Proc
+	procOnServerData      *syscall.Proc
 )
 
 // Default listserver endpoint used by the reference client.
@@ -174,6 +210,19 @@ func load() error {
 		procProcessEvents = find("rc_process_events")
 		procOnConnected = find("rc_on_connected")
 		procOnDisconnected = find("rc_on_disconnected")
+		procConnectToNcServer = find("rc_connect_to_nc_server")
+		procDisconnectNc = find("rc_disconnect_nc")
+		procIsNcConnected = find("rc_is_nc_connected")
+		procIsNcAuthenticated = find("rc_is_nc_authenticated")
+		procHasNcServer = find("rc_has_nc_server")
+		procIrcLogin = find("rc_irc_login")
+		procSendIrcText = find("rc_send_irc_text")
+		procExecute = find("rc_execute")
+		procSetNickname = find("rc_set_nickname")
+		procGetPlayers = find("rc_get_players")
+		procOnMessage = find("rc_on_message")
+		procOnIrcMessage = find("rc_on_irc_message")
+		procOnServerData = find("rc_on_server_data")
 	})
 	return loadErr
 }
@@ -202,17 +251,23 @@ func bptrToString(p *byte) string {
 	return string(unsafe.Slice(p, n))
 }
 
-// EventCallbacks lets callers subscribe to the two connection lifecycle events.
+// EventCallbacks lets callers subscribe to connection + chat/IRC/data events.
 // Methods are invoked from the event-pump goroutine (during rc_process_events),
 // so they must be non-blocking.
 type EventCallbacks struct {
 	Connected    func()
 	Disconnected func(reason string)
+	Message      func(text string)
+	IrcMessage   func(channel, line string)
+	ServerData   func(dataType, content string)
 }
 
 var (
 	cbConnected    = syscall.NewCallback(connectedEntry)
 	cbDisconnected = syscall.NewCallback(disconnectedEntry)
+	cbMessage      = syscall.NewCallback(messageEntry)
+	cbIrcMessage   = syscall.NewCallback(ircMessageEntry)
+	cbServerData   = syscall.NewCallback(serverDataEntry)
 
 	routeMu sync.Mutex
 	routes  = map[Handle]*EventCallbacks{}
@@ -234,6 +289,41 @@ func disconnectedEntry(reason, userData uintptr) uintptr {
 	fire(userData, func(c *EventCallbacks) {
 		if c.Disconnected != nil {
 			c.Disconnected(msg)
+		}
+	})
+	return 0
+}
+
+// messageEntry is the C-callable shim for RC_OnMessage(message, user_data).
+func messageEntry(message, userData uintptr) uintptr {
+	msg := bptrToString((*byte)(unsafe.Pointer(message)))
+	fire(userData, func(c *EventCallbacks) {
+		if c.Message != nil {
+			c.Message(msg)
+		}
+	})
+	return 0
+}
+
+// ircMessageEntry is the C-callable shim for RC_OnIrcMessage(channel, line, user_data).
+func ircMessageEntry(channel, line, userData uintptr) uintptr {
+	ch := bptrToString((*byte)(unsafe.Pointer(channel)))
+	ln := bptrToString((*byte)(unsafe.Pointer(line)))
+	fire(userData, func(c *EventCallbacks) {
+		if c.IrcMessage != nil {
+			c.IrcMessage(ch, ln)
+		}
+	})
+	return 0
+}
+
+// serverDataEntry is the C-callable shim for RC_OnServerData(data_type, content, user_data).
+func serverDataEntry(dataType, content, userData uintptr) uintptr {
+	dt := bptrToString((*byte)(unsafe.Pointer(dataType)))
+	ct := bptrToString((*byte)(unsafe.Pointer(content)))
+	fire(userData, func(c *EventCallbacks) {
+		if c.ServerData != nil {
+			c.ServerData(dt, ct)
 		}
 	})
 	return 0
@@ -263,6 +353,9 @@ func RegisterCallbacks(h Handle, cbs *EventCallbacks) {
 	routeMu.Unlock()
 	procOnConnected.Call(uintptr(h), cbConnected, uintptr(h))
 	procOnDisconnected.Call(uintptr(h), cbDisconnected, uintptr(h))
+	procOnMessage.Call(uintptr(h), cbMessage, uintptr(h))
+	procOnIrcMessage.Call(uintptr(h), cbIrcMessage, uintptr(h))
+	procOnServerData.Call(uintptr(h), cbServerData, uintptr(h))
 }
 
 // UnregisterCallbacks detaches event callbacks for the handle.
@@ -275,6 +368,9 @@ func UnregisterCallbacks(h Handle) {
 	routeMu.Unlock()
 	procOnConnected.Call(uintptr(h), 0, 0)
 	procOnDisconnected.Call(uintptr(h), 0, 0)
+	procOnMessage.Call(uintptr(h), 0, 0)
+	procOnIrcMessage.Call(uintptr(h), 0, 0)
+	procOnServerData.Call(uintptr(h), 0, 0)
 }
 
 // ProcessEvents pumps queued connection callbacks once. Call regularly from a
@@ -408,6 +504,143 @@ func IsNewProtocol(h Handle) bool {
 	}
 	r1, _, _ := procIsNewProtocol.Call(uintptr(h))
 	return r1 != 0
+}
+
+// HasNCServer reports whether the connected server exposes an NC (script) socket.
+func HasNCServer(h Handle) bool {
+	if err := load(); err != nil {
+		return false
+	}
+	r1, _, _ := procHasNcServer.Call(uintptr(h))
+	return r1 != 0
+}
+
+// IsNCConnected reports whether the NC socket is connected.
+func IsNCConnected(h Handle) bool {
+	if err := load(); err != nil {
+		return false
+	}
+	r1, _, _ := procIsNcConnected.Call(uintptr(h))
+	return r1 != 0
+}
+
+// IsNCAuthenticated reports whether the NC socket finished login.
+func IsNCAuthenticated(h Handle) bool {
+	if err := load(); err != nil {
+		return false
+	}
+	r1, _, _ := procIsNcAuthenticated.Call(uintptr(h))
+	return r1 != 0
+}
+
+// ConnectToNCServer opens the NC (script) socket for the connected server.
+func ConnectToNCServer(h Handle) error {
+	if err := load(); err != nil {
+		return err
+	}
+	r1, _, _ := procConnectToNcServer.Call(uintptr(h))
+	if r1 == 0 {
+		return errors.New(LastError(h))
+	}
+	return nil
+}
+
+// DisconnectNC closes the NC socket.
+func DisconnectNC(h Handle) error {
+	if err := load(); err != nil {
+		return err
+	}
+	r1, _, _ := procDisconnectNc.Call(uintptr(h))
+	if r1 == 0 {
+		return errors.New(LastError(h))
+	}
+	return nil
+}
+
+// IrcLogin starts the IRC session for the handle (host is derived inside grclib).
+func IrcLogin(h Handle) error {
+	if err := load(); err != nil {
+		return err
+	}
+	r1, _, _ := procIrcLogin.Call(uintptr(h))
+	if r1 == 0 {
+		return errors.New(LastError(h))
+	}
+	return nil
+}
+
+// SendIrcText sends a raw IRC command (command + up to 3 params) on the IRC socket.
+func SendIrcText(h Handle, command, p1, p2, p3 string) error {
+	if err := load(); err != nil {
+		return err
+	}
+	cmd, _ := syscall.BytePtrFromString(command)
+	a1, _ := syscall.BytePtrFromString(p1)
+	a2, _ := syscall.BytePtrFromString(p2)
+	a3, _ := syscall.BytePtrFromString(p3)
+	r1, _, _ := procSendIrcText.Call(
+		uintptr(h),
+		uintptr(unsafe.Pointer(cmd)),
+		uintptr(unsafe.Pointer(a1)),
+		uintptr(unsafe.Pointer(a2)),
+		uintptr(unsafe.Pointer(a3)),
+	)
+	if r1 == 0 {
+		return errors.New(LastError(h))
+	}
+	return nil
+}
+
+// Execute sends a chat line or slash command to the game server.
+func Execute(h Handle, message string) error {
+	if err := load(); err != nil {
+		return err
+	}
+	msg, _ := syscall.BytePtrFromString(message)
+	r1, _, _ := procExecute.Call(uintptr(h), uintptr(unsafe.Pointer(msg)))
+	if r1 == 0 {
+		return errors.New(LastError(h))
+	}
+	return nil
+}
+
+// SetNickname changes the RC nickname shown on the server.
+func SetNickname(h Handle, nickname string) error {
+	if err := load(); err != nil {
+		return err
+	}
+	nick, _ := syscall.BytePtrFromString(nickname)
+	r1, _, _ := procSetNickname.Call(uintptr(h), uintptr(unsafe.Pointer(nick)))
+	if r1 == 0 {
+		return errors.New(LastError(h))
+	}
+	return nil
+}
+
+// GetPlayers copies the cached player list for the connected server into Go.
+func GetPlayers(h Handle) ([]Player, error) {
+	if err := load(); err != nil {
+		return nil, err
+	}
+	var playersPtr uintptr
+	r1, _, _ := procGetPlayers.Call(uintptr(h), uintptr(unsafe.Pointer(&playersPtr)))
+	count := int(int32(r1))
+	if count <= 0 || playersPtr == 0 {
+		return nil, nil
+	}
+	arr := (*[1 << 20]RCPlayer)(unsafe.Pointer(playersPtr))[:count:count]
+
+	out := make([]Player, count)
+	for i := 0; i < count; i++ {
+		p := arr[i]
+		out[i] = Player{
+			Account: bptrToString(p.Account),
+			ID:      int(p.ID),
+			Nick:    bptrToString(p.Nick),
+			Level:   bptrToString(p.Level),
+		}
+	}
+	return out, nil
 }
 
 // Disconnect closes all sockets and frees the handle.

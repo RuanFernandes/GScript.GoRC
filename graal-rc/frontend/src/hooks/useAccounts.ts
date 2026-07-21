@@ -21,7 +21,7 @@ export function useAccounts(service: RcService): UseAccountsResult {
   const refresh = useCallback(async (): Promise<void> => {
     setLoading(true)
     try {
-      setAccounts(await service.listAccounts())
+      setAccounts((await service.listAccounts()) ?? [])
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       toast.error("Failed to load accounts", {description: message})

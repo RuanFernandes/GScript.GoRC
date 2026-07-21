@@ -1,12 +1,12 @@
 // ServerListScreen composes the table + details + toolbar. It receives the
 // session state and intents via props; it owns no backend knowledge.
 import {LogOut, RefreshCw} from "lucide-react"
+import {Browser} from "@wailsio/runtime"
 
 import {ServerDetails} from "@/components/features/serverlist/ServerDetails"
 import {ServerTable} from "@/components/features/serverlist/ServerTable"
 import {Button} from "@/components/ui/button"
 import {Separator} from "@/components/ui/separator"
-import {BrowserOpenURL} from "../../wailsjs/runtime/runtime"
 
 import type {Server} from "@/types"
 
@@ -63,7 +63,7 @@ export function ServerListScreen({
           server={selected}
           busy={busy}
           onConnect={() => onConnect(selectedIndex)}
-          onOpenHomepage={(url) => BrowserOpenURL(url)}
+          onOpenHomepage={(url) => Browser.OpenURL(url)}
         />
       </div>
     </div>

@@ -1,3 +1,14 @@
-build/bin
-node_modules
-frontend/dist
+# Build outputs
+bin/
+build/bin/
+*.exe
+*.syso
+
+# wails3 generated / cache
+.task/
+frontend/bindings/
+frontend/dist/
+frontend/package.json.md5
+
+# Dependencies
+node_modules/
