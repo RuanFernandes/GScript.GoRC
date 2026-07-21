@@ -109,10 +109,11 @@ function ChatPane({
 }
 
 export function RcScreen({serverName, onDisconnect}: RcScreenProps) {
-  const {tabs, send} = useChat(rcService)
+  const {tabs, activeChannel, setActiveChannel, send, reorderTabs} = useChat(rcService)
   const {settings, update, reset} = useChatSettings()
   const [showSettings, setShowSettings] = useState(false)
   const [nc, setNc] = useState<NCStatus>({hasNc: false, connected: false, authenticated: false})
+  const dragIndex = useRef<number>(-1)
 
   useEffect(() => {
     let cancelled = false
@@ -161,10 +162,22 @@ export function RcScreen({serverName, onDisconnect}: RcScreenProps) {
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col p-3">
-        <Tabs defaultValue="" className="flex min-h-0 flex-1 flex-col">
+        <Tabs value={activeChannel} onValueChange={setActiveChannel} className="flex min-h-0 flex-1 flex-col">
           <TabsList>
-            {tabs.map((t) => (
-              <TabsTrigger key={t.channel || "server"} value={t.channel}>
+            {tabs.map((t, i) => (
+              <TabsTrigger
+                key={t.channel || "server"}
+                value={t.channel}
+                draggable
+                onDragStart={() => (dragIndex.current = i)}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={() => {
+                  if (dragIndex.current >= 0) reorderTabs(dragIndex.current, i)
+                  dragIndex.current = -1
+                }}
+                onDragEnd={() => (dragIndex.current = -1)}
+                className="cursor-grab active:cursor-grabbing"
+              >
                 {t.label}
               </TabsTrigger>
             ))}

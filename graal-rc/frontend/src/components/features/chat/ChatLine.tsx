@@ -6,10 +6,17 @@
 import {hhmm, sourceTag} from "@/lib/chatLine"
 import type {ChatMessage, ChatSettings} from "@/types"
 
+// Splits a chat line for coloring. IRC has no guaranteed speaker framing — the
+// server may send "Account: msg", "Player says hi", or bare text — so we only
+// color a speaker when the content itself contains a colon: everything before
+// the FIRST colon is the speaker, the rest is content. No colon => plain
+// content. A leading "<> " (grclib's empty-source privmsg framing on echoes) is
+// stripped first so it doesn't leak into the speaker.
 function splitSpeaker(text: string): {speaker: string; content: string} | null {
-  const i = text.indexOf(":")
+  const t = text.startsWith("<> ") ? text.slice(3) : text
+  const i = t.indexOf(":")
   if (i <= 0) return null
-  return {speaker: text.slice(0, i), content: text.slice(i + 1)}
+  return {speaker: t.slice(0, i), content: t.slice(i + 1)}
 }
 
 function prefixColor(source: ChatMessage["source"], s: ChatSettings): string {

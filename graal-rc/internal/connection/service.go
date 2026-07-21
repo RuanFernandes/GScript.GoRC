@@ -128,14 +128,12 @@ func (s *Service) Login(creds Credentials) ([]rclib.Server, error) {
 	}
 
 	h, err := rclib.Connect(rclib.DefaultListserverHost, rclib.DefaultListserverPort, creds.Account, creds.Password)
-	log.Printf("login account=%q rc_connect handle=%d err=%v", creds.Account, h, err)
 	if err != nil {
 		return nil, err
 	}
 
 	servers, err := rclib.GetServers(h)
 	lastErr := rclib.LastError(h)
-	log.Printf("login account=%q rc_get_servers count=%d err=%v last_error=%q", creds.Account, len(servers), err, lastErr)
 	if err != nil {
 		rclib.Disconnect(h)
 		return nil, err
@@ -206,8 +204,10 @@ func (s *Service) ConnectToServer(index int) error {
 			}
 			s.emitEvent("rc:disconnected", reason)
 		},
-		Message:    func(text string) { s.emitEvent("rc:message", text) },
-		IrcMessage: func(channel, line string) { s.emitEvent("rc:irc", channel, line) },
+		Message: func(text string) { s.emitEvent("rc:message", text) },
+		IrcMessage: func(channel, line string) {
+			s.emitEvent("rc:irc", channel, line)
+		},
 		ServerData: func(dataType, content string) { s.emitEvent("rc:serverdata", dataType, content) },
 	})
 	s.startPump(h)
