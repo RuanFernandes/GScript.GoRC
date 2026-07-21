@@ -16,6 +16,7 @@ export interface UseSessionResult {
   selectedIndex: number
   statusText: string
   busy: boolean
+  connectedServer: string
   select: (index: number) => void
   loginWithAccount: (accountName: string) => Promise<boolean>
   addAccount: (req: LoginRequest) => Promise<boolean>
@@ -30,6 +31,7 @@ export function useSession(service: RcService): UseSessionResult {
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [statusText, setStatusText] = useState("")
   const [busy, setBusy] = useState(false)
+  const [connectedServer, setConnectedServer] = useState("")
 
   const run = useCallback(async <T,>(label: string, fn: () => Promise<T>): Promise<T | null> => {
     setBusy(true)
@@ -94,16 +96,27 @@ export function useSession(service: RcService): UseSessionResult {
       const server = servers[index]
       const label = server ? server.name : `server ${index}`
       setStatusText(`Connecting to ${label}...`)
-      const ok = await run(`Connect to ${label}`, () => service.connectToServer(index))
-      if (ok === null) {
+      // connectToServer is a void/error-only binding: Wails resolves it to null
+      // on success, so "no throw" (not a null return value) is the success
+      // signal. Don't route through run() — its null return collides with the
+      // legitimate null resolution.
+      setBusy(true)
+      try {
+        await service.connectToServer(index)
+        setConnectedServer(label)
+        setStatusText(`Connected to ${label}`)
+        toast.success(`Connected to ${label}`)
+        return true
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        toast.error(`Connect to ${label} failed`, {description: message})
         setStatusText("")
         return false
+      } finally {
+        setBusy(false)
       }
-      setStatusText(`Connected to ${label}`)
-      toast.success(`Connected to ${label}`)
-      return true
     },
-    [run, service, servers]
+    [service, servers]
   )
 
   const logout = useCallback(async (): Promise<void> => {
@@ -112,6 +125,7 @@ export function useSession(service: RcService): UseSessionResult {
     setServers([])
     setSelectedIndex(0)
     setStatusText("")
+    setConnectedServer("")
   }, [service])
 
   const select = useCallback((index: number) => setSelectedIndex(index), [])
@@ -123,6 +137,7 @@ export function useSession(service: RcService): UseSessionResult {
       selectedIndex,
       statusText,
       busy,
+      connectedServer,
       select,
       loginWithAccount,
       addAccount,
@@ -130,6 +145,6 @@ export function useSession(service: RcService): UseSessionResult {
       connect,
       logout,
     }),
-    [phase, servers, selectedIndex, statusText, busy, select, loginWithAccount, addAccount, refresh, connect, logout]
+    [phase, servers, selectedIndex, statusText, busy, connectedServer, select, loginWithAccount, addAccount, refresh, connect, logout]
   )
 }

@@ -4,12 +4,15 @@ import type {Server} from "@/types"
 
 export type ServerTier = "gold" | "classic" | "none"
 
-// Raw listserver names are prefixed "P " (paid/gold) or "U " (classic). Strip
-// the prefix for display and derive the tier badge.
+// Raw listserver names carry a single-letter flag prefix + space (e.g.
+// "P Testbed" paid/gold, "U Testbed" classic, "H Testbed" hosted/hidden). Strip
+// any such prefix for display; only P and U carry a tier badge. Mirrors the
+// reference client's getServerListName.
 export function serverDisplay(name: string): {label: string; tier: ServerTier} {
-  if (name.length >= 2 && name[1] === " ") {
-    if (name[0] === "P") return {label: name.slice(2), tier: "gold"}
-    if (name[0] === "U") return {label: name.slice(2), tier: "classic"}
+  const m = /^([A-Z]) (.+)$/.exec(name)
+  if (m) {
+    const tier: ServerTier = m[1] === "P" ? "gold" : m[1] === "U" ? "classic" : "none"
+    return {label: m[2], tier}
   }
   return {label: name, tier: "none"}
 }

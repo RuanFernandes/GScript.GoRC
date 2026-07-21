@@ -2,7 +2,7 @@
 // between the account-select, add-account, and server-list screens. Login
 // intents go through useSession; the saved-account list lives in useAccounts.
 // Destructive/login actions are gated by a confirmation dialog.
-import {useState} from "react"
+import {useEffect, useState} from "react"
 import {toast} from "sonner"
 
 import {ConfirmDialog} from "@/components/ConfirmDialog"
@@ -11,6 +11,8 @@ import {useAccounts} from "@/hooks/useAccounts"
 import {useSession} from "@/hooks/useSession"
 import {AccountSelectScreen} from "@/screens/AccountSelectScreen"
 import {AddAccountScreen} from "@/screens/AddAccountScreen"
+import {PlayerListWindowScreen} from "@/screens/PlayerListWindowScreen"
+import {RcScreen} from "@/screens/RcScreen"
 import {ServerListScreen} from "@/screens/ServerListScreen"
 import type {AppView, LoginRequest} from "@/types"
 
@@ -19,7 +21,9 @@ type PendingConfirm =
   | {kind: "delete"; account: string}
   | null
 
-function App() {
+// Shell is the main window's orchestrator (select/add/serverlist/rc). The
+// external player-list window renders its own screen via the App router below.
+function Shell() {
   const session = useSession(rcService)
   const accounts = useAccounts(rcService)
   const [view, setView] = useState<AppView>("select")
@@ -36,6 +40,26 @@ function App() {
   }
 
   const handleLogout = async () => {
+    await session.logout()
+    await accounts.refresh()
+    setView("select")
+  }
+
+  // Connect to a server; on success leave the server list for the RC screen.
+  const handleServerConnect = async (index: number) => {
+    await session.connect(index)
+  }
+
+  // State-driven safety net: the moment a server is connected (connectedServer
+  // becomes non-empty), ensure we are on the RC screen regardless of which code
+  // path completed the connect.
+  useEffect(() => {
+    if (session.connectedServer && view === "serverlist") setView("rc")
+  }, [session.connectedServer, view])
+
+  // Disconnect from the RC screen drops the whole session (grclib has no
+  // game-only leave), so we return to the account-select screen.
+  const handleRcDisconnect = async () => {
     await session.logout()
     await accounts.refresh()
     setView("select")
@@ -92,11 +116,15 @@ function App() {
         statusText={session.statusText}
         busy={session.busy}
         onSelect={session.select}
-        onConnect={session.connect}
+        onConnect={handleServerConnect}
         onRefresh={session.refresh}
         onLogout={handleLogout}
       />
     )
+  }
+
+  if (view === "rc") {
+    return <RcScreen serverName={session.connectedServer} onDisconnect={handleRcDisconnect} />
   }
 
   return (
@@ -130,6 +158,15 @@ function App() {
       />
     </>
   )
+}
+
+// App is the window router: the external Players window loads the SPA at
+// "/#players" and gets the player-list screen; every other window gets Shell.
+function App() {
+  if (typeof window !== "undefined" && window.location.hash.startsWith("#players")) {
+    return <PlayerListWindowScreen />
+  }
+  return <Shell />
 }
 
 export default App
