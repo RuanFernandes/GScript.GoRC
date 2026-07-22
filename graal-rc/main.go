@@ -28,7 +28,7 @@ func main() {
 	a.attach(app)
 
 	// Main window: the account/server/RC flow.
-	app.Window.NewWithOptions(application.WebviewWindowOptions{
+	mainWindow := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:             "main",
 		Title:            "Graal Remote Control",
 		Width:            1024,
@@ -36,6 +36,9 @@ func main() {
 		BackgroundColour: application.NewRGB(15, 17, 21),
 		URL:              "/",
 	})
+
+	// System tray + hide-to-tray-on-close (while a server session is active).
+	a.setupTray(mainWindow)
 
 	if err := app.Run(); err != nil {
 		log.Fatal(err)

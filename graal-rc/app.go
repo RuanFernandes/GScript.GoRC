@@ -34,6 +34,11 @@ type App struct {
 	sessions *connection.Service
 	vault    *credentials.Vault
 
+	// mainWindow is the account/server/RC window; hidden to the tray instead of
+	// quit when a server session is active. quitting bypasses the hide hook.
+	mainWindow *application.WebviewWindow
+	quitting   atomic.Bool
+
 	logMu      sync.Mutex
 	logEnabled bool
 	logDir     string
