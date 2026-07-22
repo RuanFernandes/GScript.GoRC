@@ -7,6 +7,7 @@ package connection
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"sort"
 	"strconv"
@@ -35,17 +36,19 @@ type Status struct {
 	Authenticated bool   `json:"authenticated"`
 	Account       string `json:"account"`
 	Nickname      string `json:"nickname"`
+	ServerName    string `json:"serverName"`
 }
 
 // Service manages the grclib connection handle and the credentials in use.
 // Methods are safe to call from Wails-bound goroutines.
 type Service struct {
-	mu          sync.Mutex
-	handle      rclib.Handle
-	creds       Credentials
-	pumpCancel  context.CancelFunc
-	ncAttempted bool
-	emit        func(name string, data ...any)
+	mu            sync.Mutex
+	handle        rclib.Handle
+	creds         Credentials
+	serverName    string // name of the server selected in ConnectToServer; "" when none
+	pumpCancel    context.CancelFunc
+	lastNCAttempt time.Time // last ConnectToNCServer attempt; throttles retries
+	emit          func(name string, data ...any)
 	// channels is the authoritative set of joined IRC channels, derived from the
 	// join/left marker lines. It is the single source of truth for which IRC
 	// tabs the frontend should show; the frontend reconciles its tabs against a
@@ -234,8 +237,8 @@ func (s *Service) resetChannels() []string {
 
 // NCStatus is the NC (script) socket snapshot for the frontend.
 type NCStatus struct {
-	HasNc        bool `json:"hasNc"`
-	Connected    bool `json:"connected"`
+	HasNc         bool `json:"hasNc"`
+	Connected     bool `json:"connected"`
 	Authenticated bool `json:"authenticated"`
 }
 
@@ -245,7 +248,9 @@ type NCStatus struct {
 // reports one (mirroring the reference client's pump loop).
 func (s *Service) startPump(h rclib.Handle) {
 	s.stopPump()
-	s.ncAttempted = false
+	s.mu.Lock()
+	s.lastNCAttempt = time.Time{}
+	s.mu.Unlock()
 	ctx, cancel := context.WithCancel(context.Background())
 	s.pumpCancel = cancel
 	go func() {
@@ -264,23 +269,32 @@ func (s *Service) startPump(h rclib.Handle) {
 	}()
 }
 
-// maybeConnectNC opens the NC socket once per session when the server exposes
-// one and it is not yet connected.
+// ncReconnectInterval caps how often maybeConnectNC retries ConnectToNCServer
+// after a failure. The pump ticks every 15ms; without throttling a transient
+// failure would re-attempt ~66x/sec. HasNCServer is the rights gate — it is
+// false for accounts the server did not expose an NC socket to, so those never
+// enter the retry loop at all.
+const ncReconnectInterval = 2 * time.Second
+
+// maybeConnectNC opens the NC socket when the server exposes one to this
+// account (HasNCServer) and it is not yet connected. Unlike a one-shot latch,
+// it retries on failure (throttled by ncReconnectInterval) so a transient
+// first-attempt miss — common with the release build's timing — does not leave
+// the NC socket dead for the whole session.
 func (s *Service) maybeConnectNC(h rclib.Handle) {
-	s.mu.Lock()
-	attempt := !s.ncAttempted
-	s.mu.Unlock()
-	if !attempt {
-		return
-	}
+	// Rights gate: no NC exposed to this account, or already connected.
 	if !rclib.HasNCServer(h) || rclib.IsNCConnected(h) {
 		return
 	}
 	s.mu.Lock()
-	s.ncAttempted = true
+	if !s.lastNCAttempt.IsZero() && time.Since(s.lastNCAttempt) < ncReconnectInterval {
+		s.mu.Unlock()
+		return
+	}
+	s.lastNCAttempt = time.Now()
 	s.mu.Unlock()
 	if err := rclib.ConnectToNCServer(h); err != nil {
-		log.Printf("nc connect: %v", err)
+		log.Printf("nc connect (will retry in %s): %v", ncReconnectInterval, err)
 	}
 }
 
@@ -373,6 +387,13 @@ func (s *Service) ConnectToServer(index int) error {
 		return errors.New("not connected: log in first")
 	}
 
+	// Resolve the server name from the cached listserver list by index, so the
+	// App layer can brand window/tray titles with it once connected.
+	var serverName string
+	if servers, err := rclib.GetServers(h); err == nil && index >= 0 && index < len(servers) {
+		serverName = servers[index].Name
+	}
+
 	connected := make(chan struct{}, 1)
 	disconnected := make(chan string, 1)
 	rclib.RegisterCallbacks(h, &rclib.EventCallbacks{
@@ -387,10 +408,13 @@ func (s *Service) ConnectToServer(index int) error {
 			case disconnected <- reason:
 			default:
 			}
+			s.mu.Lock()
+			s.serverName = ""
+			s.mu.Unlock()
 			s.emitEvent("rc:disconnected", reason)
 			s.emitEvent("rc:channels", s.resetChannels())
 		},
-		Message: func(text string) { s.emitEvent("rc:message", text) },
+		Message:    func(text string) { s.emitEvent("rc:message", text) },
 		IrcMessage: func(channel, line string) { s.handleIrcMessage(channel, line) },
 		ServerData: func(dataType, content string) { s.emitEvent("rc:serverdata", dataType, content) },
 		ScriptReceived: func(scriptType, name string, id int, script string) {
@@ -399,8 +423,12 @@ func (s *Service) ConnectToServer(index int) error {
 		WeaponChanged: func(name string) { s.emitEvent("rc:weaponsChanged", name) },
 		ClassChanged:  func(name string) { s.emitEvent("rc:classesChanged", name) },
 		NPCChanged:    func(id int) { s.emitEvent("rc:npcsChanged", id) },
-		NPCFlags:      func(id int, flags string) { s.resolvePending(pendingKey("npcflags", strconv.Itoa(id)), rclib.ScriptReply{Type: "npcflags", ID: id, Script: flags}) },
-		NPCAttributes: func(id int, attrs string) { s.resolvePending(pendingKey("npcattr", strconv.Itoa(id)), rclib.ScriptReply{Type: "npcattr", ID: id, Script: attrs}) },
+		NPCFlags: func(id int, flags string) {
+			s.resolvePending(pendingKey("npcflags", strconv.Itoa(id)), rclib.ScriptReply{Type: "npcflags", ID: id, Script: flags})
+		},
+		NPCAttributes: func(id int, attrs string) {
+			s.resolvePending(pendingKey("npcattr", strconv.Itoa(id)), rclib.ScriptReply{Type: "npcattr", ID: id, Script: attrs})
+		},
 	})
 	s.startPump(h)
 
@@ -418,13 +446,22 @@ func (s *Service) ConnectToServer(index int) error {
 				log.Printf("set nickname %q: %v", nick, err)
 			}
 		}
+		s.mu.Lock()
+		s.serverName = serverName
+		s.mu.Unlock()
 		return nil
 	case reason := <-disconnected:
+		s.mu.Lock()
+		s.serverName = ""
+		s.mu.Unlock()
 		if reason == "" {
 			reason = "disconnected by server"
 		}
 		return errors.New(reason)
 	case <-time.After(30 * time.Second):
+		s.mu.Lock()
+		s.serverName = ""
+		s.mu.Unlock()
 		return errors.New("server connection timed out")
 	}
 }
@@ -556,6 +593,35 @@ func (s *Service) requireHandle() (rclib.Handle, error) {
 	return h, nil
 }
 
+// requireNC returns the active handle after ensuring the NC (script) socket is
+// connected. It is the guard for NC-dependent writes (SaveWeapon/Class/NPC, NC
+// packet sends): if NC is exposed by the server but not yet up, it triggers an
+// immediate connect attempt rather than letting grclib fail with an opaque
+// runtime error. A clear, user-facing error is returned when NC is down or not
+// exposed to this account.
+func (s *Service) requireNC() (rclib.Handle, error) {
+	h, err := s.requireHandle()
+	if err != nil {
+		return 0, err
+	}
+	if rclib.IsNCConnected(h) {
+		return h, nil
+	}
+	if !rclib.HasNCServer(h) {
+		return 0, errors.New("this account has no NC rights on this server")
+	}
+	// NC exposed but not connected: the pump retries every ncReconnectInterval,
+	// but force one attempt now so a save right after login is not lost to the
+	// throttle window.
+	s.mu.Lock()
+	s.lastNCAttempt = time.Now()
+	s.mu.Unlock()
+	if err := rclib.ConnectToNCServer(h); err != nil {
+		return 0, fmt.Errorf("NC server not connected: %w", err)
+	}
+	return h, nil
+}
+
 // GetWeapons returns the cached weapon list for the NC server.
 func (s *Service) GetWeapons() ([]rclib.Weapon, error) {
 	h, err := s.requireHandle()
@@ -585,7 +651,7 @@ func (s *Service) GetNPCs() ([]rclib.NPC, error) {
 
 // AddWeapon creates a weapon by name.
 func (s *Service) AddWeapon(name string) error {
-	h, err := s.requireHandle()
+	h, err := s.requireNC()
 	if err != nil {
 		return err
 	}
@@ -594,7 +660,7 @@ func (s *Service) AddWeapon(name string) error {
 
 // DeleteWeapon deletes a weapon by name.
 func (s *Service) DeleteWeapon(name string) error {
-	h, err := s.requireHandle()
+	h, err := s.requireNC()
 	if err != nil {
 		return err
 	}
@@ -603,7 +669,7 @@ func (s *Service) DeleteWeapon(name string) error {
 
 // AddClass creates a class by name.
 func (s *Service) AddClass(name string) error {
-	h, err := s.requireHandle()
+	h, err := s.requireNC()
 	if err != nil {
 		return err
 	}
@@ -612,7 +678,7 @@ func (s *Service) AddClass(name string) error {
 
 // DeleteClass deletes a class by name.
 func (s *Service) DeleteClass(name string) error {
-	h, err := s.requireHandle()
+	h, err := s.requireNC()
 	if err != nil {
 		return err
 	}
@@ -621,7 +687,7 @@ func (s *Service) DeleteClass(name string) error {
 
 // DeleteNPC deletes an NPC by id.
 func (s *Service) DeleteNPC(id int) error {
-	h, err := s.requireHandle()
+	h, err := s.requireNC()
 	if err != nil {
 		return err
 	}
@@ -630,7 +696,7 @@ func (s *Service) DeleteNPC(id int) error {
 
 // CreateNPC creates a new DB NPC on the server.
 func (s *Service) CreateNPC(name string, id int, npcType, scripter, level, x, y string) error {
-	h, err := s.requireHandle()
+	h, err := s.requireNC()
 	if err != nil {
 		return err
 	}
@@ -645,7 +711,7 @@ func (s *Service) CreateNPC(name string, id int, npcType, scripter, level, x, y 
 
 // SaveWeapon writes a weapon's script back to the server.
 func (s *Service) SaveWeapon(name, script string) error {
-	h, err := s.requireHandle()
+	h, err := s.requireNC()
 	if err != nil {
 		return err
 	}
@@ -654,7 +720,7 @@ func (s *Service) SaveWeapon(name, script string) error {
 
 // SaveClass writes a class's script back to the server.
 func (s *Service) SaveClass(name, script string) error {
-	h, err := s.requireHandle()
+	h, err := s.requireNC()
 	if err != nil {
 		return err
 	}
@@ -663,7 +729,7 @@ func (s *Service) SaveClass(name, script string) error {
 
 // SaveNPC writes an NPC's script back to the server.
 func (s *Service) SaveNPC(id int, script string) error {
-	h, err := s.requireHandle()
+	h, err := s.requireNC()
 	if err != nil {
 		return err
 	}
@@ -761,7 +827,7 @@ func (s *Service) OpenNPCAttributes(id int) (rclib.ScriptReply, error) {
 
 // SaveNPCFlags writes an NPC's flags to the server.
 func (s *Service) SaveNPCFlags(id int, flags string) error {
-	h, err := s.requireHandle()
+	h, err := s.requireNC()
 	if err != nil {
 		return err
 	}
@@ -770,7 +836,7 @@ func (s *Service) SaveNPCFlags(id int, flags string) error {
 
 // WarpNPC warps an NPC to (x, y) on the given level.
 func (s *Service) WarpNPC(id int, x, y float64, level string) error {
-	h, err := s.requireHandle()
+	h, err := s.requireNC()
 	if err != nil {
 		return err
 	}
@@ -780,7 +846,7 @@ func (s *Service) WarpNPC(id int, x, y float64, level string) error {
 // RefreshWeapons re-requests the weapon list (grclib only sends it once at NC
 // auth), forcing the server to repopulate the cache and re-emit add events.
 func (s *Service) RefreshWeapons() error {
-	h, err := s.requireHandle()
+	h, err := s.requireNC()
 	if err != nil {
 		return err
 	}
@@ -801,6 +867,7 @@ func (s *Service) Logout() {
 		s.handle = 0
 	}
 	s.creds = Credentials{}
+	s.serverName = ""
 	s.channels = nil
 	s.mu.Unlock()
 }
@@ -811,8 +878,9 @@ func (s *Service) Status() Status {
 	defer s.mu.Unlock()
 
 	st := Status{
-		Account:  s.creds.Account,
-		Nickname: s.creds.Nickname,
+		Account:    s.creds.Account,
+		Nickname:   s.creds.Nickname,
+		ServerName: s.serverName,
 	}
 	if dllPath, err := rclib.DLLPath(); err == nil {
 		st.Loaded = true

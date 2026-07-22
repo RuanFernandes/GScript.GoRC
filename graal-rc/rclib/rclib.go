@@ -1,8 +1,13 @@
-// Package rclib binds grclib.dll (C ABI) via the syscall package, so the
-// project builds without cgo / a C toolchain on Windows.
+// Package rclib binds the grclib native library (C ABI) without cgo: on Windows
+// it loads the DLL via the syscall package; on Linux it loads the .so via
+// github.com/ebitengine/purego (pure-Go dlopen) and invokes resolved symbols
+// through syscall.Syscall. Either way the project builds with CGO_ENABLED=0.
 //
-// Struct and signatures mirror how the reference C++ client
-// (rclib/example/GScript.RemoteControl/src/TServerList.cpp) consumes the
+// The native file is selected by GOOS+GOARCH (grclib64.dll / grclib.dll /
+// grclib64.so / grclib.so) — a 32-bit lib cannot load into a 64-bit process, so
+// each build ships the matching bitness.
+//
+// Struct and signatures mirror how the reference C++ client consumes the
 // library: rc_connect -> rc_get_servers -> rc_connect_to_server.
 package rclib
 
@@ -12,6 +17,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -142,67 +148,67 @@ var (
 	once    sync.Once
 	loadErr error
 
-	procConnect         *syscall.Proc
-	procGetServers      *syscall.Proc
-	procConnectToServer *syscall.Proc
-	procDisconnect      *syscall.Proc
-	procLastError       *syscall.Proc
-	procIsConnected     *syscall.Proc
-	procIsAuthenticated *syscall.Proc
-	procSetNewProtocol  *syscall.Proc
-	procIsNewProtocol   *syscall.Proc
-	procFree            *syscall.Proc
-	procProcessEvents   *syscall.Proc
-	procOnConnected     *syscall.Proc
-	procOnDisconnected  *syscall.Proc
+	procConnect         *proc
+	procGetServers      *proc
+	procConnectToServer *proc
+	procDisconnect      *proc
+	procLastError       *proc
+	procIsConnected     *proc
+	procIsAuthenticated *proc
+	procSetNewProtocol  *proc
+	procIsNewProtocol   *proc
+	procFree            *proc
+	procProcessEvents   *proc
+	procOnConnected     *proc
+	procOnDisconnected  *proc
 
-	procConnectToNcServer *syscall.Proc
-	procDisconnectNc      *syscall.Proc
-	procIsNcConnected     *syscall.Proc
-	procIsNcAuthenticated *syscall.Proc
-	procHasNcServer       *syscall.Proc
-	procIrcLogin          *syscall.Proc
-	procSendIrcText       *syscall.Proc
-	procExecute           *syscall.Proc
-	procSetNickname       *syscall.Proc
-	procGetPlayers        *syscall.Proc
-	procOnMessage         *syscall.Proc
-	procOnIrcMessage      *syscall.Proc
-	procOnServerData      *syscall.Proc
+	procConnectToNcServer *proc
+	procDisconnectNc      *proc
+	procIsNcConnected     *proc
+	procIsNcAuthenticated *proc
+	procHasNcServer       *proc
+	procIrcLogin          *proc
+	procSendIrcText       *proc
+	procExecute           *proc
+	procSetNickname       *proc
+	procGetPlayers        *proc
+	procOnMessage         *proc
+	procOnIrcMessage      *proc
+	procOnServerData      *proc
 
 	// Script management (NC server).
-	procGetWeapons           *syscall.Proc
-	procGetClasses           *syscall.Proc
-	procGetNPCs              *syscall.Proc
-	procAddWeapon            *syscall.Proc
-	procDeleteWeapon         *syscall.Proc
-	procUpdateWeapon         *syscall.Proc
-	procAddClass             *syscall.Proc
-	procDeleteClass          *syscall.Proc
-	procUpdateClass          *syscall.Proc
-	procDeleteNPC            *syscall.Proc
-	procUpdateNPC            *syscall.Proc
-	procCreateNPCOnServer    *syscall.Proc
-	procRequestWeaponScript  *syscall.Proc
-	procRequestClassScript   *syscall.Proc
-	procRequestNPCScript     *syscall.Proc
-	procResetNPC             *syscall.Proc
-	procRequestNPCAttributes *syscall.Proc
-	procGetNPCFlags          *syscall.Proc
-	procSetNPCFlags          *syscall.Proc
-	procSendNCPacket         *syscall.Proc
-	procWarpNPC              *syscall.Proc
+	procGetWeapons           *proc
+	procGetClasses           *proc
+	procGetNPCs              *proc
+	procAddWeapon            *proc
+	procDeleteWeapon         *proc
+	procUpdateWeapon         *proc
+	procAddClass             *proc
+	procDeleteClass          *proc
+	procUpdateClass          *proc
+	procDeleteNPC            *proc
+	procUpdateNPC            *proc
+	procCreateNPCOnServer    *proc
+	procRequestWeaponScript  *proc
+	procRequestClassScript   *proc
+	procRequestNPCScript     *proc
+	procResetNPC             *proc
+	procRequestNPCAttributes *proc
+	procGetNPCFlags          *proc
+	procSetNPCFlags          *proc
+	procSendNCPacket         *proc
+	procWarpNPC              *proc
 
 	// Script/NC event callbacks.
-	procOnScriptReceived  *syscall.Proc
-	procOnWeaponAdded     *syscall.Proc
-	procOnWeaponDeleted   *syscall.Proc
-	procOnClassAdded      *syscall.Proc
-	procOnClassDeleted    *syscall.Proc
-	procOnNPCAdded        *syscall.Proc
-	procOnNPCDeleted      *syscall.Proc
-	procOnNPCFlags        *syscall.Proc
-	procOnNPCAttributes   *syscall.Proc
+	procOnScriptReceived *proc
+	procOnWeaponAdded    *proc
+	procOnWeaponDeleted  *proc
+	procOnClassAdded     *proc
+	procOnClassDeleted   *proc
+	procOnNPCAdded       *proc
+	procOnNPCDeleted     *proc
+	procOnNPCFlags       *proc
+	procOnNPCAttributes  *proc
 )
 
 // Default listserver endpoint used by the reference client.
@@ -211,12 +217,46 @@ const (
 	DefaultListserverPort = 14922
 )
 
-// dllSearchPaths returns candidate locations for grclib.dll. It checks the cwd
-// and executable directory, then walks every parent of each looking for a
-// "rclib/grclib.dll" sibling. This finds the DLL during `wails dev` (cwd at the
-// project root) and when running the built binary from build/bin (DLL several
-// levels up at <repo>/rclib/grclib.dll).
-func dllSearchPaths() []string {
+// proc wraps a resolved grclib symbol so call sites stay identical across OSes.
+// The concrete fields and the Call method are defined per-OS in
+// rclib_windows.go (syscall.Proc) and rclib_unix.go (purego.Dlsym address), so
+// this shared file never references Windows-only syscall types.
+
+// arg returns a[i] or 0 when out of range, so the unix SyscallN calls always
+// get a full argument slot regardless of how many were passed.
+func arg(a []uintptr, i int) uintptr {
+	if i >= 0 && i < len(a) {
+		return a[i]
+	}
+	return 0
+}
+
+// libFileName returns the native library filename for the current GOOS/GOARCH.
+// A 32-bit build (386) uses the un-suffixed name; a 64-bit build (amd64/arm64)
+// uses the "64" suffix. They are NOT interchangeable — the lib bitness must
+// match the process bitness.
+func libFileName() string {
+	sixtyFour := runtime.GOARCH == "amd64" || runtime.GOARCH == "arm64"
+	name := "grclib"
+	if sixtyFour {
+		name += "64"
+	}
+	switch runtime.GOOS {
+	case "windows":
+		return name + ".dll"
+	default:
+		return name + ".so"
+	}
+}
+
+// libSearchPaths returns candidate locations for the native library. It checks
+// the cwd and executable directory, then walks every parent of each looking for
+// a "rclib/<lib>" sibling. This finds the lib during `wails dev` (cwd at the
+// project root) and when running the built binary from build/bin (lib several
+// levels up at <repo>/rclib/<lib>).
+func libSearchPaths() []string {
+	name := libFileName()
+
 	var roots []string
 	if cwd, err := os.Getwd(); err == nil {
 		roots = append(roots, cwd)
@@ -243,127 +283,125 @@ func dllSearchPaths() []string {
 	}
 
 	for _, root := range roots {
-		add(filepath.Join(root, "grclib.dll"))
-		add(filepath.Join(root, "rclib", "grclib.dll"))
-		// Walk parents: <root>/.., <root>/../.., ... looking for rclib/grclib.dll.
+		add(filepath.Join(root, name))
+		add(filepath.Join(root, "rclib", name))
+		// Walk parents: <root>/.., <root>/../.., ... looking for rclib/<lib>.
 		dir := root
 		for i := 0; i < 8; i++ {
 			parent := filepath.Dir(dir)
 			if parent == dir {
 				break
 			}
-			add(filepath.Join(parent, "rclib", "grclib.dll"))
-			add(filepath.Join(parent, "grclib.dll"))
+			add(filepath.Join(parent, "rclib", name))
+			add(filepath.Join(parent, name))
 			dir = parent
 		}
 	}
 	return paths
 }
 
-// load resolves and loads the DLL exactly once. Subsequent calls return the
-// cached error (nil on success).
+// load resolves and loads the native library exactly once. Subsequent calls
+// return the cached error (nil on success). The OS-specific loadProcs (see
+// rclib_windows.go / rclib_unix.go) open the library and register every proc.
 func load() error {
 	once.Do(func() {
-		var dllPath string
-		for _, p := range dllSearchPaths() {
+		var libPath string
+		for _, p := range libSearchPaths() {
 			if _, err := os.Stat(p); err == nil {
-				dllPath = p
+				libPath = p
 				break
 			}
 		}
-		if dllPath == "" {
-			loadErr = fmt.Errorf("grclib.dll not found; searched %v", dllSearchPaths())
+		if libPath == "" {
+			loadErr = fmt.Errorf("%s not found; searched %v", libFileName(), libSearchPaths())
 			return
 		}
-
-		// syscall.LoadLibrary converts the Go string to UTF-16 for Windows.
-		h, err := syscall.LoadLibrary(dllPath)
-		if err != nil {
-			loadErr = fmt.Errorf("LoadLibrary(%s): %w", dllPath, err)
-			return
-		}
-		dll := &syscall.DLL{Handle: h}
-
-		find := func(name string) *syscall.Proc {
-			p, e := dll.FindProc(name)
-			if e != nil {
-				loadErr = fmt.Errorf("FindProc(%s): %w", name, e)
-				return nil
-			}
-			return p
-		}
-
-		procConnect = find("rc_connect")
-		if loadErr != nil {
-			return
-		}
-		procGetServers = find("rc_get_servers")
-		procConnectToServer = find("rc_connect_to_server")
-		procDisconnect = find("rc_disconnect")
-		procLastError = find("rc_last_error")
-		procIsConnected = find("rc_is_connected")
-		procIsAuthenticated = find("rc_is_authenticated")
-		procSetNewProtocol = find("rc_set_new_protocol")
-		procIsNewProtocol = find("rc_is_new_protocol")
-		procFree = find("rc_free")
-		procProcessEvents = find("rc_process_events")
-		procOnConnected = find("rc_on_connected")
-		procOnDisconnected = find("rc_on_disconnected")
-		procConnectToNcServer = find("rc_connect_to_nc_server")
-		procDisconnectNc = find("rc_disconnect_nc")
-		procIsNcConnected = find("rc_is_nc_connected")
-		procIsNcAuthenticated = find("rc_is_nc_authenticated")
-		procHasNcServer = find("rc_has_nc_server")
-		procIrcLogin = find("rc_irc_login")
-		procSendIrcText = find("rc_send_irc_text")
-		procExecute = find("rc_execute")
-		procSetNickname = find("rc_set_nickname")
-		procGetPlayers = find("rc_get_players")
-		procOnMessage = find("rc_on_message")
-		procOnIrcMessage = find("rc_on_irc_message")
-		procOnServerData = find("rc_on_server_data")
-		procGetWeapons = find("rc_get_weapons")
-		procGetClasses = find("rc_get_classes")
-		procGetNPCs = find("rc_get_npcs")
-		procAddWeapon = find("rc_add_weapon")
-		procDeleteWeapon = find("rc_delete_weapon")
-		procUpdateWeapon = find("rc_update_weapon")
-		procAddClass = find("rc_add_class")
-		procDeleteClass = find("rc_delete_class")
-		procUpdateClass = find("rc_update_class")
-		procDeleteNPC = find("rc_delete_npc")
-		procUpdateNPC = find("rc_update_npc")
-		procCreateNPCOnServer = find("rc_create_npc_on_server")
-		procRequestWeaponScript = find("rc_request_weapon_script")
-		procRequestClassScript = find("rc_request_class_script")
-		procRequestNPCScript = find("rc_request_npc_script")
-		procResetNPC = find("rc_reset_npc")
-		procRequestNPCAttributes = find("rc_request_npc_attributes")
-		procGetNPCFlags = find("rc_get_npc_flags")
-		procSetNPCFlags = find("rc_set_npc_flags")
-		procSendNCPacket = find("rc_send_nc_packet")
-		procWarpNPC = find("rc_warp_npc")
-		procOnScriptReceived = find("rc_on_script_received")
-		procOnWeaponAdded = find("rc_on_weapon_added")
-		procOnWeaponDeleted = find("rc_on_weapon_deleted")
-		procOnClassAdded = find("rc_on_class_added")
-		procOnClassDeleted = find("rc_on_class_deleted")
-		procOnNPCAdded = find("rc_on_npc_added")
-		procOnNPCDeleted = find("rc_on_npc_deleted")
-		procOnNPCFlags = find("rc_on_npc_flags")
-		procOnNPCAttributes = find("rc_on_npc_attributes")
+		loadErr = loadProcs(libPath)
 	})
 	return loadErr
 }
 
-// DLLPath returns the DLL path that will be (or was) loaded, if found.
+// registerAll resolves every grclib proc via resolve and assigns the package
+// vars, returning the first missing-symbol error. Shared by both OS loaders so
+// the proc list lives in one place.
+func registerAll(resolve func(name string) (*proc, error)) error {
+	var firstErr error
+	get := func(name string) *proc {
+		p, err := resolve(name)
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+		return p
+	}
+	procConnect = get("rc_connect")
+	procGetServers = get("rc_get_servers")
+	procConnectToServer = get("rc_connect_to_server")
+	procDisconnect = get("rc_disconnect")
+	procLastError = get("rc_last_error")
+	procIsConnected = get("rc_is_connected")
+	procIsAuthenticated = get("rc_is_authenticated")
+	procSetNewProtocol = get("rc_set_new_protocol")
+	procIsNewProtocol = get("rc_is_new_protocol")
+	procFree = get("rc_free")
+	procProcessEvents = get("rc_process_events")
+	procOnConnected = get("rc_on_connected")
+	procOnDisconnected = get("rc_on_disconnected")
+	procConnectToNcServer = get("rc_connect_to_nc_server")
+	procDisconnectNc = get("rc_disconnect_nc")
+	procIsNcConnected = get("rc_is_nc_connected")
+	procIsNcAuthenticated = get("rc_is_nc_authenticated")
+	procHasNcServer = get("rc_has_nc_server")
+	procIrcLogin = get("rc_irc_login")
+	procSendIrcText = get("rc_send_irc_text")
+	procExecute = get("rc_execute")
+	procSetNickname = get("rc_set_nickname")
+	procGetPlayers = get("rc_get_players")
+	procOnMessage = get("rc_on_message")
+	procOnIrcMessage = get("rc_on_irc_message")
+	procOnServerData = get("rc_on_server_data")
+	procGetWeapons = get("rc_get_weapons")
+	procGetClasses = get("rc_get_classes")
+	procGetNPCs = get("rc_get_npcs")
+	procAddWeapon = get("rc_add_weapon")
+	procDeleteWeapon = get("rc_delete_weapon")
+	procUpdateWeapon = get("rc_update_weapon")
+	procAddClass = get("rc_add_class")
+	procDeleteClass = get("rc_delete_class")
+	procUpdateClass = get("rc_update_class")
+	procDeleteNPC = get("rc_delete_npc")
+	procUpdateNPC = get("rc_update_npc")
+	procCreateNPCOnServer = get("rc_create_npc_on_server")
+	procRequestWeaponScript = get("rc_request_weapon_script")
+	procRequestClassScript = get("rc_request_class_script")
+	procRequestNPCScript = get("rc_request_npc_script")
+	procResetNPC = get("rc_reset_npc")
+	procRequestNPCAttributes = get("rc_request_npc_attributes")
+	procGetNPCFlags = get("rc_get_npc_flags")
+	procSetNPCFlags = get("rc_set_npc_flags")
+	procSendNCPacket = get("rc_send_nc_packet")
+	procWarpNPC = get("rc_warp_npc")
+	procOnScriptReceived = get("rc_on_script_received")
+	procOnWeaponAdded = get("rc_on_weapon_added")
+	procOnWeaponDeleted = get("rc_on_weapon_deleted")
+	procOnClassAdded = get("rc_on_class_added")
+	procOnClassDeleted = get("rc_on_class_deleted")
+	procOnNPCAdded = get("rc_on_npc_added")
+	procOnNPCDeleted = get("rc_on_npc_deleted")
+	procOnNPCFlags = get("rc_on_npc_flags")
+	procOnNPCAttributes = get("rc_on_npc_attributes")
+	return firstErr
+}
+
+// DLLPath returns the native library path that will be (or was) loaded, if
+// found. Name retained for callers (app.go/service.go use rclib.DLLPath); it is
+// no longer Windows-specific.
 func DLLPath() (string, error) {
-	for _, p := range dllSearchPaths() {
+	for _, p := range libSearchPaths() {
 		if _, err := os.Stat(p); err == nil {
 			return p, nil
 		}
 	}
-	return "", errors.New("grclib.dll not found")
+	return "", errors.New(libFileName() + " not found")
 }
 
 // bptrToString reads a NUL-terminated C string and returns an owned copy
@@ -400,21 +438,21 @@ type EventCallbacks struct {
 }
 
 var (
-	cbConnected    = syscall.NewCallback(connectedEntry)
-	cbDisconnected = syscall.NewCallback(disconnectedEntry)
-	cbMessage      = syscall.NewCallback(messageEntry)
-	cbIrcMessage   = syscall.NewCallback(ircMessageEntry)
-	cbServerData   = syscall.NewCallback(serverDataEntry)
+	cbConnected    = newCallback(connectedEntry)
+	cbDisconnected = newCallback(disconnectedEntry)
+	cbMessage      = newCallback(messageEntry)
+	cbIrcMessage   = newCallback(ircMessageEntry)
+	cbServerData   = newCallback(serverDataEntry)
 
-	cbScriptReceived = syscall.NewCallback(scriptReceivedEntry)
-	cbWeaponAdded    = syscall.NewCallback(weaponCacheChangedEntry)
-	cbWeaponDeleted  = syscall.NewCallback(weaponCacheChangedEntry)
-	cbClassAdded     = syscall.NewCallback(classCacheChangedEntry)
-	cbClassDeleted   = syscall.NewCallback(classCacheChangedEntry)
-	cbNPCAdded       = syscall.NewCallback(npcAddedEntry)
-	cbNPCDeleted     = syscall.NewCallback(npcDeletedEntry)
-	cbNPCFlags       = syscall.NewCallback(npcFlagsEntry)
-	cbNPCAttributes  = syscall.NewCallback(npcAttributesEntry)
+	cbScriptReceived = newCallback(scriptReceivedEntry)
+	cbWeaponAdded    = newCallback(weaponCacheChangedEntry)
+	cbWeaponDeleted  = newCallback(weaponCacheChangedEntry)
+	cbClassAdded     = newCallback(classCacheChangedEntry)
+	cbClassDeleted   = newCallback(classCacheChangedEntry)
+	cbNPCAdded       = newCallback(npcAddedEntry)
+	cbNPCDeleted     = newCallback(npcDeletedEntry)
+	cbNPCFlags       = newCallback(npcFlagsEntry)
+	cbNPCAttributes  = newCallback(npcAttributesEntry)
 
 	routeMu sync.Mutex
 	routes  = map[Handle]*EventCallbacks{}
@@ -1027,7 +1065,7 @@ func CreateNPC(h Handle, name string, id int, npcType, scripter, level, x, y str
 	lv, _ := syscall.BytePtrFromString(level)
 	xp, _ := syscall.BytePtrFromString(x)
 	yp, _ := syscall.BytePtrFromString(y)
-	r1, _, _ := procCreateNPCOnServer.Call(
+	r1 := createNPCCall(
 		uintptr(h),
 		uintptr(unsafe.Pointer(n)),
 		uintptr(id),
@@ -1045,10 +1083,14 @@ func CreateNPC(h Handle, name string, id int, npcType, scripter, level, x, y str
 
 // RequestWeaponScript asks the server for a weapon's script; the reply arrives
 // asynchronously via the ScriptReceived callback.
-func RequestWeaponScript(h Handle, name string) error { return callStr1(h, procRequestWeaponScript, name) }
+func RequestWeaponScript(h Handle, name string) error {
+	return callStr1(h, procRequestWeaponScript, name)
+}
 
 // RequestClassScript asks the server for a class's script.
-func RequestClassScript(h Handle, name string) error { return callStr1(h, procRequestClassScript, name) }
+func RequestClassScript(h Handle, name string) error {
+	return callStr1(h, procRequestClassScript, name)
+}
 
 // RequestNPCScript asks the server for an NPC's script.
 func RequestNPCScript(h Handle, id int) error {
@@ -1148,7 +1190,7 @@ func SendNCPacket(h Handle, packetID int) error {
 }
 
 // callStr1 calls a (handle, const char*) DLL function returning int (0 = error).
-func callStr1(h Handle, p *syscall.Proc, a string) error {
+func callStr1(h Handle, p *proc, a string) error {
 	if err := load(); err != nil {
 		return err
 	}
@@ -1161,7 +1203,7 @@ func callStr1(h Handle, p *syscall.Proc, a string) error {
 }
 
 // callStr2 calls a (handle, const char*, const char*) DLL function returning int.
-func callStr2(h Handle, p *syscall.Proc, a, b string) error {
+func callStr2(h Handle, p *proc, a, b string) error {
 	if err := load(); err != nil {
 		return err
 	}
@@ -1175,7 +1217,7 @@ func callStr2(h Handle, p *syscall.Proc, a, b string) error {
 }
 
 // callStr3 calls a (handle, const char*, const char*, const char*) DLL function returning int.
-func callStr3(h Handle, p *syscall.Proc, a, b, c string) error {
+func callStr3(h Handle, p *proc, a, b, c string) error {
 	if err := load(); err != nil {
 		return err
 	}

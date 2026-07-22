@@ -18,11 +18,10 @@ export function LoginForm({busy = false, defaultValues, onLogin}: LoginFormProps
   const [nickname, setNickname] = useState(defaultValues?.nickname ?? "")
   const [account, setAccount] = useState(defaultValues?.account ?? "")
   const [password, setPassword] = useState(defaultValues?.password ?? "")
-  const [type, setType] = useState<"Classic" | "Reborn">(defaultValues?.type === "Reborn" ? "Reborn" : "Classic")
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    await onLogin({nickname, account, password, type})
+    await onLogin({nickname, account, password})
   }
 
   return (
@@ -64,31 +63,6 @@ export function LoginForm({busy = false, defaultValues, onLogin}: LoginFormProps
         {busy ? <Loader2 className="animate-spin" /> : <LogIn />}
         Connect
       </Button>
-
-      <div className="grid gap-2">
-        <Label>Account type</Label>
-        <div className="grid grid-cols-2 gap-2">
-          {(["Classic", "Reborn"] as const).map((t) => (
-            <button
-              key={t}
-              type="button"
-              onClick={() => setType(t)}
-              className={`rounded-md border px-3 py-1.5 text-sm transition-colors ${
-                type === t
-                  ? t === "Reborn"
-                    ? "border-amber-700 bg-amber-800/40 text-amber-200"
-                    : "border-green-600 bg-green-700/30 text-green-200"
-                  : "hover:bg-accent"
-              }`}
-            >
-              {t}
-            </button>
-          ))}
-        </div>
-        <p className="text-muted-foreground text-xs">
-          {type === "Reborn" ? "Reborn listserver (listserver.graal.in)" : "Classic listserver (listserver.graalonline.com)"}
-        </p>
-      </div>
     </form>
   )
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	_ "embed"
+	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
@@ -20,6 +21,7 @@ func (a *App) setupTray(main *application.WebviewWindow) {
 	a.mainWindow = main
 
 	tray := a.app.SystemTray.New()
+	a.tray = tray
 	tray.SetIcon(trayIcon)
 	tray.SetTooltip("Graal Remote Control")
 
@@ -48,6 +50,17 @@ func (a *App) setupTray(main *application.WebviewWindow) {
 			main.Hide()
 		}
 	})
+
+	// Refresh window/tray chrome every few seconds so the live player count in the
+	// tray tooltip stays current and a server-side disconnect resets the titles
+	// even without a frontend round-trip.
+	go func() {
+		ticker := time.NewTicker(3 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			a.refreshServerChrome()
+		}
+	}()
 }
 
 // isLoggedInServer reports whether there is an active, authenticated server

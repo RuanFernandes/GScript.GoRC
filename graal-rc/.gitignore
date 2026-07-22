@@ -6,8 +6,11 @@ build/android/build/
 *.exe
 *.syso
 
-# RC C library (compiled grclib.dll is a build artifact)
-rclib/grclib.dll
+# RC C library — the prebuilt grclib native libs ARE committed (vendored, ~1.3MB
+# total: a 32-bit + 64-bit lib per OS) so every build — local and CI — has them.
+# A 32-bit lib cannot load into a 64-bit process, so both bitnesses ship.
+# macOS (.dylib) is not a target and stays ignored.
+rclib/*.dylib
 
 # wails3 generated / cache
 .task/

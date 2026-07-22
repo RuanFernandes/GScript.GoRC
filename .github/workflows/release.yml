@@ -1,0 +1,219 @@
+name: release
+
+# On every push to main: build all targets and publish a rolling "continuous"
+# GitHub release. linux-386 is best-effort (continue-on-error); a failure there
+# does not block the other three targets or the release.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write # softprops/action-gh-release needs this to create the release
+
+jobs:
+  windows:
+    name: Windows (amd64 + 386)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: graal-rc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: graal-rc/frontend/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ">=1.25.0"
+          cache-dependency-path: graal-rc/go.sum
+      - name: Install wails3 CLI
+        shell: bash
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.117
+      - name: Put Go bin on PATH
+        shell: bash
+        run: echo "$HOME/go/bin" >> "$GITHUB_PATH"
+      - name: Ensure NSIS present
+        shell: pwsh
+        run: |
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
+            choco install nsis -y --no-progress
+          }
+          makensis /VERSION
+      - name: Build NSIS installers (amd64 + 386)
+        shell: bash
+        env:
+          CGO_ENABLED: "0" # syscall loader — no C toolchain needed for Windows
+        run: wails3 task windows:package:all
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: graal-rc/bin/*-installer.exe
+          if-no-files-found: error
+
+  linux-amd64:
+    name: Linux x64 (AppImage)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: graal-rc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: graal-rc/frontend/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ">=1.25.0"
+          cache-dependency-path: graal-rc/go.sum
+      - name: Install wails3 CLI
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.117
+      - name: Put Go bin on PATH
+        run: echo "$HOME/go/bin" >> "$GITHUB_PATH"
+      - name: Install GTK4/WebKitGTK6 deps + libfuse2
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libadwaita-1-dev libfuse2t64 file zip pkg-config
+      - name: Fetch appimagetool
+        run: |
+          curl -sSL -o "$HOME/appimagetool" https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x "$HOME/appimagetool"
+          "$HOME/appimagetool" --version
+      - name: Build native binary (linux/amd64, CGO)
+        env:
+          CGO_ENABLED: "1"
+        run: wails3 task linux:build
+      - name: Assemble AppImage (bundles grclib64.so)
+        run: |
+          set -e
+          rm -rf bin/AppDir
+          mkdir -p bin/AppDir/usr/bin
+          cp bin/graal-rc bin/AppDir/usr/bin/
+          cp rclib/grclib64.so bin/AppDir/usr/bin/
+          cp build/appicon.png bin/AppDir/graal-rc.png
+          cat > bin/AppDir/graal-rc.desktop <<'DESKTOP'
+          [Desktop Entry]
+          Type=Application
+          Name=Graal Remote Control
+          Exec=graal-rc
+          Icon=graal-rc
+          Categories=Development;
+          DESKTOP
+          cat > bin/AppDir/AppRun <<'RUN'
+          #!/bin/sh
+          HERE="$(dirname "$(readlink -f "$0")")"
+          export LD_LIBRARY_PATH="$HERE/usr/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          exec "$HERE/usr/bin/graal-rc" "$@"
+          RUN
+          chmod +x bin/AppDir/AppRun
+          "$HOME/appimagetool" bin/AppDir bin/graal-rc-amd64.AppImage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-amd64
+          path: graal-rc/bin/graal-rc-amd64.AppImage
+          if-no-files-found: error
+
+  linux-386:
+    name: Linux x86 (AppImage, best-effort)
+    runs-on: ubuntu-latest
+    continue-on-error: true # 32-bit webkit stack is the fragile target
+    defaults:
+      run:
+        working-directory: graal-rc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: graal-rc/frontend/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ">=1.25.0"
+          cache-dependency-path: graal-rc/go.sum
+      - name: Enable i386 architecture + install 32-bit webkit/gtk + libfuse2
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y gcc-multilib libwebkit2gtk-4.1-dev:i386 libgtk-3-dev:i386 libfuse2t64 file pkg-config
+      - name: Build frontend
+        run: |
+          export PATH="$HOME/go/bin:$PATH"
+          go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.117
+          wails3 generate bindings -f "-tags production" -clean=true -ts -i
+          cd frontend && PRODUCTION=true npm install --no-audit --no-fund && npm run build
+      - name: Build 32-bit binary (linux/386, CGO)
+        env:
+          CGO_ENABLED: "1"
+          GOARCH: "386"
+          CC: "gcc -m32"
+          PKG_CONFIG_PATH: "/usr/lib/i386-linux-gnu/pkgconfig:/usr/share/pkgconfig"
+        run: go build -tags production -trimpath -buildvcs=false -ldflags="-w -s" -o bin/graal-rc .
+      - name: Fetch appimagetool (x86_64 host builds the 386 AppImage)
+        run: |
+          curl -sSL -o "$HOME/appimagetool" https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x "$HOME/appimagetool"
+      - name: Assemble 32-bit AppImage (bundles grclib.so)
+        run: |
+          set -e
+          rm -rf bin/AppDir
+          mkdir -p bin/AppDir/usr/bin
+          cp bin/graal-rc bin/AppDir/usr/bin/
+          cp rclib/grclib.so bin/AppDir/usr/bin/
+          cp build/appicon.png bin/AppDir/graal-rc.png
+          cat > bin/AppDir/graal-rc.desktop <<'DESKTOP'
+          [Desktop Entry]
+          Type=Application
+          Name=Graal Remote Control
+          Exec=graal-rc
+          Icon=graal-rc
+          Categories=Development;
+          DESKTOP
+          cat > bin/AppDir/AppRun <<'RUN'
+          #!/bin/sh
+          HERE="$(dirname "$(readlink -f "$0")")"
+          export LD_LIBRARY_PATH="$HERE/usr/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          exec "$HERE/usr/bin/graal-rc" "$@"
+          RUN
+          chmod +x bin/AppDir/AppRun
+          "$HOME/appimagetool" bin/AppDir "bin/graal-rc-386.AppImage"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-386
+          path: graal-rc/bin/graal-rc-386.AppImage
+          if-no-files-found: warn
+
+  release:
+    name: Publish rolling release
+    needs: [windows, linux-amd64, linux-386]
+    if: always() && (needs.windows.result == 'success' || needs.linux-amd64.result == 'success')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Flatten artifacts
+        run: |
+          mkdir -p release
+          find dist -type f \( -name '*.exe' -o -name '*.AppImage' \) -exec cp {} release/ \;
+          ls -la release
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: continuous
+          name: Continuous build
+          body: |
+            Auto-built from push ${{ github.sha }} to `${{ github.ref_name }}`.
+
+            Targets:
+            - Windows x64 + x86 (NSIS installers)
+            - Linux x64 (AppImage)
+            - Linux x86 (AppImage — best-effort; may be missing if the 32-bit build failed)
+
+            Native grclib libs are bundled per bitness.
+          prerelease: true
+          make_latest: "false"
+          files: release/*

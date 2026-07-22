@@ -39,6 +39,10 @@ type App struct {
 	mainWindow *application.WebviewWindow
 	quitting   atomic.Bool
 
+	// tray is the system-tray handle; its tooltip is branded with the connected
+	// server name + live player count by refreshServerChrome.
+	tray *application.SystemTray
+
 	logMu      sync.Mutex
 	logEnabled bool
 	logDir     string
@@ -52,7 +56,7 @@ type App struct {
 	settingsMu     sync.Mutex
 	settingsWindow *application.WebviewWindow
 
-	editorMu    sync.Mutex
+	editorMu      sync.Mutex
 	editorWindows map[string]*application.WebviewWindow
 
 	editorCacheMu sync.Mutex
@@ -141,34 +145,45 @@ type LoginRequest struct {
 	Nickname string `json:"nickname"`
 	Account  string `json:"account"`
 	Password string `json:"password"`
-	Type     string `json:"type"`
 }
 
 // AccountSummary is the password-less account projection exposed to the
 // frontend. Aliased so the generated Wails model matches the credentials type.
 type AccountSummary = credentials.AccountSummary
 
-// RebornListserverHost is the Reborn account-type listserver endpoint (Classic
-// uses rclib.DefaultListserverHost = listserver.graalonline.com).
-const RebornListserverHost = "listserver.graal.in"
+// PreagonalListserverHost is the alternate listserver endpoint, selected
+// implicitly when an account's nickname is prefixed "Preagonal:". The default
+// listserver (listserver.graalonline.com) is used otherwise.
+const PreagonalListserverHost = "listserver.graal.in"
 
-// listserverForType returns the listserver host for an account type. Classic →
-// the default Graal listserver; Reborn → listserver.graal.in (same port).
-func listserverForType(accountType string) (host string, port int) {
-	if (credentials.Account{Type: accountType}).AccountType() == "Reborn" {
-		return RebornListserverHost, rclib.DefaultListserverPort
+// preagonalPrefix marks a nickname as routing to the alternate listserver.
+const preagonalPrefix = "Preagonal:"
+
+// listserverForName returns the listserver endpoint for a nickname. A nickname
+// prefixed "Preagonal:" selects the alternate endpoint; everything else uses the
+// default Graal listserver. The prefix is a hidden, client-only routing key.
+func listserverForName(name string) (host string, port int) {
+	if strings.HasPrefix(name, preagonalPrefix) {
+		return PreagonalListserverHost, rclib.DefaultListserverPort
 	}
 	return rclib.DefaultListserverHost, rclib.DefaultListserverPort
 }
 
+// nicknameForServer strips the routing prefix so only the real nickname is sent
+// to the server (the prefix is a client-side listserver selector, not part of
+// the in-game nick).
+func nicknameForServer(name string) string {
+	return strings.TrimPrefix(name, preagonalPrefix)
+}
+
 func toCreds(req LoginRequest) connection.Credentials {
-	host, port := listserverForType(req.Type)
-	return connection.Credentials{Nickname: req.Nickname, Account: req.Account, Password: req.Password, Host: host, Port: port}
+	host, port := listserverForName(req.Nickname)
+	return connection.Credentials{Nickname: nicknameForServer(req.Nickname), Account: req.Account, Password: req.Password, Host: host, Port: port}
 }
 
 func accountToCreds(a credentials.Account) connection.Credentials {
-	host, port := listserverForType(a.Type)
-	return connection.Credentials{Nickname: a.Nickname, Account: a.Account, Password: a.Password, Host: host, Port: port}
+	host, port := listserverForName(a.Nickname)
+	return connection.Credentials{Nickname: nicknameForServer(a.Nickname), Account: a.Account, Password: a.Password, Host: host, Port: port}
 }
 
 // ListAccounts returns the saved accounts without passwords.
@@ -210,7 +225,6 @@ func (a *App) AddAccount(req LoginRequest) ([]rclib.Server, error) {
 			Nickname: req.Nickname,
 			Account:  req.Account,
 			Password: req.Password,
-			Type:     req.Type,
 		}); saveErr != nil {
 			log.Printf("save account: %v", saveErr)
 		}
@@ -233,15 +247,6 @@ func (a *App) RenameAccount(accountName, displayName string) error {
 		return errNoVault
 	}
 	return a.vault.Mutate(accountName, func(acc *credentials.Account) { acc.DisplayName = displayName })
-}
-
-// SetAccountType sets the client-only account type ("Classic" or "Reborn"),
-// which selects the listserver endpoint used at login.
-func (a *App) SetAccountType(accountName, accountType string) error {
-	if a.vault == nil {
-		return errNoVault
-	}
-	return a.vault.Mutate(accountName, func(acc *credentials.Account) { acc.Type = accountType })
 }
 
 // SetAccountPhoto sets the client-only avatar (a base64 data URL) for a saved
@@ -285,14 +290,22 @@ func (a *App) findAccount(accountName string) (credentials.Account, error) {
 // GetServers returns the cached server list for the active session.
 func (a *App) GetServers() ([]rclib.Server, error) { return a.sessions.GetServers() }
 
-// ConnectToServer authenticates to the server at the given index.
-func (a *App) ConnectToServer(index int) error { return a.sessions.ConnectToServer(index) }
+// ConnectToServer authenticates to the server at the given index. On success it
+// brands the window titles and tray tooltip with the server name.
+func (a *App) ConnectToServer(index int) error {
+	err := a.sessions.ConnectToServer(index)
+	a.refreshServerChrome()
+	return err
+}
 
 // SetNewProtocol toggles newer-protocol compatibility before server login.
 func (a *App) SetNewProtocol(enable bool) error { return a.sessions.SetNewProtocol(enable) }
 
-// Logout drops the active session.
-func (a *App) Logout() { a.sessions.Logout() }
+// Logout drops the active session and restores default window/tray titles.
+func (a *App) Logout() {
+	a.sessions.Logout()
+	a.refreshServerChrome()
+}
 
 // ConnectToNCServer explicitly opens the NC (script) socket.
 func (a *App) ConnectToNCServer() error { return a.sessions.ConnectToNCServer() }
@@ -394,6 +407,54 @@ func (a *App) RefreshWeapons() error { return a.sessions.RefreshWeapons() }
 
 // Status returns the current session status snapshot.
 func (a *App) Status() connection.Status { return a.sessions.Status() }
+
+// refreshServerChrome reconciles the main/players/scripts/settings window titles
+// and the tray tooltip with the current session state: branded with the server
+// name + live player count when connected to an authenticated server, default
+// labels otherwise. Called on connect/logout and by the tray refresh loop so a
+// server-side disconnect (Status flips to !Connected) resets the chrome without a
+// frontend round-trip.
+func (a *App) refreshServerChrome() {
+	st := a.sessions.Status()
+	connected := st.Connected && st.Authenticated && st.ServerName != ""
+
+	mainTitle := "Graal Remote Control"
+	playersTitle := "Players"
+	scriptsTitle := "Script Manager"
+	settingsTitle := "Settings"
+	tooltip := "Graal Remote Control"
+	if connected {
+		mainTitle = st.ServerName + " RC"
+		playersTitle = st.ServerName + " Players"
+		scriptsTitle = st.ServerName + " Script Manager"
+		settingsTitle = st.ServerName + " Settings"
+		count := 0
+		if players, err := a.sessions.GetPlayers(); err == nil {
+			count = len(players)
+		}
+		tooltip = st.ServerName + ":" + strconv.Itoa(count)
+	}
+	if a.mainWindow != nil {
+		a.mainWindow.SetTitle(mainTitle)
+	}
+	a.setWindowTitleLocked(&a.playerListMu, &a.playerListWindow, playersTitle)
+	a.setWindowTitleLocked(&a.scriptMgrMu, &a.scriptMgrWindow, scriptsTitle)
+	a.setWindowTitleLocked(&a.settingsMu, &a.settingsWindow, settingsTitle)
+	if a.tray != nil {
+		a.tray.SetTooltip(tooltip)
+	}
+}
+
+// setWindowTitleLocked snapshots a guarded window pointer under its mutex and
+// applies the title outside the lock, so the native SetTitle call never holds it.
+func (a *App) setWindowTitleLocked(mu *sync.Mutex, w **application.WebviewWindow, title string) {
+	mu.Lock()
+	win := *w
+	mu.Unlock()
+	if win != nil {
+		win.SetTitle(title)
+	}
+}
 
 // SetChatLogConfig updates whether chat logging is active and the output folder.
 func (a *App) SetChatLogConfig(enabled bool, dir string) {
@@ -510,16 +571,34 @@ func (a *App) OpenSettings() {
 	})
 }
 
-// editorTitle builds a human window title for an editor (script / flags / attrs).
-func editorTitle(scriptType, key string) string {
+// scriptTypeInitial maps an editor script type to its single-letter tag for the
+// window title (W/C/N/F/A). npc shares N with its flags/attrs variants in spirit
+// but the variants get distinct letters so two NPC editors never collide.
+func scriptTypeInitial(scriptType string) string {
 	switch scriptType {
+	case "weapon":
+		return "W"
+	case "class":
+		return "C"
+	case "npc":
+		return "N"
 	case "npcflags":
-		return "Edit Flags — NPC " + key
+		return "F"
 	case "npcattr":
-		return "Attributes — NPC " + key
+		return "A"
 	default:
-		return scriptType + ": " + key
+		return "?"
 	}
+}
+
+// editorTitle builds an editor window title as "{server} {TYPE}:key" when a
+// server is connected, else "{TYPE}:key" (e.g. "Zodiac W:sword", "N:42").
+func editorTitle(serverName, scriptType, key string) string {
+	title := scriptTypeInitial(scriptType) + ":" + key
+	if serverName != "" {
+		return serverName + " " + title
+	}
+	return title
 }
 
 // sanitizeWindowName turns a script type+key into a valid Wails window name.
@@ -571,7 +650,7 @@ func (a *App) OpenScriptEditor(scriptType, key string) error {
 
 	w := a.app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:             sanitizeWindowName(scriptType, key),
-		Title:            editorTitle(scriptType, key),
+		Title:            editorTitle(a.sessions.Status().ServerName, scriptType, key),
 		URL:              "/#editor?t=" + scriptType + "&k=" + url.QueryEscape(key),
 		Width:            820,
 		Height:           620,

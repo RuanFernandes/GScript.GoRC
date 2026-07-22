@@ -154,14 +154,6 @@ function Shell() {
             toast.error("Rename failed", {description: String(err)})
           }
         }}
-        onSetType={async (accountName, accountType) => {
-          try {
-            await rcService.setAccountType(accountName, accountType)
-            await accounts.refresh()
-          } catch (err) {
-            toast.error("Type change failed", {description: String(err)})
-          }
-        }}
         onPhoto={async (accountName, dataURL) => {
           try {
             await rcService.setAccountPhoto(accountName, dataURL)

@@ -49,6 +49,11 @@ RequestExecutionLevel "${REQUEST_EXECUTION_LEVEL}"
     !define SUPPORTS_ARM64
 !endif
 
+# Local extension (not in upstream wails_tools.nsh): 32-bit / x86 target.
+!ifdef ARG_WAILS_X86_BINARY
+    !define SUPPORTS_X86
+!endif
+
 !ifdef SUPPORTS_AMD64
     !ifdef SUPPORTS_ARM64
         !define ARCH "amd64_arm64"
@@ -59,7 +64,11 @@ RequestExecutionLevel "${REQUEST_EXECUTION_LEVEL}"
     !ifdef SUPPORTS_ARM64
         !define ARCH "arm64"
     !else
-        !error "Wails: Undefined ARCH, please provide at least one of ARG_WAILS_AMD64_BINARY or ARG_WAILS_ARM64_BINARY"
+        !ifdef SUPPORTS_X86
+            !define ARCH "386"
+        !else
+            !error "Wails: Undefined ARCH, please provide at least one of ARG_WAILS_AMD64_BINARY, ARG_WAILS_ARM64_BINARY, or ARG_WAILS_X86_BINARY"
+        !endif
     !endif
 !endif
 
@@ -83,6 +92,12 @@ RequestExecutionLevel "${REQUEST_EXECUTION_LEVEL}"
             ${if} ${IsNativeARM64}
                 Goto ok
             ${EndIf}
+        !endif
+
+        # 32-bit build installs on any Windows (x86 native, x64 via WoW64, arm64
+        # via emulation), so an X86-only installer accepts unconditionally.
+        !ifdef SUPPORTS_X86
+            Goto ok
         !endif
 
         IfSilent silentArch notSilentArch
@@ -116,6 +131,10 @@ RequestExecutionLevel "${REQUEST_EXECUTION_LEVEL}"
         ${if} ${IsNativeARM64}
             File "/oname=${PRODUCT_EXECUTABLE}" "${ARG_WAILS_ARM64_BINARY}"
         ${EndIf}
+    !endif
+
+    !ifdef SUPPORTS_X86
+        File "/oname=${PRODUCT_EXECUTABLE}" "${ARG_WAILS_X86_BINARY}"
     !endif
 !macroend
 

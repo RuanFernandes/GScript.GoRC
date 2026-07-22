@@ -26,8 +26,8 @@ export interface ThemeOption {
   define?: StandaloneThemeData
 }
 
-// monokai/darcula evoked via base vs-dark + token rules covering the common
-// highlights.
+// monokai/darcula/one-dark-pro evoked via base vs-dark + token rules covering
+// the common highlights.
 export const MONACO_THEME_OPTIONS: ThemeOption[] = [
   {key: "vs-dark", label: "Dark (VS)"},
   {key: "vs", label: "Light (VS)"},
@@ -80,6 +80,43 @@ export const MONACO_THEME_OPTIONS: ThemeOption[] = [
       colors: {
         "editor.background": "#2b2b2b",
         "editor.foreground": "#a9b7c6",
+      },
+    },
+  },
+  {
+    key: "one-dark-pro",
+    label: "One Dark Pro",
+    define: {
+      base: "vs-dark",
+      inherit: true,
+      rules: [
+        {token: "comment", foreground: "7f848e", fontStyle: "italic"},
+        {token: "keyword", foreground: "c678dd"},
+        {token: "keyword.control", foreground: "c678dd"},
+        {token: "keyword.operator", foreground: "56b6c2"},
+        {token: "storage", foreground: "c678dd"},
+        {token: "storage.type", foreground: "c678dd"},
+        {token: "constant", foreground: "d19a66"},
+        {token: "constant.language", foreground: "56b6c2"},
+        {token: "constant.numeric", foreground: "d19a66"},
+        {token: "variable", foreground: "e06c75"},
+        {token: "variable.language", foreground: "e06c75", fontStyle: "italic"},
+        {token: "string", foreground: "98c379"},
+        {token: "number", foreground: "d19a66"},
+        {token: "function", foreground: "61afef"},
+        {token: "entity.name.function", foreground: "61afef"},
+        {token: "entity.name.type", foreground: "e5c07b"},
+        {token: "support.type", foreground: "e5c07b"},
+        {token: "punctuation", foreground: "abb2bf"},
+      ],
+      colors: {
+        "editor.background": "#282c34",
+        "editor.foreground": "#abb2bf",
+        "editorLineNumber.foreground": "#495162",
+        "editor.selectionBackground": "#3e4451",
+        "editor.lineHighlightBackground": "#2c313c",
+        "editorCursor.foreground": "#528bff",
+        "editorWhitespace.foreground": "#3b4048",
       },
     },
   },

@@ -125,14 +125,27 @@ tasks:
       - wails3 generate webview2bootstrapper -dir "{{.ROOT_DIR}}/build/windows/nsis"
       - |
         {{if eq OS "windows"}}
-        makensis {{if eq .INSTALL_SCOPE "user"}}-DWAILS_INSTALL_SCOPE=user -DREQUEST_EXECUTION_LEVEL=user {{end}}-DARG_WAILS_{{.ARG_FLAG}}_BINARY="{{.ROOT_DIR}}\{{.BIN_DIR}}\{{.APP_NAME}}.exe" -DARG_GRCLIB_DLL="{{.ROOT_DIR}}\rclib\grclib.dll" project.nsi
+        makensis {{if eq .INSTALL_SCOPE "user"}}-DWAILS_INSTALL_SCOPE=user -DREQUEST_EXECUTION_LEVEL=user {{end}}-DARG_WAILS_{{.ARG_FLAG}}_BINARY="{{.ROOT_DIR}}\{{.BIN_DIR}}\{{.APP_NAME}}.exe" -DARG_GRCLIB_DLL="{{.ROOT_DIR}}\rclib\{{.GRCLIB_FILE}}" project.nsi
         {{else}}
-        makensis {{if eq .INSTALL_SCOPE "user"}}-DWAILS_INSTALL_SCOPE=user -DREQUEST_EXECUTION_LEVEL=user {{end}}-DARG_WAILS_{{.ARG_FLAG}}_BINARY="{{.ROOT_DIR}}/{{.BIN_DIR}}/{{.APP_NAME}}.exe" -DARG_GRCLIB_DLL="{{.ROOT_DIR}}/rclib/grclib.dll" project.nsi
+        makensis {{if eq .INSTALL_SCOPE "user"}}-DWAILS_INSTALL_SCOPE=user -DREQUEST_EXECUTION_LEVEL=user {{end}}-DARG_WAILS_{{.ARG_FLAG}}_BINARY="{{.ROOT_DIR}}/{{.BIN_DIR}}/{{.APP_NAME}}.exe" -DARG_GRCLIB_DLL="{{.ROOT_DIR}}/rclib/{{.GRCLIB_FILE}}" project.nsi
         {{end}}
     vars:
       ARCH: '{{.ARCH | default ARCH}}'
-      ARG_FLAG: '{{if eq .ARCH "amd64"}}AMD64{{else}}ARM64{{end}}'
+      ARG_FLAG: '{{if eq .ARCH "amd64"}}AMD64{{else if eq .ARCH "386"}}X86{{else}}ARM64{{end}}'
+      # Native grclib lib ships next to the exe; bitness must match the build
+      # arch (32-bit grclib.dll for 386, 64-bit grclib64.dll otherwise).
+      GRCLIB_FILE: '{{if eq .ARCH "386"}}grclib.dll{{else}}grclib64.dll{{end}}'
       INSTALL_SCOPE: '{{.INSTALL_SCOPE | default "machine"}}'
+
+  package:all:
+    summary: Builds NSIS installers for both Windows architectures (amd64 + 386)
+    cmds:
+      - task: create:nsis:installer
+        vars:
+          ARCH: amd64
+      - task: create:nsis:installer
+        vars:
+          ARCH: "386"
 
   create:msix:package:
     summary: Creates an MSIX package

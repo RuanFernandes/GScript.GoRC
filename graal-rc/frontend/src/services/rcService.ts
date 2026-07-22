@@ -24,7 +24,6 @@ export interface RcService {
   addAccount(req: LoginRequest): Promise<Server[] | null>
   removeAccount(accountName: string): Promise<void>
   renameAccount(accountName: string, displayName: string): Promise<void>
-  setAccountType(accountName: string, accountType: string): Promise<void>
   setAccountPhoto(accountName: string, dataURL: string): Promise<void>
   getAccount(accountName: string): Promise<AccountSummary | null>
   getServers(): Promise<Server[] | null>
@@ -83,7 +82,6 @@ export const rcService: RcService = {
   addAccount: (req) => App.AddAccount(req),
   removeAccount: (accountName) => App.RemoveAccount(accountName),
   renameAccount: (accountName, displayName) => App.RenameAccount(accountName, displayName),
-  setAccountType: (accountName, accountType) => App.SetAccountType(accountName, accountType),
   setAccountPhoto: (accountName, dataURL) => App.SetAccountPhoto(accountName, dataURL),
   getAccount: (accountName) => App.GetAccount(accountName),
   getServers: () => App.GetServers(),

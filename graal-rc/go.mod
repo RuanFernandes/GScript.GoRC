@@ -3,6 +3,7 @@ module graal-rc
 go 1.25.0
 
 require (
+	github.com/ebitengine/purego v0.10.2
 	github.com/wailsapp/wails/v3 v3.0.0-alpha2.117
 	golang.org/x/sys v0.44.0
 )
