@@ -13,7 +13,10 @@ import {AccountSelectScreen} from "@/screens/AccountSelectScreen"
 import {AddAccountScreen} from "@/screens/AddAccountScreen"
 import {PlayerListWindowScreen} from "@/screens/PlayerListWindowScreen"
 import {RcScreen} from "@/screens/RcScreen"
+import {ScriptEditorWindowScreen} from "@/screens/ScriptEditorWindowScreen"
+import {ScriptManagerWindowScreen} from "@/screens/ScriptManagerWindowScreen"
 import {ServerListScreen} from "@/screens/ServerListScreen"
+import {SettingsWindowScreen} from "@/screens/SettingsWindowScreen"
 import type {AppView, LoginRequest} from "@/types"
 
 type PendingConfirm =
@@ -124,7 +127,13 @@ function Shell() {
   }
 
   if (view === "rc") {
-    return <RcScreen serverName={session.connectedServer} onDisconnect={handleRcDisconnect} />
+    return (
+      <RcScreen
+        serverName={session.connectedServer}
+        accountName={session.activeAccount}
+        onDisconnect={handleRcDisconnect}
+      />
+    )
   }
 
   return (
@@ -136,6 +145,24 @@ function Shell() {
         onSelect={(accountName) => setPending({kind: "login", account: accountName})}
         onRemove={(accountName) => setPending({kind: "delete", account: accountName})}
         onAdd={() => setView("add")}
+        onRename={async (accountName, displayName) => {
+          try {
+            await rcService.renameAccount(accountName, displayName)
+            await accounts.refresh()
+            toast.success("Account renamed")
+          } catch (err) {
+            toast.error("Rename failed", {description: String(err)})
+          }
+        }}
+        onPhoto={async (accountName, dataURL) => {
+          try {
+            await rcService.setAccountPhoto(accountName, dataURL)
+            await accounts.refresh()
+            toast.success("Photo updated")
+          } catch (err) {
+            toast.error("Photo update failed", {description: String(err)})
+          }
+        }}
       />
       <ConfirmDialog
         open={pending !== null}
@@ -160,12 +187,15 @@ function Shell() {
   )
 }
 
-// App is the window router: the external Players window loads the SPA at
-// "/#players" and gets the player-list screen; every other window gets Shell.
+// App is the window router: external windows load the SPA at a hash route and
+// render their dedicated screen; the main window gets Shell.
 function App() {
-  if (typeof window !== "undefined" && window.location.hash.startsWith("#players")) {
-    return <PlayerListWindowScreen />
-  }
+  if (typeof window === "undefined") return <Shell />
+  const hash = window.location.hash
+  if (hash.startsWith("#players")) return <PlayerListWindowScreen />
+  if (hash.startsWith("#scripts")) return <ScriptManagerWindowScreen />
+  if (hash.startsWith("#settings")) return <SettingsWindowScreen />
+  if (hash.startsWith("#editor")) return <ScriptEditorWindowScreen />
   return <Shell />
 }
 

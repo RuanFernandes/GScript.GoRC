@@ -17,6 +17,7 @@ export interface UseSessionResult {
   statusText: string
   busy: boolean
   connectedServer: string
+  activeAccount: string
   select: (index: number) => void
   loginWithAccount: (accountName: string) => Promise<boolean>
   addAccount: (req: LoginRequest) => Promise<boolean>
@@ -32,6 +33,7 @@ export function useSession(service: RcService): UseSessionResult {
   const [statusText, setStatusText] = useState("")
   const [busy, setBusy] = useState(false)
   const [connectedServer, setConnectedServer] = useState("")
+  const [activeAccount, setActiveAccount] = useState("")
 
   const run = useCallback(async <T,>(label: string, fn: () => Promise<T>): Promise<T | null> => {
     setBusy(true)
@@ -62,6 +64,7 @@ export function useSession(service: RcService): UseSessionResult {
         setStatusText("")
         return false
       }
+      setActiveAccount(accountName)
       enterReady(result, accountName)
       return true
     },
@@ -76,6 +79,7 @@ export function useSession(service: RcService): UseSessionResult {
         setStatusText("")
         return false
       }
+      setActiveAccount(req.account)
       enterReady(result, req.account)
       return true
     },
@@ -126,6 +130,7 @@ export function useSession(service: RcService): UseSessionResult {
     setSelectedIndex(0)
     setStatusText("")
     setConnectedServer("")
+    setActiveAccount("")
   }, [service])
 
   const select = useCallback((index: number) => setSelectedIndex(index), [])
@@ -138,6 +143,7 @@ export function useSession(service: RcService): UseSessionResult {
       statusText,
       busy,
       connectedServer,
+      activeAccount,
       select,
       loginWithAccount,
       addAccount,
@@ -145,6 +151,6 @@ export function useSession(service: RcService): UseSessionResult {
       connect,
       logout,
     }),
-    [phase, servers, selectedIndex, statusText, busy, connectedServer, select, loginWithAccount, addAccount, refresh, connect, logout]
+    [phase, servers, selectedIndex, statusText, busy, connectedServer, activeAccount, select, loginWithAccount, addAccount, refresh, connect, logout]
   )
 }

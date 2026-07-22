@@ -9,6 +9,7 @@ import (
 	"errors"
 	"log"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -51,6 +52,51 @@ type Service struct {
 	// committed after the cooldown elapses with no rejoin — a JOIN in the window
 	// cancels the pending leave and the tab survives.
 	channels map[string]*channelState
+
+	// pending maps a script/flags/attributes request key to its reply channel.
+	// A request (OpenScript/OpenNPCFlags/OpenNPCAttributes) registers under a key
+	// like "weapon:name" / "npc:<id>" / "npcflags:<id>" / "npcattr:<id>" and the
+	// matching pump-goroutine callback resolves it. Replies arrive asynchronously
+	// from the NC server.
+	pendingMu sync.Mutex
+	pending   map[string]chan rclib.ScriptReply
+}
+
+// scriptTimeout is how long OpenScript/OpenNPC* waits for the NC server reply.
+const scriptTimeout = 15 * time.Second
+
+// pendingKey builds the correlation key for a script/flags/attributes request.
+func pendingKey(kind, idOrName string) string { return kind + ":" + idOrName }
+
+// registerPending installs a reply channel for key, returning it and a cleanup.
+// If a waiter already exists for the same key (e.g. duplicate open), it is
+// replaced — the old one times out.
+func (s *Service) registerPending(key string) chan rclib.ScriptReply {
+	ch := make(chan rclib.ScriptReply, 1)
+	s.pendingMu.Lock()
+	if s.pending == nil {
+		s.pending = map[string]chan rclib.ScriptReply{}
+	}
+	s.pending[key] = ch
+	s.pendingMu.Unlock()
+	return ch
+}
+
+// resolvePending delivers a reply to the waiter for key (if any) and drops it.
+// Called from pump-goroutine callbacks; non-blocking (buffered channel).
+func (s *Service) resolvePending(key string, reply rclib.ScriptReply) {
+	s.pendingMu.Lock()
+	ch, ok := s.pending[key]
+	if ok {
+		delete(s.pending, key)
+	}
+	s.pendingMu.Unlock()
+	if ok {
+		select {
+		case ch <- reply:
+		default:
+		}
+	}
 }
 
 // channelState tracks one IRC channel's join state plus a pending (debounced)
@@ -336,6 +382,14 @@ func (s *Service) ConnectToServer(index int) error {
 		Message: func(text string) { s.emitEvent("rc:message", text) },
 		IrcMessage: func(channel, line string) { s.handleIrcMessage(channel, line) },
 		ServerData: func(dataType, content string) { s.emitEvent("rc:serverdata", dataType, content) },
+		ScriptReceived: func(scriptType, name string, id int, script string) {
+			s.handleScriptReceived(scriptType, name, id, script)
+		},
+		WeaponChanged: func(name string) { s.emitEvent("rc:weaponsChanged", name) },
+		ClassChanged:  func(name string) { s.emitEvent("rc:classesChanged", name) },
+		NPCChanged:    func(id int) { s.emitEvent("rc:npcsChanged", id) },
+		NPCFlags:      func(id int, flags string) { s.resolvePending(pendingKey("npcflags", strconv.Itoa(id)), rclib.ScriptReply{Type: "npcflags", ID: id, Script: flags}) },
+		NPCAttributes: func(id int, attrs string) { s.resolvePending(pendingKey("npcattr", strconv.Itoa(id)), rclib.ScriptReply{Type: "npcattr", ID: id, Script: attrs}) },
 	})
 	s.startPump(h)
 
@@ -466,6 +520,265 @@ func (s *Service) GetPlayers() ([]rclib.Player, error) {
 	}
 	return rclib.GetPlayers(h)
 }
+
+// handleScriptReceived resolves a pending OpenScript request (weapon/class keyed
+// by name, npc keyed by id). Called on the pump goroutine.
+func (s *Service) handleScriptReceived(scriptType, name string, id int, script string) {
+	key := name
+	if scriptType == "npc" {
+		key = strconv.Itoa(id)
+	}
+	if key == "" {
+		return
+	}
+	s.resolvePending(pendingKey(scriptType, key), rclib.ScriptReply{Type: scriptType, Name: name, ID: id, Script: script})
+}
+
+// requireHandle returns the active handle or an error.
+func (s *Service) requireHandle() (rclib.Handle, error) {
+	s.mu.Lock()
+	h := s.handle
+	s.mu.Unlock()
+	if h == 0 {
+		return 0, errors.New("not connected: log in first")
+	}
+	return h, nil
+}
+
+// GetWeapons returns the cached weapon list for the NC server.
+func (s *Service) GetWeapons() ([]rclib.Weapon, error) {
+	h, err := s.requireHandle()
+	if err != nil {
+		return nil, err
+	}
+	return rclib.GetWeapons(h)
+}
+
+// GetClasses returns the cached class list for the NC server.
+func (s *Service) GetClasses() ([]rclib.Class, error) {
+	h, err := s.requireHandle()
+	if err != nil {
+		return nil, err
+	}
+	return rclib.GetClasses(h)
+}
+
+// GetNPCs returns the cached NPC list for the NC server.
+func (s *Service) GetNPCs() ([]rclib.NPC, error) {
+	h, err := s.requireHandle()
+	if err != nil {
+		return nil, err
+	}
+	return rclib.GetNPCs(h)
+}
+
+// AddWeapon creates a weapon by name.
+func (s *Service) AddWeapon(name string) error {
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
+	}
+	return rclib.AddWeapon(h, name)
+}
+
+// DeleteWeapon deletes a weapon by name.
+func (s *Service) DeleteWeapon(name string) error {
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
+	}
+	return rclib.DeleteWeapon(h, name)
+}
+
+// AddClass creates a class by name.
+func (s *Service) AddClass(name string) error {
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
+	}
+	return rclib.AddClass(h, name)
+}
+
+// DeleteClass deletes a class by name.
+func (s *Service) DeleteClass(name string) error {
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
+	}
+	return rclib.DeleteClass(h, name)
+}
+
+// DeleteNPC deletes an NPC by id.
+func (s *Service) DeleteNPC(id int) error {
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
+	}
+	return rclib.DeleteNPC(h, id)
+}
+
+// CreateNPC creates a new DB NPC on the server.
+func (s *Service) CreateNPC(name string, id int, npcType, scripter, level, x, y string) error {
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
+	}
+	log.Printf("create npc: name=%q id=%d type=%q scripter=%q level=%q x=%q y=%q nc_connected=%v",
+		name, id, npcType, scripter, level, x, y, rclib.IsNCConnected(h))
+	err = rclib.CreateNPC(h, name, id, npcType, scripter, level, x, y)
+	if err != nil {
+		log.Printf("create npc failed: %v (last_error: %s)", err, rclib.LastError(h))
+	}
+	return err
+}
+
+// SaveWeapon writes a weapon's script back to the server.
+func (s *Service) SaveWeapon(name, script string) error {
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
+	}
+	return rclib.UpdateWeapon(h, name, script)
+}
+
+// SaveClass writes a class's script back to the server.
+func (s *Service) SaveClass(name, script string) error {
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
+	}
+	return rclib.UpdateClass(h, name, script)
+}
+
+// SaveNPC writes an NPC's script back to the server.
+func (s *Service) SaveNPC(id int, script string) error {
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
+	}
+	return rclib.UpdateNPC(h, id, script)
+}
+
+// OpenScript requests a script from the server and waits for the reply. For
+// weapon/class, key is the name; for npc, key is the stringified id.
+func (s *Service) OpenScript(scriptType, key string) (rclib.ScriptReply, error) {
+	h, err := s.requireHandle()
+	if err != nil {
+		return rclib.ScriptReply{}, err
+	}
+	switch scriptType {
+	case "weapon":
+		err = rclib.RequestWeaponScript(h, key)
+	case "class":
+		err = rclib.RequestClassScript(h, key)
+	case "npc":
+		id, convErr := strconv.Atoi(key)
+		if convErr != nil {
+			return rclib.ScriptReply{}, convErr
+		}
+		err = rclib.RequestNPCScript(h, id)
+	default:
+		return rclib.ScriptReply{}, errors.New("unknown script type: " + scriptType)
+	}
+	if err != nil {
+		return rclib.ScriptReply{}, err
+	}
+	ch := s.registerPending(pendingKey(scriptType, key))
+	select {
+	case reply := <-ch:
+		return reply, nil
+	case <-time.After(scriptTimeout):
+		s.pendingMu.Lock()
+		delete(s.pending, pendingKey(scriptType, key))
+		s.pendingMu.Unlock()
+		return rclib.ScriptReply{}, errors.New("script request timed out")
+	}
+}
+
+// ResetNPC resets an NPC by id.
+func (s *Service) ResetNPC(id int) error {
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
+	}
+	return rclib.ResetNPC(h, id)
+}
+
+// OpenNPCFlags requests an NPC's flags and waits for the reply.
+func (s *Service) OpenNPCFlags(id int) (rclib.ScriptReply, error) {
+	h, err := s.requireHandle()
+	if err != nil {
+		return rclib.ScriptReply{}, err
+	}
+	if err := rclib.GetNPCFlags(h, id); err != nil {
+		return rclib.ScriptReply{}, err
+	}
+	key := strconv.Itoa(id)
+	ch := s.registerPending(pendingKey("npcflags", key))
+	select {
+	case reply := <-ch:
+		return reply, nil
+	case <-time.After(scriptTimeout):
+		s.pendingMu.Lock()
+		delete(s.pending, pendingKey("npcflags", key))
+		s.pendingMu.Unlock()
+		return rclib.ScriptReply{}, errors.New("npc flags request timed out")
+	}
+}
+
+// OpenNPCAttributes requests an NPC's attributes and waits for the reply.
+func (s *Service) OpenNPCAttributes(id int) (rclib.ScriptReply, error) {
+	h, err := s.requireHandle()
+	if err != nil {
+		return rclib.ScriptReply{}, err
+	}
+	if err := rclib.RequestNPCAttributes(h, id); err != nil {
+		return rclib.ScriptReply{}, err
+	}
+	key := strconv.Itoa(id)
+	ch := s.registerPending(pendingKey("npcattr", key))
+	select {
+	case reply := <-ch:
+		return reply, nil
+	case <-time.After(scriptTimeout):
+		s.pendingMu.Lock()
+		delete(s.pending, pendingKey("npcattr", key))
+		s.pendingMu.Unlock()
+		return rclib.ScriptReply{}, errors.New("npc attributes request timed out")
+	}
+}
+
+// SaveNPCFlags writes an NPC's flags to the server.
+func (s *Service) SaveNPCFlags(id int, flags string) error {
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
+	}
+	return rclib.SetNPCFlags(h, id, flags)
+}
+
+// WarpNPC warps an NPC to (x, y) on the given level.
+func (s *Service) WarpNPC(id int, x, y float64, level string) error {
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
+	}
+	return rclib.WarpNPC(h, id, x, y, level)
+}
+
+// RefreshWeapons re-requests the weapon list (grclib only sends it once at NC
+// auth), forcing the server to repopulate the cache and re-emit add events.
+func (s *Service) RefreshWeapons() error {
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
+	}
+	return rclib.SendNCPacket(h, weaponListGetPacket)
+}
+
+// weaponListGetPacket is PLI_NC_WEAPONLISTGET (IEnums.h) — re-request the weapon
+// list from the NC server.
+const weaponListGetPacket = 115
 
 // Logout drops the active handle and clears credentials.
 func (s *Service) Logout() {

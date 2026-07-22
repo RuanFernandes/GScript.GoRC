@@ -4,23 +4,25 @@
 // panel, and a chat-color settings dialog. Mirrors the reference client's
 // TRemoteFrame.
 import {useEffect, useRef, useState} from "react"
-import {LogOut, Settings, Users} from "lucide-react"
+import {Code2, LogOut, Settings, UserRound, Users} from "lucide-react"
 
 import {Badge} from "@/components/ui/badge"
 import {Button} from "@/components/ui/button"
 import {Input} from "@/components/ui/input"
 import {Tabs, TabsContent, TabsList, TabsTrigger} from "@/components/ui/tabs"
 import {ChatLine} from "@/components/features/chat/ChatLine"
-import {ChatSettingsDialog} from "@/components/features/chat/ChatSettingsDialog"
+import {ScriptHelpResult} from "@/components/features/chat/ScriptHelpResult"
 import {useChat} from "@/hooks/useChat"
 import {useChatSettings} from "@/hooks/useChatSettings"
+import {usePlayers} from "@/hooks/usePlayers"
 import {serverDisplay} from "@/lib/server"
 import {formatLogLine} from "@/lib/chatLine"
 import {rcService} from "@/services/rcService"
-import type {ChatMessage, ChatSettings, NCStatus} from "@/types"
+import type {AccountSummary, ChatMessage, ChatSettings, NCStatus} from "@/types"
 
 interface RcScreenProps {
   serverName: string
+  accountName: string
   onDisconnect: () => void
 }
 
@@ -89,7 +91,11 @@ function ChatPane({
           ) : (
             messages.map((m) => (
               <div key={m.id}>
-                <ChatLine message={m} settings={settings} />
+                {m.scriptHelp ? (
+                  <ScriptHelpResult query={m.text} entries={m.scriptHelp} />
+                ) : (
+                  <ChatLine message={m} settings={settings} />
+                )}
               </div>
             ))
           )}
@@ -108,11 +114,12 @@ function ChatPane({
   )
 }
 
-export function RcScreen({serverName, onDisconnect}: RcScreenProps) {
+export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps) {
   const {tabs, activeChannel, setActiveChannel, send, reorderTabs} = useChat(rcService)
-  const {settings, update, reset} = useChatSettings()
-  const [showSettings, setShowSettings] = useState(false)
+  const {settings} = useChatSettings()
   const [nc, setNc] = useState<NCStatus>({hasNc: false, connected: false, authenticated: false})
+  const [profile, setProfile] = useState<AccountSummary | null>(null)
+  const {players} = usePlayers(rcService, true)
   const dragIndex = useRef<number>(-1)
 
   useEffect(() => {
@@ -133,7 +140,24 @@ export function RcScreen({serverName, onDisconnect}: RcScreenProps) {
     }
   }, [])
 
+  // Fetch the active account's client-only profile (display name + photo) for
+  // the top header.
+  useEffect(() => {
+    let cancelled = false
+    if (!accountName) return
+    rcService
+      .getAccount(accountName)
+      .then((p) => {
+        if (!cancelled && p) setProfile(p)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [accountName])
+
   const {label: displayServer} = serverDisplay(serverName)
+  const apelido = profile?.displayName || profile?.nickname || accountName
 
   // Push the log config to the backend whenever it changes so AppendChatLog
   // knows whether (and where) to write.
@@ -143,20 +167,49 @@ export function RcScreen({serverName, onDisconnect}: RcScreenProps) {
 
   return (
     <div className="bg-background flex h-svh flex-col overflow-hidden">
-      <header className="flex items-center gap-3 border-b px-4 py-2.5">
-        <h1 className="text-base font-semibold">{displayServer || "RC"}</h1>
-        <Badge variant="secondary">{ncLabel(nc)}</Badge>
+      {/* Top header: account profile (client-only) + server/online count + global
+          actions (Settings, Disconnect). Sits above the RC action header. */}
+      <header className="flex items-center gap-3 border-b px-4 py-2">
+        {profile?.photo ? (
+          <img
+            src={profile.photo}
+            alt={apelido}
+            className="size-8 rounded-full border object-cover"
+          />
+        ) : (
+          <div className="bg-muted flex size-8 items-center justify-center rounded-full border">
+            <UserRound className="text-muted-foreground size-4" />
+          </div>
+        )}
+        <div className="flex flex-col leading-tight">
+          <span className="text-sm font-semibold">{apelido}</span>
+          <span className="text-muted-foreground text-xs">
+            {displayServer ? `${displayServer}: ` : ""}
+            {players.length} player{players.length === 1 ? "" : "s"} online
+          </span>
+        </div>
         <div className="ml-auto flex items-center gap-2">
-          <Button variant="ghost" size="icon" aria-label="Chat settings" onClick={() => setShowSettings(true)}>
+          <Button variant="ghost" size="sm" onClick={() => rcService.openSettings()}>
             <Settings />
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => rcService.openPlayerList()}>
-            <Users />
-            Players
+            Settings
           </Button>
           <Button variant="ghost" size="sm" onClick={onDisconnect}>
             <LogOut />
             Disconnect
+          </Button>
+        </div>
+      </header>
+
+      <header className="flex items-center gap-3 border-b px-4 py-2.5">
+        <Badge variant="secondary">{ncLabel(nc)}</Badge>
+        <div className="ml-auto flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => rcService.openScriptManager()}>
+            <Code2 />
+            Scripts
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => rcService.openPlayerList()}>
+            <Users />
+            Players
           </Button>
         </div>
       </header>
@@ -193,14 +246,6 @@ export function RcScreen({serverName, onDisconnect}: RcScreenProps) {
           ))}
         </Tabs>
       </div>
-
-      <ChatSettingsDialog
-        open={showSettings}
-        settings={settings}
-        onChange={update}
-        onReset={reset}
-        onClose={() => setShowSettings(false)}
-      />
     </div>
   )
 }

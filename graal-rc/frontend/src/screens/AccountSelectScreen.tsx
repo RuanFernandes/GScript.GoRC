@@ -1,10 +1,21 @@
-// AccountSelectScreen lists saved accounts (nickname/account) and lets the user
-// pick one to log in or remove it. With no saved accounts it shows only an
-// Add Account button. Pure presentational — all intents arrive via props.
-import {Loader2, Plus, Trash2, UserRound} from "lucide-react"
+// AccountSelectScreen lists saved accounts and lets the user pick one to log in,
+// remove it, rename it (client-only display label), or set an avatar photo. With
+// no saved accounts it shows only an Add Account button. Pure presentational —
+// all intents arrive via props.
+import {useRef, useState} from "react"
+import {ImagePlus, Loader2, Pencil, Plus, Trash2, UserRound} from "lucide-react"
 
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import {Button} from "@/components/ui/button"
 import {Card, CardContent, CardDescription, CardHeader, CardTitle} from "@/components/ui/card"
+import {Input} from "@/components/ui/input"
+import {Label} from "@/components/ui/label"
 import {ScrollArea} from "@/components/ui/scroll-area"
 import type {AccountSummary} from "@/types"
 
@@ -15,6 +26,29 @@ interface AccountSelectScreenProps {
   onSelect: (accountName: string) => void
   onRemove: (accountName: string) => void
   onAdd: () => void
+  onRename: (accountName: string, displayName: string) => void | Promise<void>
+  onPhoto: (accountName: string, dataURL: string) => void | Promise<void>
+}
+
+function Avatar({photo, name, size = 36}: {photo?: string; name: string; size?: number}) {
+  if (photo) {
+    return (
+      <img
+        src={photo}
+        alt={name}
+        style={{width: size, height: size}}
+        className="rounded-full border object-cover"
+      />
+    )
+  }
+  return (
+    <div
+      style={{width: size, height: size}}
+      className="bg-muted flex items-center justify-center rounded-full border"
+    >
+      <UserRound style={{width: size * 0.55, height: size * 0.55}} className="text-muted-foreground" />
+    </div>
+  )
 }
 
 export function AccountSelectScreen({
@@ -24,7 +58,44 @@ export function AccountSelectScreen({
   onSelect,
   onRemove,
   onAdd,
+  onRename,
+  onPhoto,
 }: AccountSelectScreenProps) {
+  const [renaming, setRenaming] = useState<string | null>(null)
+  const [display, setDisplay] = useState("")
+  const fileRef = useRef<HTMLInputElement>(null)
+  const photoTarget = useRef<string | null>(null)
+
+  const startRename = (acc: AccountSummary) => {
+    setRenaming(acc.account)
+    setDisplay(acc.displayName || acc.nickname || "")
+  }
+
+  const confirmRename = () => {
+    if (renaming) void onRename(renaming, display.trim())
+    setRenaming(null)
+  }
+
+  const pickPhoto = (acc: AccountSummary) => {
+    photoTarget.current = acc.account
+    fileRef.current?.click()
+  }
+
+  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    const target = photoTarget.current
+    photoTarget.current = null
+    e.target.value = "" // allow re-picking the same file
+    if (!file || !target) return
+    const dataURL = await new Promise<string>((resolve, reject) => {
+      const r = new FileReader()
+      r.onload = () => resolve(r.result as string)
+      r.onerror = () => reject(new Error("read failed"))
+      r.readAsDataURL(file)
+    })
+    void onPhoto(target, dataURL)
+  }
+
   return (
     <div className="flex min-h-svh items-center justify-center bg-background p-4">
       <Card className="w-full max-w-sm">
@@ -33,6 +104,8 @@ export function AccountSelectScreen({
           <CardDescription>Select an account to sign in.</CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4">
+          <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={onFile} />
+
           {loading ? (
             <div className="flex items-center justify-center py-8 text-muted-foreground">
               <Loader2 className="animate-spin" />
@@ -50,6 +123,7 @@ export function AccountSelectScreen({
                     key={account.account}
                     className="flex items-center gap-2 rounded-md border p-2 transition-colors hover:bg-accent"
                   >
+                    <Avatar photo={account.photo} name={account.account} />
                     <button
                       type="button"
                       disabled={busy}
@@ -57,10 +131,30 @@ export function AccountSelectScreen({
                       className="flex flex-1 flex-col items-start gap-0.5 text-left disabled:opacity-50"
                     >
                       <span className="text-sm font-medium">
-                        {account.nickname || account.account}
+                        {account.displayName || account.nickname || account.account}
                       </span>
                       <span className="text-xs text-muted-foreground">{account.account}</span>
                     </button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 text-muted-foreground"
+                      disabled={busy}
+                      aria-label={`Photo for ${account.account}`}
+                      onClick={() => pickPhoto(account)}
+                    >
+                      <ImagePlus />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 text-muted-foreground"
+                      disabled={busy}
+                      aria-label={`Rename ${account.account}`}
+                      onClick={() => startRename(account)}
+                    >
+                      <Pencil />
+                    </Button>
                     <Button
                       variant="ghost"
                       size="icon"
@@ -83,6 +177,36 @@ export function AccountSelectScreen({
           </Button>
         </CardContent>
       </Card>
+
+      <AlertDialog open={renaming !== null} onOpenChange={(v) => !v && setRenaming(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Rename account</AlertDialogTitle>
+            <AlertDialogDescription>
+              A client-only label shown in the account list and RC header. It does not change your
+              nickname or username.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="grid gap-2">
+            <Label htmlFor="display-name">Display name</Label>
+            <Input
+              id="display-name"
+              value={display}
+              autoFocus
+              onChange={(e) => setDisplay(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") confirmRename()
+              }}
+            />
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setRenaming(null)}>
+              Cancel
+            </Button>
+            <Button onClick={confirmRename}>Save</Button>
+          </div>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

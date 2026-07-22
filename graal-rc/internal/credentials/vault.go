@@ -10,22 +10,28 @@ import (
 	"path/filepath"
 )
 
-// Account is a full persisted login (nickname/account/password).
+// Account is a full persisted login (nickname/account/password). DisplayName
+// and Photo are client-only profile data (a label + base64 avatar data URL) —
+// they are never sent to the server; only Nickname/Account/Password are.
 type Account struct {
-	Nickname string `json:"nickname"`
-	Account  string `json:"account"`
-	Password string `json:"password"`
+	Nickname    string `json:"nickname"`
+	Account     string `json:"account"`
+	Password    string `json:"password"`
+	DisplayName string `json:"displayName,omitempty"`
+	Photo       string `json:"photo,omitempty"`
 }
 
 // AccountSummary is the password-less projection exposed to the frontend.
 type AccountSummary struct {
-	Nickname string `json:"nickname"`
-	Account  string `json:"account"`
+	Nickname    string `json:"nickname"`
+	Account     string `json:"account"`
+	DisplayName string `json:"displayName"`
+	Photo       string `json:"photo"`
 }
 
 // Summary drops the password for safe hand-off to the frontend.
 func (a Account) Summary() AccountSummary {
-	return AccountSummary{Nickname: a.Nickname, Account: a.Account}
+	return AccountSummary{Nickname: a.Nickname, Account: a.Account, DisplayName: a.DisplayName, Photo: a.Photo}
 }
 
 // Vault reads/writes the DPAPI-encrypted account list under the OS config dir.
@@ -120,4 +126,37 @@ func (v *Vault) Remove(accountName string) error {
 		}
 	}
 	return v.Save(next)
+}
+
+// Mutate applies fn to the account matched by name and persists. Returns
+// ErrAccountNotFound if no account matches.
+func (v *Vault) Mutate(accountName string, fn func(*Account)) error {
+	accounts, err := v.Load()
+	if err != nil {
+		return err
+	}
+	for i := range accounts {
+		if accounts[i].Account == accountName {
+			fn(&accounts[i])
+			return v.Save(accounts)
+		}
+	}
+	return ErrAccountNotFound
+}
+
+// ErrAccountNotFound is returned by Mutate/Get when no account matches.
+var ErrAccountNotFound = errors.New("account not found")
+
+// Get returns the account matched by name (ErrAccountNotFound if none).
+func (v *Vault) Get(accountName string) (Account, error) {
+	accounts, err := v.Load()
+	if err != nil {
+		return Account{}, err
+	}
+	for _, a := range accounts {
+		if a.Account == accountName {
+			return a, nil
+		}
+	}
+	return Account{}, ErrAccountNotFound
 }
