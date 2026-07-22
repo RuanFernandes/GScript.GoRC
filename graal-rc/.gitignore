@@ -1,6 +1,8 @@
 # Build outputs
 bin/
 build/bin/
+build/android/.gradle/
+build/android/build/
 *.exe
 *.syso
 
