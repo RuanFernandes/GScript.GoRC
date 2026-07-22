@@ -38,10 +38,15 @@ jobs:
       - name: Ensure NSIS present
         shell: pwsh
         run: |
-          if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
-            choco install nsis -y --no-progress
+          # Chocolatey installs NSIS to C:\Program Files (x86)\NSIS, but its PATH
+          # update isn't visible to this step's shell, so resolve makensis by full
+          # path and export the dir for later steps via GITHUB_PATH.
+          $nsisDir = "C:\Program Files (x86)\NSIS"
+          if (-not (Test-Path "$nsisDir\makensis.exe")) {
+            choco install nsis -y --no-progress --force
           }
-          makensis /VERSION
+          "$nsisDir" | Out-File -FilePath $env:GITHUB_PATH -Append
+          & "$nsisDir\makensis.exe" /VERSION
       - name: Build NSIS installers (amd64 + 386)
         shell: bash
         env:
