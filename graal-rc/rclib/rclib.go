@@ -203,6 +203,15 @@ var (
 	procSendNCPacket         *proc
 	procWarpNPC              *proc
 
+	// Server-side text configs (server options / folder config / server flags).
+	// Content arrives via on_server_data ("options"/"folder_config"/"flags").
+	procRequestServerOptions *proc
+	procRequestFolderConfig  *proc
+	procRequestServerFlags   *proc
+	procUploadServerOptions  *proc
+	procUploadFolderConfig   *proc
+	procUploadServerFlags    *proc
+
 	// Script/NC event callbacks.
 	procOnScriptReceived *proc
 	procOnWeaponAdded    *proc
@@ -384,6 +393,12 @@ func registerAll(resolve func(name string) (*proc, error)) error {
 	procSetNPCFlags = get("rc_set_npc_flags")
 	procSendNCPacket = get("rc_send_nc_packet")
 	procWarpNPC = get("rc_warp_npc")
+	procRequestServerOptions = get("rc_request_server_options")
+	procRequestFolderConfig = get("rc_request_folder_config")
+	procRequestServerFlags = get("rc_request_server_flags")
+	procUploadServerOptions = get("rc_upload_server_options")
+	procUploadFolderConfig = get("rc_upload_folder_config")
+	procUploadServerFlags = get("rc_upload_server_flags")
 	procOnScriptReceived = get("rc_on_script_received")
 	procOnWeaponAdded = get("rc_on_weapon_added")
 	procOnWeaponDeleted = get("rc_on_weapon_deleted")
@@ -1180,6 +1195,33 @@ func WarpNPC(h Handle, id int, x, y float64, level string) error {
 	return nil
 }
 
+// RequestServerOptions asks the server for its options text; the reply arrives
+// asynchronously via on_server_data (data_type "options").
+func RequestServerOptions(h Handle) error { return callHandle(h, procRequestServerOptions) }
+
+// RequestFolderConfig asks the server for its folder-config text; the reply
+// arrives via on_server_data (data_type "folder_config").
+func RequestFolderConfig(h Handle) error { return callHandle(h, procRequestFolderConfig) }
+
+// RequestServerFlags asks the server for its flags text; the reply arrives via
+// on_server_data (data_type "flags").
+func RequestServerFlags(h Handle) error { return callHandle(h, procRequestServerFlags) }
+
+// UploadServerOptions writes the server options text back to the server.
+func UploadServerOptions(h Handle, content string) error {
+	return callHandleStr(h, procUploadServerOptions, content)
+}
+
+// UploadFolderConfig writes the folder-config text back to the server.
+func UploadFolderConfig(h Handle, content string) error {
+	return callHandleStr(h, procUploadFolderConfig, content)
+}
+
+// UploadServerFlags writes the server flags text back to the server.
+func UploadServerFlags(h Handle, content string) error {
+	return callHandleStr(h, procUploadServerFlags, content)
+}
+
 // SendNCPacket sends a raw NC packet (used to re-request the weapon list with
 // packet id 115, PLI_NC_WEAPONLISTGET, since grclib only sends it once at auth).
 func SendNCPacket(h Handle, packetID int) error {
@@ -1229,6 +1271,33 @@ func callStr3(h Handle, p *proc, a, b, c string) error {
 	pb, _ := syscall.BytePtrFromString(b)
 	pc, _ := syscall.BytePtrFromString(c)
 	r1, _, _ := p.Call(uintptr(h), uintptr(unsafe.Pointer(pa)), uintptr(unsafe.Pointer(pb)), uintptr(unsafe.Pointer(pc)))
+	if r1 == 0 {
+		return errors.New(LastError(h))
+	}
+	return nil
+}
+
+// callHandle calls a (handle)-only DLL function returning int (e.g. the server
+// text-config requestors).
+func callHandle(h Handle, p *proc) error {
+	if err := load(); err != nil {
+		return err
+	}
+	r1, _, _ := p.Call(uintptr(h))
+	if r1 == 0 {
+		return errors.New(LastError(h))
+	}
+	return nil
+}
+
+// callHandleStr calls a (handle, const char*) DLL function returning int (e.g.
+// the server text-config uploaders).
+func callHandleStr(h Handle, p *proc, content string) error {
+	if err := load(); err != nil {
+		return err
+	}
+	c, _ := syscall.BytePtrFromString(content)
+	r1, _, _ := p.Call(uintptr(h), uintptr(unsafe.Pointer(c)))
 	if r1 == 0 {
 		return errors.New(LastError(h))
 	}

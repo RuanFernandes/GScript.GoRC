@@ -4,7 +4,8 @@
 // panel, and a chat-color settings dialog. Mirrors the reference client's
 // TRemoteFrame.
 import {useEffect, useRef, useState} from "react"
-import {Code2, LogOut, Settings, UserRound, Users} from "lucide-react"
+import {Code2, Flag, FolderTree, LogOut, Settings, SlidersHorizontal, UserRound, Users} from "lucide-react"
+import {toast} from "sonner"
 
 import {Badge} from "@/components/ui/badge"
 import {Button} from "@/components/ui/button"
@@ -159,6 +160,16 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
   const {label: displayServer} = serverDisplay(serverName)
   const apelido = profile?.displayName || profile?.nickname || accountName
 
+  // Open a server-side text config editor (options/folder_config/flags). These
+  // travel on the main socket, not NC, so they're available without script
+  // rights; a no-rights/timeout fetch rejects and toasts instead of opening a
+  // blank window.
+  const openServerText = (kind: "options" | "folder_config" | "flags", label: string) => {
+    rcService.openScriptEditor(kind, label).catch((err: unknown) => {
+      toast.error(`Couldn't open ${label}`, {description: String(err)})
+    })
+  }
+
   // Push the log config to the backend whenever it changes so AppendChatLog
   // knows whether (and where) to write.
   useEffect(() => {
@@ -210,6 +221,18 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
           <Button variant="outline" size="sm" onClick={() => rcService.openPlayerList()}>
             <Users />
             Players
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => openServerText("options", "Server Options")}>
+            <SlidersHorizontal />
+            Server Options
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => openServerText("folder_config", "Folder Config")}>
+            <FolderTree />
+            Folder Config
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => openServerText("flags", "Server Flags")}>
+            <Flag />
+            Server Flags
           </Button>
         </div>
       </header>

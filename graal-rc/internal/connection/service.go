@@ -416,7 +416,17 @@ func (s *Service) ConnectToServer(index int) error {
 		},
 		Message:    func(text string) { s.emitEvent("rc:message", text) },
 		IrcMessage: func(channel, line string) { s.handleIrcMessage(channel, line) },
-		ServerData: func(dataType, content string) { s.emitEvent("rc:serverdata", dataType, content) },
+		ServerData: func(dataType, content string) {
+			// Server-side text configs (options/folder_config/flags) are fetched
+			// via OpenServerText, which registers a pending waiter keyed by the
+			// grclib data_type. Resolve it here and do NOT forward to rc:serverdata
+			// — otherwise useChat dumps the whole config body into the chat log.
+			if isServerTextKind(dataType) {
+				s.resolvePending(pendingKey("serverdata", dataType), rclib.ScriptReply{Type: dataType, Script: content})
+				return
+			}
+			s.emitEvent("rc:serverdata", dataType, content)
+		},
 		ScriptReceived: func(scriptType, name string, id int, script string) {
 			s.handleScriptReceived(scriptType, name, id, script)
 		},
@@ -770,6 +780,69 @@ func (s *Service) OpenScript(scriptType, key string) (rclib.ScriptReply, error) 
 		s.pendingMu.Unlock()
 		return rclib.ScriptReply{}, errors.New("script request timed out")
 	}
+}
+
+// isServerTextKind reports whether a grclib on_server_data data_type names one of
+// the three server-side text configs editable via OpenServerText. The strings
+// match grclib.cpp's emitted data_type exactly.
+func isServerTextKind(dataType string) bool {
+	switch dataType {
+	case "options", "folder_config", "flags":
+		return true
+	}
+	return false
+}
+
+// OpenServerText requests a server-side text config (options/folder_config/
+// flags) and waits for the on_server_data reply. kind must be one of those three.
+// Unlike OpenScript, this travels on the main server socket (not NC), so it is
+// available to accounts without NC/script rights.
+func (s *Service) OpenServerText(kind string) (rclib.ScriptReply, error) {
+	h, err := s.requireHandle()
+	if err != nil {
+		return rclib.ScriptReply{}, err
+	}
+	switch kind {
+	case "options":
+		err = rclib.RequestServerOptions(h)
+	case "folder_config":
+		err = rclib.RequestFolderConfig(h)
+	case "flags":
+		err = rclib.RequestServerFlags(h)
+	default:
+		return rclib.ScriptReply{}, errors.New("unknown server text kind: " + kind)
+	}
+	if err != nil {
+		return rclib.ScriptReply{}, err
+	}
+	ch := s.registerPending(pendingKey("serverdata", kind))
+	select {
+	case reply := <-ch:
+		return reply, nil
+	case <-time.After(scriptTimeout):
+		s.pendingMu.Lock()
+		delete(s.pending, pendingKey("serverdata", kind))
+		s.pendingMu.Unlock()
+		return rclib.ScriptReply{}, errors.New("server text request timed out")
+	}
+}
+
+// UploadServerText writes a server-side text config (options/folder_config/
+// flags) back to the server.
+func (s *Service) UploadServerText(kind, content string) error {
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
+	}
+	switch kind {
+	case "options":
+		return rclib.UploadServerOptions(h, content)
+	case "folder_config":
+		return rclib.UploadFolderConfig(h, content)
+	case "flags":
+		return rclib.UploadServerFlags(h, content)
+	}
+	return errors.New("unknown server text kind: " + kind)
 }
 
 // ResetNPC resets an NPC by id.

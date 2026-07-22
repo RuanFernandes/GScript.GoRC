@@ -4,8 +4,18 @@ package rclib
 
 import (
 	"fmt"
+	"path/filepath"
 	"syscall"
+	"unsafe"
 )
+
+// procSetDllDirectoryW adds a directory to the DLL search path so grclib64.dll's
+// MinGW runtime dependencies (libgcc_s_seh-1.dll, libstdc++-6.dll,
+// libwinpthread-1.dll) resolve from the folder they ship in. Plain
+// syscall.LoadLibrary searches only the process exe dir / system dirs / cwd, so
+// the DLL's own folder would be missed and LoadLibrary fail with "module not
+// found".
+var procSetDllDirectoryW = syscall.NewLazyDLL("kernel32.dll").NewProc("SetDllDirectoryW")
 
 // proc wraps a syscall.Proc (Windows). Call delegates to syscall.Proc.Call so
 // every call site is unchanged from the pre-cross-platform implementation.
@@ -34,6 +44,15 @@ func newCallback(fn any) uintptr { return syscall.NewCallback(fn) }
 // loadProcs opens the native library via syscall.LoadLibrary and resolves every
 // grclib proc through registerAll. Windows path.
 func loadProcs(path string) error {
+	// grclib64.dll is built with MinGW and imports libgcc_s_seh-1.dll,
+	// libstdc++-6.dll and libwinpthread-1.dll. LoadLibrary only searches those
+	// dependencies in the process exe dir / system dirs / cwd by default — not
+	// the DLL's own folder — so a "module not found" is raised even when the
+	// three runtime DLLs sit right next to grclib64.dll. Adding the lib's
+	// directory to the search path makes them resolve.
+	if dirUTF16, e := syscall.UTF16PtrFromString(filepath.Dir(path)); e == nil {
+		procSetDllDirectoryW.Call(uintptr(unsafe.Pointer(dirUTF16)))
+	}
 	h, err := syscall.LoadLibrary(path)
 	if err != nil {
 		return fmt.Errorf("LoadLibrary(%s): %w", path, err)

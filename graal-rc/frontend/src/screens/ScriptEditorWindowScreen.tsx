@@ -15,6 +15,7 @@ import {Button} from "@/components/ui/button"
 import {useCodingSettings} from "@/hooks/useCodingSettings"
 import {ensureTheme} from "@/lib/monacoThemes"
 import {registerGraalScript} from "@/lib/monacoGraalScript"
+import {registerServerConfig} from "@/lib/monacoServerConfig"
 import {adaptMonacoTheme} from "@/lib/adaptTheme"
 import {rcService} from "@/services/rcService"
 import type {EditorKind} from "@/types"
@@ -141,6 +142,8 @@ export function ScriptEditorWindowScreen() {
         await rcService.saveNPC(Number(key), text)
       } else if (kind === "npcflags") {
         await rcService.saveNPCFlags(Number(key), text)
+      } else if (kind === "options" || kind === "folder_config" || kind === "flags") {
+        await rcService.uploadServerText(kind, text)
       }
       setOriginal(text)
       setDirty(false)
@@ -156,6 +159,7 @@ export function ScriptEditorWindowScreen() {
     (monaco) => {
       const m = monaco as unknown as MonacoInstance
       registerGraalScript(m)
+      registerServerConfig(m)
       ensureTheme(m, settings.theme)
     },
     [settings.theme],
@@ -273,7 +277,13 @@ export function ScriptEditorWindowScreen() {
         ) : (
           <Editor
             theme={settings.theme === "remoteTheme" && !remoteDef ? "vs-dark" : settings.theme}
-            language={kind === "npcflags" || kind === "npcattr" ? "ini" : "graalscript"}
+            language={
+              kind === "options" || kind === "folder_config" || kind === "flags" || kind === "npcflags"
+                ? "serverconfig"
+                : kind === "npcattr"
+                  ? "ini"
+                  : "graalscript"
+            }
             value={content}
             beforeMount={handleBeforeMount}
             onMount={handleMount}

@@ -50,4 +50,16 @@ export type AppView = "select" | "add" | "serverlist" | "rc"
 
 // Script editor window kind parsed from the #editor?t=…&k=… URL. weapon/class/npc
 // edit a script; npcflags edits flags; npcattr is read-only attributes.
-export type EditorKind = "weapon" | "class" | "npc" | "npcflags" | "npcattr"
+// options/folder_config/flags are server-side text configs (main socket, not NC).
+export type EditorKind =
+  | "weapon"
+  | "class"
+  | "npc"
+  | "npcflags"
+  | "npcattr"
+  | "options"
+  | "folder_config"
+  | "flags"
+
+// Server-side text config kinds (subset of EditorKind) editable via SaveServerText.
+export type ServerTextKind = "options" | "folder_config" | "flags"

@@ -60,6 +60,8 @@ export interface RcService {
   openNPCFlags(id: number): Promise<ScriptReply | null>
   openNPCAttributes(id: number): Promise<ScriptReply | null>
   saveNPCFlags(id: number, flags: string): Promise<void>
+  // Server-side text configs (options/folder_config/flags) — main socket, not NC.
+  uploadServerText(kind: string, content: string): Promise<void>
   warpNPC(id: number, x: number, y: number, level: string): Promise<void>
   refreshWeapons(): Promise<void>
   openScriptManager(): Promise<void>
@@ -119,6 +121,7 @@ export const rcService: RcService = {
   openNPCFlags: (id) => App.OpenNPCFlags(id),
   openNPCAttributes: (id) => App.OpenNPCAttributes(id),
   saveNPCFlags: (id, flags) => App.SaveNPCFlags(id, flags),
+  uploadServerText: (kind, content) => App.SaveServerText(kind, content),
   warpNPC: (id, x, y, level) => App.WarpNPC(id, x, y, level),
   refreshWeapons: () => App.RefreshWeapons(),
   openScriptManager: () => App.OpenScriptManager(),

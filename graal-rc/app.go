@@ -397,6 +397,12 @@ func (a *App) OpenNPCAttributes(id int) (rclib.ScriptReply, error) {
 // SaveNPCFlags writes an NPC's flags back.
 func (a *App) SaveNPCFlags(id int, flags string) error { return a.sessions.SaveNPCFlags(id, flags) }
 
+// SaveServerText uploads a server-side text config (options/folder_config/
+// flags) edited in a ScriptEditor window back to the server.
+func (a *App) SaveServerText(kind, content string) error {
+	return a.sessions.UploadServerText(kind, content)
+}
+
 // WarpNPC warps an NPC to (x, y) on the given level.
 func (a *App) WarpNPC(id int, x, y float64, level string) error {
 	return a.sessions.WarpNPC(id, x, y, level)
@@ -722,6 +728,10 @@ func (a *App) fetchScript(scriptType, key string) (rclib.ScriptReply, error) {
 			return rclib.ScriptReply{}, err
 		}
 		return a.sessions.OpenNPCAttributes(id)
+	case "options", "folder_config", "flags":
+		// Server-side text configs travel on the main socket (on_server_data);
+		// key is just a display label here and is ignored by the fetch.
+		return a.sessions.OpenServerText(scriptType)
 	default:
 		return a.sessions.OpenScript(scriptType, key)
 	}

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=graal-rc
+Exec=graal-rc
+Icon=graal-rc
+Categories=Development;
+Terminal=false
+Keywords=wails
+Version=1.0
+StartupNotify=false
