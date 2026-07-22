@@ -8,7 +8,6 @@ import {Events} from "@wailsio/runtime"
 
 import type {RcService} from "@/services/rcService"
 import type {Class, NPC, Weapon} from "@/types"
-import {scriptCompare} from "@/lib/scriptSort"
 
 type Evt = {seq: number; name: string; data: unknown[]}
 
@@ -32,9 +31,9 @@ export function useScriptLists(service: RcService): UseScriptListsResult {
       service.getClasses().catch(() => null),
       service.getNPCs().catch(() => null),
     ])
-    setWeapons((w ?? []).slice().sort((a, b) => scriptCompare(a.name, b.name)))
-    setClasses((c ?? []).slice().sort((a, b) => scriptCompare(a.name, b.name)))
-    setNPCs((n ?? []).slice().sort((a, b) => scriptCompare(a.name, b.name)))
+    setWeapons(w ?? [])
+    setClasses(c ?? [])
+    setNPCs(n ?? [])
     setLoading(false)
   }, [service])
 

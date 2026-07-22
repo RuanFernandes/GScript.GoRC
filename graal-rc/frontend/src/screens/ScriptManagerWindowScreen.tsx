@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import {Label} from "@/components/ui/label"
 import {useScriptLists} from "@/hooks/useScriptLists"
+import {scriptCompare} from "@/lib/scriptSort"
 import {rcService} from "@/services/rcService"
 import type {NPC} from "@/types"
 
@@ -108,12 +109,16 @@ function WeaponClassTab({
   const [filter, setFilter] = useState("")
   const [adding, setAdding] = useState(false)
   const [name, setName] = useState("")
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc")
 
-  const filtered = useMemo(
-    () => rows.filter((r) => r.key.toLowerCase().includes(filter.toLowerCase())),
-    [rows, filter],
-  )
-  const headers = ["Name"]
+  const filtered = useMemo(() => {
+    const f = rows.filter((r) => r.key.toLowerCase().includes(filter.toLowerCase()))
+    f.sort((a, b) => {
+      const c = scriptCompare(a.key, b.key)
+      return sortDir === "asc" ? c : -c
+    })
+    return f
+  }, [rows, filter, sortDir])
 
   const doAdd = async () => {
     const n = name.trim()
@@ -173,11 +178,15 @@ function WeaponClassTab({
         <table className="w-full text-sm">
           <thead className="bg-muted/50 sticky top-0">
             <tr>
-              {headers.map((h) => (
-                <th key={h} className="px-3 py-2 text-left font-medium">
-                  {h}
-                </th>
-              ))}
+              <th className="px-3 py-2 text-left font-medium">
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1 hover:text-foreground"
+                  onClick={() => setSortDir((d) => (d === "asc" ? "desc" : "asc"))}
+                >
+                  Name {sortDir === "asc" ? "▲" : "▼"}
+                </button>
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -256,13 +265,41 @@ function NPCTab({
   const [filter, setFilter] = useState("")
   const [adding, setAdding] = useState(false)
   const [warping, setWarping] = useState(false)
+  const [sortKey, setSortKey] = useState<"id" | "name" | "type" | "level">("name")
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc")
 
   const filtered = useMemo(() => {
     const q = filter.toLowerCase()
-    return npcs.filter(
-      (n) => n.name.toLowerCase().includes(q) || String(n.id).includes(q) || n.type.toLowerCase().includes(q),
+    const f = npcs.filter(
+      (n) =>
+        n.name.toLowerCase().includes(q) ||
+        String(n.id).includes(q) ||
+        n.type.toLowerCase().includes(q) ||
+        n.level.toLowerCase().includes(q),
     )
-  }, [npcs, filter])
+    const dir = sortDir === "asc" ? 1 : -1
+    f.sort((a, b) => {
+      switch (sortKey) {
+        case "id":
+          return (a.id - b.id) * dir
+        case "name":
+          return scriptCompare(a.name, b.name) * dir
+        case "type":
+          return a.type.localeCompare(b.type, undefined, {sensitivity: "base"}) * dir
+        case "level":
+          return a.level.localeCompare(b.level, undefined, {sensitivity: "base"}) * dir
+      }
+    })
+    return f
+  }, [npcs, filter, sortKey, sortDir])
+
+  const toggleSort = (key: "id" | "name" | "type" | "level") => {
+    if (sortKey === key) setSortDir((d) => (d === "asc" ? "desc" : "asc"))
+    else {
+      setSortKey(key)
+      setSortDir("asc")
+    }
+  }
 
   const selectedNPC = npcs.find((n) => n.id === selected) ?? null
 
@@ -335,9 +372,19 @@ function NPCTab({
         <table className="w-full text-sm">
           <thead className="bg-muted/50 sticky top-0">
             <tr>
-              <th className="w-20 px-3 py-2 text-left font-medium">ID</th>
-              <th className="px-3 py-2 text-left font-medium">Name</th>
-              <th className="px-3 py-2 text-left font-medium">Type</th>
+              {[["id", "ID"], ["name", "Name"], ["type", "Type"], ["level", "Level"]].map(
+                ([key, label]) => (
+                  <th key={key} className="px-3 py-2 text-left font-medium">
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1 hover:text-foreground"
+                      onClick={() => toggleSort(key as "id" | "name" | "type" | "level")}
+                    >
+                      {label} {sortKey === key ? (sortDir === "asc" ? "▲" : "▼") : ""}
+                    </button>
+                  </th>
+                ),
+              )}
             </tr>
           </thead>
           <tbody>
@@ -358,6 +405,7 @@ function NPCTab({
                 <td className="px-3 py-1.5">{n.id}</td>
                 <td className="px-3 py-1.5">{n.name}</td>
                 <td className="px-3 py-1.5">{n.type}</td>
+                <td className="px-3 py-1.5">{n.level}</td>
               </tr>
             ))}
           </tbody>
