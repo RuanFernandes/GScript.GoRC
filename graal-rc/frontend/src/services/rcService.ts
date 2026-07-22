@@ -23,6 +23,9 @@ export interface RcService {
   loginWithAccount(accountName: string): Promise<Server[] | null>
   addAccount(req: LoginRequest): Promise<Server[] | null>
   removeAccount(accountName: string): Promise<void>
+  renameAccount(accountName: string, displayName: string): Promise<void>
+  setAccountPhoto(accountName: string, dataURL: string): Promise<void>
+  getAccount(accountName: string): Promise<AccountSummary | null>
   getServers(): Promise<Server[] | null>
   connectToServer(index: number): Promise<void>
   setNewProtocol(enable: boolean): Promise<void>
@@ -78,6 +81,9 @@ export const rcService: RcService = {
   loginWithAccount: (accountName) => App.LoginWithAccount(accountName),
   addAccount: (req) => App.AddAccount(req),
   removeAccount: (accountName) => App.RemoveAccount(accountName),
+  renameAccount: (accountName, displayName) => App.RenameAccount(accountName, displayName),
+  setAccountPhoto: (accountName, dataURL) => App.SetAccountPhoto(accountName, dataURL),
+  getAccount: (accountName) => App.GetAccount(accountName),
   getServers: () => App.GetServers(),
   connectToServer: (index) => App.ConnectToServer(index),
   setNewProtocol: (enable) => App.SetNewProtocol(enable),

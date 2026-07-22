@@ -127,7 +127,13 @@ function Shell() {
   }
 
   if (view === "rc") {
-    return <RcScreen serverName={session.connectedServer} onDisconnect={handleRcDisconnect} />
+    return (
+      <RcScreen
+        serverName={session.connectedServer}
+        accountName={session.activeAccount}
+        onDisconnect={handleRcDisconnect}
+      />
+    )
   }
 
   return (
@@ -139,6 +145,24 @@ function Shell() {
         onSelect={(accountName) => setPending({kind: "login", account: accountName})}
         onRemove={(accountName) => setPending({kind: "delete", account: accountName})}
         onAdd={() => setView("add")}
+        onRename={async (accountName, displayName) => {
+          try {
+            await rcService.renameAccount(accountName, displayName)
+            await accounts.refresh()
+            toast.success("Account renamed")
+          } catch (err) {
+            toast.error("Rename failed", {description: String(err)})
+          }
+        }}
+        onPhoto={async (accountName, dataURL) => {
+          try {
+            await rcService.setAccountPhoto(accountName, dataURL)
+            await accounts.refresh()
+            toast.success("Photo updated")
+          } catch (err) {
+            toast.error("Photo update failed", {description: String(err)})
+          }
+        }}
       />
       <ConfirmDialog
         open={pending !== null}

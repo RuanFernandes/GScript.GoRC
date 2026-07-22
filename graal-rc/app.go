@@ -204,6 +204,37 @@ func (a *App) RemoveAccount(accountName string) error {
 	return a.vault.Remove(accountName)
 }
 
+// RenameAccount sets the client-only display label for a saved account (does
+// not touch nickname/account, which are what the server receives).
+func (a *App) RenameAccount(accountName, displayName string) error {
+	if a.vault == nil {
+		return errNoVault
+	}
+	return a.vault.Mutate(accountName, func(acc *credentials.Account) { acc.DisplayName = displayName })
+}
+
+// SetAccountPhoto sets the client-only avatar (a base64 data URL) for a saved
+// account. Pass an empty string to clear it.
+func (a *App) SetAccountPhoto(accountName, dataURL string) error {
+	if a.vault == nil {
+		return errNoVault
+	}
+	return a.vault.Mutate(accountName, func(acc *credentials.Account) { acc.Photo = dataURL })
+}
+
+// GetAccount returns the password-less summary for a saved account (used by the
+// RC top header to show the active account's display name + photo).
+func (a *App) GetAccount(accountName string) (AccountSummary, error) {
+	if a.vault == nil {
+		return AccountSummary{}, errNoVault
+	}
+	acc, err := a.vault.Get(accountName)
+	if err != nil {
+		return AccountSummary{}, err
+	}
+	return acc.Summary(), nil
+}
+
 func (a *App) findAccount(accountName string) (credentials.Account, error) {
 	if a.vault == nil {
 		return credentials.Account{}, errNoVault
