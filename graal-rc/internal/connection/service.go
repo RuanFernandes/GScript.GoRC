@@ -624,7 +624,7 @@ func (s *Service) requireNC() (rclib.Handle, error) {
 
 // GetWeapons returns the cached weapon list for the NC server.
 func (s *Service) GetWeapons() ([]rclib.Weapon, error) {
-	h, err := s.requireHandle()
+	h, err := s.requireNC()
 	if err != nil {
 		return nil, err
 	}
@@ -633,7 +633,7 @@ func (s *Service) GetWeapons() ([]rclib.Weapon, error) {
 
 // GetClasses returns the cached class list for the NC server.
 func (s *Service) GetClasses() ([]rclib.Class, error) {
-	h, err := s.requireHandle()
+	h, err := s.requireNC()
 	if err != nil {
 		return nil, err
 	}
@@ -642,7 +642,7 @@ func (s *Service) GetClasses() ([]rclib.Class, error) {
 
 // GetNPCs returns the cached NPC list for the NC server.
 func (s *Service) GetNPCs() ([]rclib.NPC, error) {
-	h, err := s.requireHandle()
+	h, err := s.requireNC()
 	if err != nil {
 		return nil, err
 	}
