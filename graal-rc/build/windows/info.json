@@ -5,11 +5,11 @@
 	"info": {
 		"0000": {
 			"ProductVersion": "0.1.0",
-			"CompanyName": "My Company",
-			"FileDescription": "A v3ref application",
-			"LegalCopyright": "© 2026, My Company",
-			"ProductName": "My Product",
-			"Comments": "This is a comment"
+			"CompanyName": "RuanFernandes",
+			"FileDescription": "Graal Remote Control client",
+			"LegalCopyright": "© 2026, RuanFernandes",
+			"ProductName": "Graal Remote Control",
+			"Comments": "Graal Remote Control client"
 		}
 	}
 }

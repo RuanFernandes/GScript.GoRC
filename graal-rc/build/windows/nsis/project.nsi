@@ -33,6 +33,16 @@ Unicode true
 ####
 ## Include the wails tools
 ####
+
+# Project branding (override the wails_tools.nsh template defaults so the
+# installer is named and registered as graal-rc, not "v3ref"/"My Product").
+!define INFO_PROJECTNAME    "graal-rc"
+!define INFO_COMPANYNAME    "RuanFernandes"
+!define INFO_PRODUCTNAME    "Graal Remote Control"
+!define INFO_PRODUCTVERSION "0.1.0"
+!define INFO_COPYRIGHT      "© 2026, RuanFernandes"
+!define PRODUCT_EXECUTABLE  "graal-rc.exe"
+
 !include "wails_tools.nsh"
 
 # The version information for this two must consist of 4 parts
@@ -90,8 +100,12 @@ Section
     !insertmacro wails.webview2runtime
 
     SetOutPath $INSTDIR
-    
+
     !insertmacro wails.files
+
+    # Bundle grclib.dll (the RC C library) next to the executable so the Go
+    # runtime finds it via its exe-dir search path at startup.
+    File "${ARG_GRCLIB_DLL}"
 
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
     CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"

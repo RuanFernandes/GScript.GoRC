@@ -4,6 +4,9 @@ build/bin/
 *.exe
 *.syso
 
+# RC C library (compiled grclib.dll is a build artifact)
+rclib/grclib.dll
+
 # wails3 generated / cache
 .task/
 frontend/bindings/
