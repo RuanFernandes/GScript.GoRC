@@ -62,6 +62,10 @@ export function ScriptEditorWindowScreen() {
   const [saving, setSaving] = useState(false)
   const editorRef = useRef<EditorInstance | null>(null)
   const monacoRef = useRef<MonacoInstance | null>(null)
+  // contentRef mirrors `content` so the Ctrl+S handler (registered once at mount
+  // with a stale closure) always saves the LATEST text — without this, the mount-
+  // time doSave closure captures an empty/stale content and saves nothing.
+  const contentRef = useRef("")
   const [editorReady, setEditorReady] = useState(false)
   const [remoteDef, setRemoteDef] = useState<unknown>(null)
 
@@ -81,6 +85,7 @@ export function ScriptEditorWindowScreen() {
         if (cancelled) return
         const text = reply?.script ?? ""
         setContent(text)
+        contentRef.current = text
         setOriginal(text)
       })
       .catch((err: unknown) => {
@@ -124,19 +129,20 @@ export function ScriptEditorWindowScreen() {
   }, [closingAfterSave, dirty, kind, key])
 
   const doSave = useCallback(async () => {
-    if (readOnly || saving) return
+    if (readOnly) return
+    const text = contentRef.current
     setSaving(true)
     try {
       if (kind === "weapon") {
-        await rcService.saveWeapon(key, content)
+        await rcService.saveWeapon(key, text)
       } else if (kind === "class") {
-        await rcService.saveClass(key, content)
+        await rcService.saveClass(key, text)
       } else if (kind === "npc") {
-        await rcService.saveNPC(Number(key), content)
+        await rcService.saveNPC(Number(key), text)
       } else if (kind === "npcflags") {
-        await rcService.saveNPCFlags(Number(key), content)
+        await rcService.saveNPCFlags(Number(key), text)
       }
-      setOriginal(content)
+      setOriginal(text)
       setDirty(false)
       toast.success("Saved")
     } catch (err) {
@@ -144,7 +150,7 @@ export function ScriptEditorWindowScreen() {
     } finally {
       setSaving(false)
     }
-  }, [kind, key, content, readOnly, saving])
+  }, [kind, key, readOnly])
 
   const handleBeforeMount: BeforeMount = useCallback(
     (monaco) => {
@@ -274,6 +280,7 @@ export function ScriptEditorWindowScreen() {
             onChange={(value) => {
               const v = value ?? ""
               setContent(v)
+              contentRef.current = v
               setDirty(v !== original)
             }}
             options={{

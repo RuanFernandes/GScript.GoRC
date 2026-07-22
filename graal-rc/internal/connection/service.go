@@ -623,7 +623,13 @@ func (s *Service) CreateNPC(name string, id int, npcType, scripter, level, x, y 
 	if err != nil {
 		return err
 	}
-	return rclib.CreateNPC(h, name, id, npcType, scripter, level, x, y)
+	log.Printf("create npc: name=%q id=%d type=%q scripter=%q level=%q x=%q y=%q nc_connected=%v",
+		name, id, npcType, scripter, level, x, y, rclib.IsNCConnected(h))
+	err = rclib.CreateNPC(h, name, id, npcType, scripter, level, x, y)
+	if err != nil {
+		log.Printf("create npc failed: %v (last_error: %s)", err, rclib.LastError(h))
+	}
+	return err
 }
 
 // SaveWeapon writes a weapon's script back to the server.
