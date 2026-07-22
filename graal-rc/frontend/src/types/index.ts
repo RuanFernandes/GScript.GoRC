@@ -5,6 +5,8 @@ export type {Server, Player} from "../../bindings/graal-rc/rclib/models"
 export type {NCStatus} from "../../bindings/graal-rc/internal/connection/models"
 export type {Status as SessionStatus} from "../../bindings/graal-rc/internal/connection/models"
 export type {AccountSummary, LoginRequest} from "../../bindings/graal-rc/models"
+export type {Weapon, Class, NPC, ScriptReply} from "../../bindings/graal-rc/rclib/models"
+export type {CodingSettings, RemoteTheme} from "../../bindings/graal-rc/models"
 
 // A single chat line. channel "" = server (RC) chat; otherwise the IRC channel.
 // source drives the prefix tag and coloring: "rc" ([RC], on_message), "nc"
@@ -41,3 +43,7 @@ export interface ChatSettings {
 // Finite set of top-level views the shell can render. Centralized so the
 // router (App) is the only place that decides screen transitions.
 export type AppView = "select" | "add" | "serverlist" | "rc"
+
+// Script editor window kind parsed from the #editor?t=…&k=… URL. weapon/class/npc
+// edit a script; npcflags edits flags; npcattr is read-only attributes.
+export type EditorKind = "weapon" | "class" | "npc" | "npcflags" | "npcattr"

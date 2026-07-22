@@ -2,7 +2,19 @@
 // service. All backend calls go through here, so feature components never import
 // the generated bindings directly (Dependency Inversion + single change point).
 import {App} from "../../bindings/graal-rc"
-import type {AccountSummary, LoginRequest, NCStatus, Player, Server} from "@/types"
+import type {
+  AccountSummary,
+  Class,
+  CodingSettings,
+  LoginRequest,
+  NCStatus,
+  NPC,
+  Player,
+  RemoteTheme,
+  ScriptReply,
+  Server,
+  Weapon,
+} from "@/types"
 
 // The v3 bindings resolve to null on the "no result" path and reject on error;
 // callers treat null as "empty/none" and rely on try/catch for real errors.
@@ -27,6 +39,37 @@ export interface RcService {
   appendChatLog(line: string): Promise<void>
   chooseDirectory(): Promise<string>
   openPlayerList(): Promise<void>
+  // Script management (NC server).
+  getWeapons(): Promise<Weapon[] | null>
+  getClasses(): Promise<Class[] | null>
+  getNPCs(): Promise<NPC[] | null>
+  addWeapon(name: string): Promise<void>
+  deleteWeapon(name: string): Promise<void>
+  addClass(name: string): Promise<void>
+  deleteClass(name: string): Promise<void>
+  deleteNPC(id: number): Promise<void>
+  createNPC(name: string, id: number, type: string, scripter: string, level: string, x: string, y: string): Promise<void>
+  openScript(scriptType: string, key: string): Promise<ScriptReply | null>
+  saveWeapon(name: string, script: string): Promise<void>
+  saveClass(name: string, script: string): Promise<void>
+  saveNPC(id: number, script: string): Promise<void>
+  resetNPC(id: number): Promise<void>
+  openNPCFlags(id: number): Promise<ScriptReply | null>
+  openNPCAttributes(id: number): Promise<ScriptReply | null>
+  saveNPCFlags(id: number, flags: string): Promise<void>
+  warpNPC(id: number, x: number, y: number, level: string): Promise<void>
+  refreshWeapons(): Promise<void>
+  openScriptManager(): Promise<void>
+  openScriptEditor(scriptType: string, key: string): Promise<void>
+  getLoadedScript(scriptType: string, key: string): Promise<ScriptReply | null>
+  setEditorDirty(scriptType: string, key: string, dirty: boolean): Promise<void>
+  closeScriptEditor(scriptType: string, key: string): Promise<void>
+  listFonts(): Promise<string[] | null>
+  getCodingSettings(): Promise<CodingSettings>
+  setCodingSettings(theme: string, fontFamily: string, fontSize: number): Promise<void>
+  getRemoteTheme(): Promise<RemoteTheme | null>
+  saveRemoteTheme(name: string, definition: string): Promise<void>
+  openSettings(): Promise<void>
 }
 
 // Default implementation backed by the generated Wails v3 bindings (App service).
@@ -51,4 +94,36 @@ export const rcService: RcService = {
   appendChatLog: (line) => App.AppendChatLog(line),
   chooseDirectory: () => App.ChooseDirectory(),
   openPlayerList: () => App.OpenPlayerList(),
+  // Script management (NC server).
+  getWeapons: () => App.GetWeapons(),
+  getClasses: () => App.GetClasses(),
+  getNPCs: () => App.GetNPCs(),
+  addWeapon: (name) => App.AddWeapon(name),
+  deleteWeapon: (name) => App.DeleteWeapon(name),
+  addClass: (name) => App.AddClass(name),
+  deleteClass: (name) => App.DeleteClass(name),
+  deleteNPC: (id) => App.DeleteNPC(id),
+  createNPC: (name, id, type, scripter, level, x, y) =>
+    App.CreateNPC(name, id, type, scripter, level, x, y),
+  openScript: (scriptType, key) => App.OpenScript(scriptType, key),
+  saveWeapon: (name, script) => App.SaveWeapon(name, script),
+  saveClass: (name, script) => App.SaveClass(name, script),
+  saveNPC: (id, script) => App.SaveNPC(id, script),
+  resetNPC: (id) => App.ResetNPC(id),
+  openNPCFlags: (id) => App.OpenNPCFlags(id),
+  openNPCAttributes: (id) => App.OpenNPCAttributes(id),
+  saveNPCFlags: (id, flags) => App.SaveNPCFlags(id, flags),
+  warpNPC: (id, x, y, level) => App.WarpNPC(id, x, y, level),
+  refreshWeapons: () => App.RefreshWeapons(),
+  openScriptManager: () => App.OpenScriptManager(),
+  openScriptEditor: (scriptType, key) => App.OpenScriptEditor(scriptType, key),
+  getLoadedScript: (scriptType, key) => App.GetLoadedScript(scriptType, key),
+  setEditorDirty: (scriptType, key, dirty) => App.SetEditorDirty(scriptType, key, dirty),
+  closeScriptEditor: (scriptType, key) => App.CloseScriptEditor(scriptType, key),
+  listFonts: () => App.ListFonts(),
+  getCodingSettings: () => App.GetCodingSettings(),
+  setCodingSettings: (theme, fontFamily, fontSize) => App.SetCodingSettings(theme, fontFamily, fontSize),
+  getRemoteTheme: () => App.GetRemoteTheme(),
+  saveRemoteTheme: (name, definition) => App.SaveRemoteTheme(name, definition),
+  openSettings: () => App.OpenSettings(),
 }

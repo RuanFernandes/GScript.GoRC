@@ -13,7 +13,10 @@ import {AccountSelectScreen} from "@/screens/AccountSelectScreen"
 import {AddAccountScreen} from "@/screens/AddAccountScreen"
 import {PlayerListWindowScreen} from "@/screens/PlayerListWindowScreen"
 import {RcScreen} from "@/screens/RcScreen"
+import {ScriptEditorWindowScreen} from "@/screens/ScriptEditorWindowScreen"
+import {ScriptManagerWindowScreen} from "@/screens/ScriptManagerWindowScreen"
 import {ServerListScreen} from "@/screens/ServerListScreen"
+import {SettingsWindowScreen} from "@/screens/SettingsWindowScreen"
 import type {AppView, LoginRequest} from "@/types"
 
 type PendingConfirm =
@@ -160,12 +163,15 @@ function Shell() {
   )
 }
 
-// App is the window router: the external Players window loads the SPA at
-// "/#players" and gets the player-list screen; every other window gets Shell.
+// App is the window router: external windows load the SPA at a hash route and
+// render their dedicated screen; the main window gets Shell.
 function App() {
-  if (typeof window !== "undefined" && window.location.hash.startsWith("#players")) {
-    return <PlayerListWindowScreen />
-  }
+  if (typeof window === "undefined") return <Shell />
+  const hash = window.location.hash
+  if (hash.startsWith("#players")) return <PlayerListWindowScreen />
+  if (hash.startsWith("#scripts")) return <ScriptManagerWindowScreen />
+  if (hash.startsWith("#settings")) return <SettingsWindowScreen />
+  if (hash.startsWith("#editor")) return <ScriptEditorWindowScreen />
   return <Shell />
 }
 

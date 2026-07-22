@@ -4,14 +4,13 @@
 // panel, and a chat-color settings dialog. Mirrors the reference client's
 // TRemoteFrame.
 import {useEffect, useRef, useState} from "react"
-import {LogOut, Settings, Users} from "lucide-react"
+import {Code2, LogOut, Settings, Users} from "lucide-react"
 
 import {Badge} from "@/components/ui/badge"
 import {Button} from "@/components/ui/button"
 import {Input} from "@/components/ui/input"
 import {Tabs, TabsContent, TabsList, TabsTrigger} from "@/components/ui/tabs"
 import {ChatLine} from "@/components/features/chat/ChatLine"
-import {ChatSettingsDialog} from "@/components/features/chat/ChatSettingsDialog"
 import {useChat} from "@/hooks/useChat"
 import {useChatSettings} from "@/hooks/useChatSettings"
 import {serverDisplay} from "@/lib/server"
@@ -110,8 +109,7 @@ function ChatPane({
 
 export function RcScreen({serverName, onDisconnect}: RcScreenProps) {
   const {tabs, activeChannel, setActiveChannel, send, reorderTabs} = useChat(rcService)
-  const {settings, update, reset} = useChatSettings()
-  const [showSettings, setShowSettings] = useState(false)
+  const {settings} = useChatSettings()
   const [nc, setNc] = useState<NCStatus>({hasNc: false, connected: false, authenticated: false})
   const dragIndex = useRef<number>(-1)
 
@@ -147,8 +145,13 @@ export function RcScreen({serverName, onDisconnect}: RcScreenProps) {
         <h1 className="text-base font-semibold">{displayServer || "RC"}</h1>
         <Badge variant="secondary">{ncLabel(nc)}</Badge>
         <div className="ml-auto flex items-center gap-2">
-          <Button variant="ghost" size="icon" aria-label="Chat settings" onClick={() => setShowSettings(true)}>
+          <Button variant="outline" size="sm" onClick={() => rcService.openScriptManager()}>
+            <Code2 />
+            Scripts
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => rcService.openSettings()}>
             <Settings />
+            Settings
           </Button>
           <Button variant="outline" size="sm" onClick={() => rcService.openPlayerList()}>
             <Users />
@@ -193,14 +196,6 @@ export function RcScreen({serverName, onDisconnect}: RcScreenProps) {
           ))}
         </Tabs>
       </div>
-
-      <ChatSettingsDialog
-        open={showSettings}
-        settings={settings}
-        onChange={update}
-        onReset={reset}
-        onClose={() => setShowSettings(false)}
-      />
     </div>
   )
 }

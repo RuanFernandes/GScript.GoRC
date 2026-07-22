@@ -9,6 +9,7 @@ package rclib
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
@@ -73,6 +74,70 @@ type Player struct {
 	Level   string `json:"level"`
 }
 
+// RCWeapon mirrors grclib's RCWeapon struct (include/grclib.h):
+//
+//	struct { char* name; char* image; char* script; }
+//
+// x64 layout: name@0, image@8, script@16 -> 24 bytes.
+type RCWeapon struct {
+	Name   *byte
+	Image  *byte
+	Script *byte
+}
+
+// Weapon is the Go-friendly copy of an RCWeapon entry (list view: image is no
+// longer used by modern servers, so only the name is exposed; the script is
+// fetched on demand via RequestWeaponScript).
+type Weapon struct {
+	Name string `json:"name"`
+}
+
+// RCClass mirrors grclib's RCClass struct (include/grclib.h):
+//
+//	struct { char* name; char* script; }
+//
+// x64 layout: name@0, script@8 -> 16 bytes.
+type RCClass struct {
+	Name   *byte
+	Script *byte
+}
+
+// Class is the Go-friendly copy of an RCClass entry.
+type Class struct {
+	Name string `json:"name"`
+}
+
+// RCNPC mirrors grclib's RCNPC struct (include/grclib.h):
+//
+//	struct { int id; char* name; char* type; char* image; char* script; }
+//
+// x64 layout: id@0 (4 bytes), pad@4, name@8, type@16, image@24, script@32
+// -> 40 bytes. The int32 pads to the next 8-byte boundary before name.
+type RCNPC struct {
+	ID    int32
+	_     int32
+	Name  *byte
+	Type  *byte
+	Image *byte
+	_     *byte // script (unused in list view; fetched via RequestNPCScript)
+}
+
+// NPC is the Go-friendly copy of an RCNPC entry.
+type NPC struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+// ScriptReply carries a fetched script / flags / attributes payload back to the
+// caller. Type is "weapon" | "class" | "npc" | "npcflags" | "npcattr".
+type ScriptReply struct {
+	Type   string `json:"type"`
+	Name   string `json:"name"`
+	ID     int    `json:"id"`
+	Script string `json:"script"`
+}
+
 var (
 	once    sync.Once
 	loadErr error
@@ -104,6 +169,40 @@ var (
 	procOnMessage         *syscall.Proc
 	procOnIrcMessage      *syscall.Proc
 	procOnServerData      *syscall.Proc
+
+	// Script management (NC server).
+	procGetWeapons           *syscall.Proc
+	procGetClasses           *syscall.Proc
+	procGetNPCs              *syscall.Proc
+	procAddWeapon            *syscall.Proc
+	procDeleteWeapon         *syscall.Proc
+	procUpdateWeapon         *syscall.Proc
+	procAddClass             *syscall.Proc
+	procDeleteClass          *syscall.Proc
+	procUpdateClass          *syscall.Proc
+	procDeleteNPC            *syscall.Proc
+	procUpdateNPC            *syscall.Proc
+	procCreateNPCOnServer    *syscall.Proc
+	procRequestWeaponScript  *syscall.Proc
+	procRequestClassScript   *syscall.Proc
+	procRequestNPCScript     *syscall.Proc
+	procResetNPC             *syscall.Proc
+	procRequestNPCAttributes *syscall.Proc
+	procGetNPCFlags          *syscall.Proc
+	procSetNPCFlags          *syscall.Proc
+	procSendNCPacket         *syscall.Proc
+	procWarpNPC              *syscall.Proc
+
+	// Script/NC event callbacks.
+	procOnScriptReceived  *syscall.Proc
+	procOnWeaponAdded     *syscall.Proc
+	procOnWeaponDeleted   *syscall.Proc
+	procOnClassAdded      *syscall.Proc
+	procOnClassDeleted    *syscall.Proc
+	procOnNPCAdded        *syscall.Proc
+	procOnNPCDeleted      *syscall.Proc
+	procOnNPCFlags        *syscall.Proc
+	procOnNPCAttributes   *syscall.Proc
 )
 
 // Default listserver endpoint used by the reference client.
@@ -223,6 +322,36 @@ func load() error {
 		procOnMessage = find("rc_on_message")
 		procOnIrcMessage = find("rc_on_irc_message")
 		procOnServerData = find("rc_on_server_data")
+		procGetWeapons = find("rc_get_weapons")
+		procGetClasses = find("rc_get_classes")
+		procGetNPCs = find("rc_get_npcs")
+		procAddWeapon = find("rc_add_weapon")
+		procDeleteWeapon = find("rc_delete_weapon")
+		procUpdateWeapon = find("rc_update_weapon")
+		procAddClass = find("rc_add_class")
+		procDeleteClass = find("rc_delete_class")
+		procUpdateClass = find("rc_update_class")
+		procDeleteNPC = find("rc_delete_npc")
+		procUpdateNPC = find("rc_update_npc")
+		procCreateNPCOnServer = find("rc_create_npc_on_server")
+		procRequestWeaponScript = find("rc_request_weapon_script")
+		procRequestClassScript = find("rc_request_class_script")
+		procRequestNPCScript = find("rc_request_npc_script")
+		procResetNPC = find("rc_reset_npc")
+		procRequestNPCAttributes = find("rc_request_npc_attributes")
+		procGetNPCFlags = find("rc_get_npc_flags")
+		procSetNPCFlags = find("rc_set_npc_flags")
+		procSendNCPacket = find("rc_send_nc_packet")
+		procWarpNPC = find("rc_warp_npc")
+		procOnScriptReceived = find("rc_on_script_received")
+		procOnWeaponAdded = find("rc_on_weapon_added")
+		procOnWeaponDeleted = find("rc_on_weapon_deleted")
+		procOnClassAdded = find("rc_on_class_added")
+		procOnClassDeleted = find("rc_on_class_deleted")
+		procOnNPCAdded = find("rc_on_npc_added")
+		procOnNPCDeleted = find("rc_on_npc_deleted")
+		procOnNPCFlags = find("rc_on_npc_flags")
+		procOnNPCAttributes = find("rc_on_npc_attributes")
 	})
 	return loadErr
 }
@@ -260,6 +389,14 @@ type EventCallbacks struct {
 	Message      func(text string)
 	IrcMessage   func(channel, line string)
 	ServerData   func(dataType, content string)
+
+	// Script/NC callbacks (fired on the pump goroutine).
+	ScriptReceived func(scriptType, name string, id int, script string)
+	WeaponChanged  func(name string) // weapon added or deleted
+	ClassChanged   func(name string) // class added or deleted
+	NPCChanged     func(id int)      // npc added or deleted
+	NPCFlags       func(id int, flags string)
+	NPCAttributes  func(id int, attrs string)
 }
 
 var (
@@ -268,6 +405,16 @@ var (
 	cbMessage      = syscall.NewCallback(messageEntry)
 	cbIrcMessage   = syscall.NewCallback(ircMessageEntry)
 	cbServerData   = syscall.NewCallback(serverDataEntry)
+
+	cbScriptReceived = syscall.NewCallback(scriptReceivedEntry)
+	cbWeaponAdded    = syscall.NewCallback(weaponCacheChangedEntry)
+	cbWeaponDeleted  = syscall.NewCallback(weaponCacheChangedEntry)
+	cbClassAdded     = syscall.NewCallback(classCacheChangedEntry)
+	cbClassDeleted   = syscall.NewCallback(classCacheChangedEntry)
+	cbNPCAdded       = syscall.NewCallback(npcAddedEntry)
+	cbNPCDeleted     = syscall.NewCallback(npcDeletedEntry)
+	cbNPCFlags       = syscall.NewCallback(npcFlagsEntry)
+	cbNPCAttributes  = syscall.NewCallback(npcAttributesEntry)
 
 	routeMu sync.Mutex
 	routes  = map[Handle]*EventCallbacks{}
@@ -329,6 +476,83 @@ func serverDataEntry(dataType, content, userData uintptr) uintptr {
 	return 0
 }
 
+// scriptReceivedEntry is the shim for RC_OnScriptReceived(script_type, name, id, script, user_data).
+func scriptReceivedEntry(scriptType, name, id, script, userData uintptr) uintptr {
+	st := bptrToString((*byte)(unsafe.Pointer(scriptType)))
+	nm := bptrToString((*byte)(unsafe.Pointer(name)))
+	sc := bptrToString((*byte)(unsafe.Pointer(script)))
+	fire(userData, func(c *EventCallbacks) {
+		if c.ScriptReceived != nil {
+			c.ScriptReceived(st, nm, int(int32(id)), sc)
+		}
+	})
+	return 0
+}
+
+// weaponCacheChangedEntry is the shim for RC_OnWeaponAdded/RC_OnWeaponDeleted(name, user_data).
+func weaponCacheChangedEntry(name, userData uintptr) uintptr {
+	nm := bptrToString((*byte)(unsafe.Pointer(name)))
+	fire(userData, func(c *EventCallbacks) {
+		if c.WeaponChanged != nil {
+			c.WeaponChanged(nm)
+		}
+	})
+	return 0
+}
+
+// classCacheChangedEntry is the shim for RC_OnClassAdded/RC_OnClassDeleted(name, user_data).
+func classCacheChangedEntry(name, userData uintptr) uintptr {
+	nm := bptrToString((*byte)(unsafe.Pointer(name)))
+	fire(userData, func(c *EventCallbacks) {
+		if c.ClassChanged != nil {
+			c.ClassChanged(nm)
+		}
+	})
+	return 0
+}
+
+// npcAddedEntry is the shim for RC_OnNPCAdded(id, name, user_data).
+func npcAddedEntry(id, _, userData uintptr) uintptr {
+	fire(userData, func(c *EventCallbacks) {
+		if c.NPCChanged != nil {
+			c.NPCChanged(int(int32(id)))
+		}
+	})
+	return 0
+}
+
+// npcDeletedEntry is the shim for RC_OnNPCDeleted(id, user_data).
+func npcDeletedEntry(id, userData uintptr) uintptr {
+	fire(userData, func(c *EventCallbacks) {
+		if c.NPCChanged != nil {
+			c.NPCChanged(int(int32(id)))
+		}
+	})
+	return 0
+}
+
+// npcFlagsEntry is the shim for RC_OnNPCFlags(npc_id, flags, user_data).
+func npcFlagsEntry(npcID, flags, userData uintptr) uintptr {
+	fl := bptrToString((*byte)(unsafe.Pointer(flags)))
+	fire(userData, func(c *EventCallbacks) {
+		if c.NPCFlags != nil {
+			c.NPCFlags(int(int32(npcID)), fl)
+		}
+	})
+	return 0
+}
+
+// npcAttributesEntry is the shim for RC_OnNPCAttributes(npc_id, attributes, user_data).
+func npcAttributesEntry(npcID, attrs, userData uintptr) uintptr {
+	at := bptrToString((*byte)(unsafe.Pointer(attrs)))
+	fire(userData, func(c *EventCallbacks) {
+		if c.NPCAttributes != nil {
+			c.NPCAttributes(int(int32(npcID)), at)
+		}
+	})
+	return 0
+}
+
 func fire(userData uintptr, dispatch func(*EventCallbacks)) {
 	if cb := routeFor(Handle(userData)); cb != nil {
 		dispatch(cb)
@@ -356,6 +580,15 @@ func RegisterCallbacks(h Handle, cbs *EventCallbacks) {
 	procOnMessage.Call(uintptr(h), cbMessage, uintptr(h))
 	procOnIrcMessage.Call(uintptr(h), cbIrcMessage, uintptr(h))
 	procOnServerData.Call(uintptr(h), cbServerData, uintptr(h))
+	procOnScriptReceived.Call(uintptr(h), cbScriptReceived, uintptr(h))
+	procOnWeaponAdded.Call(uintptr(h), cbWeaponAdded, uintptr(h))
+	procOnWeaponDeleted.Call(uintptr(h), cbWeaponDeleted, uintptr(h))
+	procOnClassAdded.Call(uintptr(h), cbClassAdded, uintptr(h))
+	procOnClassDeleted.Call(uintptr(h), cbClassDeleted, uintptr(h))
+	procOnNPCAdded.Call(uintptr(h), cbNPCAdded, uintptr(h))
+	procOnNPCDeleted.Call(uintptr(h), cbNPCDeleted, uintptr(h))
+	procOnNPCFlags.Call(uintptr(h), cbNPCFlags, uintptr(h))
+	procOnNPCAttributes.Call(uintptr(h), cbNPCAttributes, uintptr(h))
 }
 
 // UnregisterCallbacks detaches event callbacks for the handle.
@@ -371,6 +604,15 @@ func UnregisterCallbacks(h Handle) {
 	procOnMessage.Call(uintptr(h), 0, 0)
 	procOnIrcMessage.Call(uintptr(h), 0, 0)
 	procOnServerData.Call(uintptr(h), 0, 0)
+	procOnScriptReceived.Call(uintptr(h), 0, 0)
+	procOnWeaponAdded.Call(uintptr(h), 0, 0)
+	procOnWeaponDeleted.Call(uintptr(h), 0, 0)
+	procOnClassAdded.Call(uintptr(h), 0, 0)
+	procOnClassDeleted.Call(uintptr(h), 0, 0)
+	procOnNPCAdded.Call(uintptr(h), 0, 0)
+	procOnNPCDeleted.Call(uintptr(h), 0, 0)
+	procOnNPCFlags.Call(uintptr(h), 0, 0)
+	procOnNPCAttributes.Call(uintptr(h), 0, 0)
 }
 
 // ProcessEvents pumps queued connection callbacks once. Call regularly from a
@@ -657,4 +899,292 @@ func Free(p uintptr) {
 		return
 	}
 	procFree.Call(p)
+}
+
+// GetWeapons copies the cached weapon list for the NC server into Go.
+func GetWeapons(h Handle) ([]Weapon, error) {
+	if err := load(); err != nil {
+		return nil, err
+	}
+	var ptr uintptr
+	r1, _, _ := procGetWeapons.Call(uintptr(h), uintptr(unsafe.Pointer(&ptr)))
+	count := int(int32(r1))
+	if count <= 0 || ptr == 0 {
+		return nil, nil
+	}
+	arr := (*[1 << 20]RCWeapon)(unsafe.Pointer(ptr))[:count:count]
+	out := make([]Weapon, count)
+	for i := 0; i < count; i++ {
+		out[i] = Weapon{Name: bptrToString(arr[i].Name)}
+	}
+	return out, nil
+}
+
+// GetClasses copies the cached class list for the NC server into Go.
+func GetClasses(h Handle) ([]Class, error) {
+	if err := load(); err != nil {
+		return nil, err
+	}
+	var ptr uintptr
+	r1, _, _ := procGetClasses.Call(uintptr(h), uintptr(unsafe.Pointer(&ptr)))
+	count := int(int32(r1))
+	if count <= 0 || ptr == 0 {
+		return nil, nil
+	}
+	arr := (*[1 << 20]RCClass)(unsafe.Pointer(ptr))[:count:count]
+	out := make([]Class, count)
+	for i := 0; i < count; i++ {
+		out[i] = Class{Name: bptrToString(arr[i].Name)}
+	}
+	return out, nil
+}
+
+// GetNPCs copies the cached NPC list for the NC server into Go.
+func GetNPCs(h Handle) ([]NPC, error) {
+	if err := load(); err != nil {
+		return nil, err
+	}
+	var ptr uintptr
+	r1, _, _ := procGetNPCs.Call(uintptr(h), uintptr(unsafe.Pointer(&ptr)))
+	count := int(int32(r1))
+	if count <= 0 || ptr == 0 {
+		return nil, nil
+	}
+	arr := (*[1 << 20]RCNPC)(unsafe.Pointer(ptr))[:count:count]
+	out := make([]NPC, count)
+	for i := 0; i < count; i++ {
+		n := arr[i]
+		out[i] = NPC{ID: int(n.ID), Name: bptrToString(n.Name), Type: bptrToString(n.Type)}
+	}
+	return out, nil
+}
+
+// AddWeapon creates a weapon by name (empty image + script).
+func AddWeapon(h Handle, name string) error {
+	return callStr3(h, procAddWeapon, name, "", "")
+}
+
+// DeleteWeapon deletes a weapon by name.
+func DeleteWeapon(h Handle, name string) error {
+	return callStr3(h, procDeleteWeapon, name, "", "")
+}
+
+// UpdateWeapon writes a weapon's script back (upsert, same as add). Image is no
+// longer used by modern servers, so it is sent empty.
+func UpdateWeapon(h Handle, name, script string) error {
+	return callStr3(h, procUpdateWeapon, name, "", script)
+}
+
+// AddClass creates a class by name (empty script).
+func AddClass(h Handle, name string) error {
+	return callStr2(h, procAddClass, name, "")
+}
+
+// DeleteClass deletes a class by name.
+func DeleteClass(h Handle, name string) error {
+	return callStr2(h, procDeleteClass, name, "")
+}
+
+// UpdateClass writes a class's script back (upsert, same as add).
+func UpdateClass(h Handle, name, script string) error {
+	return callStr2(h, procUpdateClass, name, script)
+}
+
+// DeleteNPC deletes an NPC by id.
+func DeleteNPC(h Handle, id int) error {
+	if err := load(); err != nil {
+		return err
+	}
+	r1, _, _ := procDeleteNPC.Call(uintptr(h), uintptr(id))
+	if r1 == 0 {
+		return errors.New(LastError(h))
+	}
+	return nil
+}
+
+// UpdateNPC writes an NPC's script back.
+func UpdateNPC(h Handle, id int, script string) error {
+	if err := load(); err != nil {
+		return err
+	}
+	s, _ := syscall.BytePtrFromString(script)
+	r1, _, _ := procUpdateNPC.Call(uintptr(h), uintptr(id), uintptr(unsafe.Pointer(s)))
+	if r1 == 0 {
+		return errors.New(LastError(h))
+	}
+	return nil
+}
+
+// CreateNPC creates a new DB NPC on the server (7 fields, mirrors
+// rc_create_npc_on_server).
+func CreateNPC(h Handle, name string, id int, npcType, scripter, level, x, y string) error {
+	if err := load(); err != nil {
+		return err
+	}
+	n, _ := syscall.BytePtrFromString(name)
+	t, _ := syscall.BytePtrFromString(npcType)
+	sc, _ := syscall.BytePtrFromString(scripter)
+	lv, _ := syscall.BytePtrFromString(level)
+	xp, _ := syscall.BytePtrFromString(x)
+	yp, _ := syscall.BytePtrFromString(y)
+	r1, _, _ := procCreateNPCOnServer.Call(
+		uintptr(h),
+		uintptr(unsafe.Pointer(n)),
+		uintptr(id),
+		uintptr(unsafe.Pointer(t)),
+		uintptr(unsafe.Pointer(sc)),
+		uintptr(unsafe.Pointer(lv)),
+		uintptr(unsafe.Pointer(xp)),
+		uintptr(unsafe.Pointer(yp)),
+	)
+	if r1 == 0 {
+		return errors.New(LastError(h))
+	}
+	return nil
+}
+
+// RequestWeaponScript asks the server for a weapon's script; the reply arrives
+// asynchronously via the ScriptReceived callback.
+func RequestWeaponScript(h Handle, name string) error { return callStr1(h, procRequestWeaponScript, name) }
+
+// RequestClassScript asks the server for a class's script.
+func RequestClassScript(h Handle, name string) error { return callStr1(h, procRequestClassScript, name) }
+
+// RequestNPCScript asks the server for an NPC's script.
+func RequestNPCScript(h Handle, id int) error {
+	if err := load(); err != nil {
+		return err
+	}
+	r1, _, _ := procRequestNPCScript.Call(uintptr(h), uintptr(id))
+	if r1 == 0 {
+		return errors.New(LastError(h))
+	}
+	return nil
+}
+
+// ResetNPC resets an NPC by id.
+func ResetNPC(h Handle, id int) error {
+	if err := load(); err != nil {
+		return err
+	}
+	r1, _, _ := procResetNPC.Call(uintptr(h), uintptr(id))
+	if r1 == 0 {
+		return errors.New(LastError(h))
+	}
+	return nil
+}
+
+// RequestNPCAttributes asks the server for an NPC's attributes; the reply arrives
+// via the NPCAttributes callback.
+func RequestNPCAttributes(h Handle, id int) error {
+	if err := load(); err != nil {
+		return err
+	}
+	r1, _, _ := procRequestNPCAttributes.Call(uintptr(h), uintptr(id))
+	if r1 == 0 {
+		return errors.New(LastError(h))
+	}
+	return nil
+}
+
+// GetNPCFlags asks the server for an NPC's flags; the reply arrives via the
+// NPCFlags callback. (Despite the "get" name, the result is delivered
+// asynchronously.)
+func GetNPCFlags(h Handle, id int) error {
+	if err := load(); err != nil {
+		return err
+	}
+	r1, _, _ := procGetNPCFlags.Call(uintptr(h), uintptr(id))
+	if r1 == 0 {
+		return errors.New(LastError(h))
+	}
+	return nil
+}
+
+// SetNPCFlags writes an NPC's flags.
+func SetNPCFlags(h Handle, id int, flags string) error {
+	if err := load(); err != nil {
+		return err
+	}
+	f, _ := syscall.BytePtrFromString(flags)
+	r1, _, _ := procSetNPCFlags.Call(uintptr(h), uintptr(id), uintptr(unsafe.Pointer(f)))
+	if r1 == 0 {
+		return errors.New(LastError(h))
+	}
+	return nil
+}
+
+// WarpNPC warps an NPC to (x, y) on the given level. x/y are server tile coords
+// (float, since rc_warp_npc takes C float).
+func WarpNPC(h Handle, id int, x, y float64, level string) error {
+	if err := load(); err != nil {
+		return err
+	}
+	lvl, _ := syscall.BytePtrFromString(level)
+	r1, _, _ := procWarpNPC.Call(
+		uintptr(h),
+		uintptr(id),
+		uintptr(math.Float32bits(float32(x))),
+		uintptr(math.Float32bits(float32(y))),
+		uintptr(unsafe.Pointer(lvl)),
+	)
+	if r1 == 0 {
+		return errors.New(LastError(h))
+	}
+	return nil
+}
+
+// SendNCPacket sends a raw NC packet (used to re-request the weapon list with
+// packet id 115, PLI_NC_WEAPONLISTGET, since grclib only sends it once at auth).
+func SendNCPacket(h Handle, packetID int) error {
+	if err := load(); err != nil {
+		return err
+	}
+	r1, _, _ := procSendNCPacket.Call(uintptr(h), uintptr(packetID), 0, 0)
+	if r1 == 0 {
+		return errors.New(LastError(h))
+	}
+	return nil
+}
+
+// callStr1 calls a (handle, const char*) DLL function returning int (0 = error).
+func callStr1(h Handle, p *syscall.Proc, a string) error {
+	if err := load(); err != nil {
+		return err
+	}
+	ptr, _ := syscall.BytePtrFromString(a)
+	r1, _, _ := p.Call(uintptr(h), uintptr(unsafe.Pointer(ptr)))
+	if r1 == 0 {
+		return errors.New(LastError(h))
+	}
+	return nil
+}
+
+// callStr2 calls a (handle, const char*, const char*) DLL function returning int.
+func callStr2(h Handle, p *syscall.Proc, a, b string) error {
+	if err := load(); err != nil {
+		return err
+	}
+	pa, _ := syscall.BytePtrFromString(a)
+	pb, _ := syscall.BytePtrFromString(b)
+	r1, _, _ := p.Call(uintptr(h), uintptr(unsafe.Pointer(pa)), uintptr(unsafe.Pointer(pb)))
+	if r1 == 0 {
+		return errors.New(LastError(h))
+	}
+	return nil
+}
+
+// callStr3 calls a (handle, const char*, const char*, const char*) DLL function returning int.
+func callStr3(h Handle, p *syscall.Proc, a, b, c string) error {
+	if err := load(); err != nil {
+		return err
+	}
+	pa, _ := syscall.BytePtrFromString(a)
+	pb, _ := syscall.BytePtrFromString(b)
+	pc, _ := syscall.BytePtrFromString(c)
+	r1, _, _ := p.Call(uintptr(h), uintptr(unsafe.Pointer(pa)), uintptr(unsafe.Pointer(pb)), uintptr(unsafe.Pointer(pc)))
+	if r1 == 0 {
+		return errors.New(LastError(h))
+	}
+	return nil
 }
