@@ -8,17 +8,20 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
-// Account is a full persisted login (nickname/account/password). DisplayName
-// and Photo are client-only profile data (a label + base64 avatar data URL) —
-// they are never sent to the server; only Nickname/Account/Password are.
+// Account is a full persisted login (nickname/account/password). DisplayName,
+// Photo, and Type are client-only profile data — they are never sent to the
+// server; only Nickname/Account/Password are. Type selects the listserver
+// ("Classic" or "Reborn").
 type Account struct {
 	Nickname    string `json:"nickname"`
 	Account     string `json:"account"`
 	Password    string `json:"password"`
 	DisplayName string `json:"displayName,omitempty"`
 	Photo       string `json:"photo,omitempty"`
+	Type        string `json:"type,omitempty"`
 }
 
 // AccountSummary is the password-less projection exposed to the frontend.
@@ -27,11 +30,27 @@ type AccountSummary struct {
 	Account     string `json:"account"`
 	DisplayName string `json:"displayName"`
 	Photo       string `json:"photo"`
+	Type        string `json:"type"`
 }
 
 // Summary drops the password for safe hand-off to the frontend.
 func (a Account) Summary() AccountSummary {
-	return AccountSummary{Nickname: a.Nickname, Account: a.Account, DisplayName: a.DisplayName, Photo: a.Photo}
+	return AccountSummary{
+		Nickname:    a.Nickname,
+		Account:     a.Account,
+		DisplayName: a.DisplayName,
+		Photo:       a.Photo,
+		Type:        a.AccountType(),
+	}
+}
+
+// AccountType returns the normalized type ("Classic" or "Reborn"); empty defaults
+// to "Classic".
+func (a Account) AccountType() string {
+	if strings.EqualFold(a.Type, "Reborn") {
+		return "Reborn"
+	}
+	return "Classic"
 }
 
 // Vault reads/writes the DPAPI-encrypted account list under the OS config dir.

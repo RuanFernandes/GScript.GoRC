@@ -136,18 +136,34 @@ type LoginRequest struct {
 	Nickname string `json:"nickname"`
 	Account  string `json:"account"`
 	Password string `json:"password"`
+	Type     string `json:"type"`
 }
 
 // AccountSummary is the password-less account projection exposed to the
 // frontend. Aliased so the generated Wails model matches the credentials type.
 type AccountSummary = credentials.AccountSummary
 
+// RebornListserverHost is the Reborn account-type listserver endpoint (Classic
+// uses rclib.DefaultListserverHost = listserver.graalonline.com).
+const RebornListserverHost = "listserver.graal.in"
+
+// listserverForType returns the listserver host for an account type. Classic →
+// the default Graal listserver; Reborn → listserver.graal.in (same port).
+func listserverForType(accountType string) (host string, port int) {
+	if (credentials.Account{Type: accountType}).AccountType() == "Reborn" {
+		return RebornListserverHost, rclib.DefaultListserverPort
+	}
+	return rclib.DefaultListserverHost, rclib.DefaultListserverPort
+}
+
 func toCreds(req LoginRequest) connection.Credentials {
-	return connection.Credentials{Nickname: req.Nickname, Account: req.Account, Password: req.Password}
+	host, port := listserverForType(req.Type)
+	return connection.Credentials{Nickname: req.Nickname, Account: req.Account, Password: req.Password, Host: host, Port: port}
 }
 
 func accountToCreds(a credentials.Account) connection.Credentials {
-	return connection.Credentials{Nickname: a.Nickname, Account: a.Account, Password: a.Password}
+	host, port := listserverForType(a.Type)
+	return connection.Credentials{Nickname: a.Nickname, Account: a.Account, Password: a.Password, Host: host, Port: port}
 }
 
 // ListAccounts returns the saved accounts without passwords.
@@ -211,6 +227,15 @@ func (a *App) RenameAccount(accountName, displayName string) error {
 		return errNoVault
 	}
 	return a.vault.Mutate(accountName, func(acc *credentials.Account) { acc.DisplayName = displayName })
+}
+
+// SetAccountType sets the client-only account type ("Classic" or "Reborn"),
+// which selects the listserver endpoint used at login.
+func (a *App) SetAccountType(accountName, accountType string) error {
+	if a.vault == nil {
+		return errNoVault
+	}
+	return a.vault.Mutate(accountName, func(acc *credentials.Account) { acc.Type = accountType })
 }
 
 // SetAccountPhoto sets the client-only avatar (a base64 data URL) for a saved

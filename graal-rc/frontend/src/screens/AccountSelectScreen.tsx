@@ -27,7 +27,23 @@ interface AccountSelectScreenProps {
   onRemove: (accountName: string) => void
   onAdd: () => void
   onRename: (accountName: string, displayName: string) => void | Promise<void>
+  onSetType: (accountName: string, accountType: string) => void | Promise<void>
   onPhoto: (accountName: string, dataURL: string) => void | Promise<void>
+}
+
+// AccountTypeBadge renders the account type as a colored chip: Classic =
+// light green, Reborn = brown. Shown in the account chooser.
+function AccountTypeBadge({type}: {type: string}) {
+  const isReborn = type === "Reborn"
+  return (
+    <span
+      className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+        isReborn ? "bg-amber-800/50 text-amber-200" : "bg-green-700/40 text-green-200"
+      }`}
+    >
+      {isReborn ? "Reborn" : "Classic"}
+    </span>
+  )
 }
 
 function Avatar({photo, name, size = 36}: {photo?: string; name: string; size?: number}) {
@@ -59,20 +75,25 @@ export function AccountSelectScreen({
   onRemove,
   onAdd,
   onRename,
+  onSetType,
   onPhoto,
 }: AccountSelectScreenProps) {
   const [renaming, setRenaming] = useState<string | null>(null)
   const [display, setDisplay] = useState("")
+  const [editType, setEditType] = useState<"Classic" | "Reborn">("Classic")
   const fileRef = useRef<HTMLInputElement>(null)
   const photoTarget = useRef<string | null>(null)
 
   const startRename = (acc: AccountSummary) => {
     setRenaming(acc.account)
     setDisplay(acc.displayName || acc.nickname || "")
+    setEditType(acc.type === "Reborn" ? "Reborn" : "Classic")
   }
 
-  const confirmRename = () => {
-    if (renaming) void onRename(renaming, display.trim())
+  const confirmRename = async () => {
+    if (renaming) {
+      await Promise.all([onRename(renaming, display.trim()), onSetType(renaming, editType)])
+    }
     setRenaming(null)
   }
 
@@ -130,8 +151,11 @@ export function AccountSelectScreen({
                       onClick={() => onSelect(account.account)}
                       className="flex flex-1 flex-col items-start gap-0.5 text-left disabled:opacity-50"
                     >
-                      <span className="text-sm font-medium">
-                        {account.displayName || account.nickname || account.account}
+                      <span className="flex items-center gap-1.5">
+                        <span className="text-sm font-medium">
+                          {account.displayName || account.nickname || account.account}
+                        </span>
+                        <AccountTypeBadge type={account.type} />
                       </span>
                       <span className="text-xs text-muted-foreground">{account.account}</span>
                     </button>
@@ -198,6 +222,31 @@ export function AccountSelectScreen({
                 if (e.key === "Enter") confirmRename()
               }}
             />
+          </div>
+
+          <div className="grid gap-2">
+            <Label>Account type</Label>
+            <div className="grid grid-cols-2 gap-2">
+              {(["Classic", "Reborn"] as const).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => setEditType(t)}
+                  className={`rounded-md border px-3 py-1.5 text-sm transition-colors ${
+                    editType === t
+                      ? t === "Reborn"
+                        ? "border-amber-700 bg-amber-800/40 text-amber-200"
+                        : "border-green-600 bg-green-700/30 text-green-200"
+                      : "hover:bg-accent"
+                  }`}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+            <p className="text-muted-foreground text-xs">
+              Selects the listserver used at login.
+            </p>
           </div>
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setRenaming(null)}>

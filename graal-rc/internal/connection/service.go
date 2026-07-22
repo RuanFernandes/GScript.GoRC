@@ -17,11 +17,14 @@ import (
 	"graal-rc/rclib"
 )
 
-// Credentials are the values captured from the login screen.
+// Credentials are the values captured from the login screen. Host/Port select
+// the listserver endpoint (derived from the account type by the App layer).
 type Credentials struct {
 	Nickname string
 	Account  string
 	Password string
+	Host     string
+	Port     int
 }
 
 // Status describes the current session for the frontend.
@@ -300,7 +303,15 @@ func (s *Service) Login(creds Credentials) ([]rclib.Server, error) {
 		return nil, errors.New("account and password are required")
 	}
 
-	h, err := rclib.Connect(rclib.DefaultListserverHost, rclib.DefaultListserverPort, creds.Account, creds.Password)
+	host := creds.Host
+	port := creds.Port
+	if host == "" {
+		host = rclib.DefaultListserverHost
+	}
+	if port == 0 {
+		port = rclib.DefaultListserverPort
+	}
+	h, err := rclib.Connect(host, port, creds.Account, creds.Password)
 	if err != nil {
 		return nil, err
 	}
