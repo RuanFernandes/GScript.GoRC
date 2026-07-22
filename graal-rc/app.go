@@ -205,6 +205,7 @@ func (a *App) AddAccount(req LoginRequest) ([]rclib.Server, error) {
 			Nickname: req.Nickname,
 			Account:  req.Account,
 			Password: req.Password,
+			Type:     req.Type,
 		}); saveErr != nil {
 			log.Printf("save account: %v", saveErr)
 		}

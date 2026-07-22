@@ -101,10 +101,15 @@ export function useChat(service: RcService): UseChatResult {
     let nextSeq = 1
     let lastAdvance = Date.now()
     const pending = new Map<number, Evt>()
+    // Seqs we've already dispatched. Used to dedupe a genuine redelivery by the
+    // IPC layer (same seq delivered twice) without dropping a late straggler we
+    // fast-forwarded past — see deliver.
+    const applied = new Set<number>()
     // If this listener subscribes after the server's initial burst has already
     // been emitted, the earliest seqs never arrive and nextSeq would stall
     // forever waiting for them. After this long with no forward progress we
-    // assume the gap was missed pre-subscription and fast-forward.
+    // assume the gap was missed (pre-subscription or dropped by the IPC layer)
+    // and fast-forward. A straggler for the skipped seq still renders later.
     const stallMs = 300
 
     const dispatch = (m: Evt) => {
@@ -151,21 +156,39 @@ export function useChat(service: RcService): UseChatResult {
       let p = pending.get(nextSeq)
       while (p) {
         pending.delete(nextSeq)
+        applied.add(nextSeq)
         dispatch(p)
         nextSeq++
         lastAdvance = Date.now()
         p = pending.get(nextSeq)
       }
+      // `applied` only needs to cover stragglers with seq < nextSeq; drop older
+      // entries so a long session doesn't leak memory.
+      if (applied.size > 2000) {
+        for (const s of applied) {
+          if (s < nextSeq - 1000) applied.delete(s)
+        }
+      }
     }
 
     const deliver = (m: Evt) => {
-      // Stalled on a gap that won't fill (missed pre-subscription): jump to the
-      // oldest buffered event and resume from there.
+      if (applied.has(m.seq)) return // genuine redelivery of an already-applied seq
+      // Stalled on a gap that won't fill (missed pre-subscription / IPC drop):
+      // jump to the oldest buffered event and resume from there.
       if (pending.size > 0 && Date.now() - lastAdvance > stallMs) {
         nextSeq = Math.min(...pending.keys())
       }
-      if (m.seq < nextSeq) return // duplicate / stale
+      if (m.seq < nextSeq) {
+        // Late straggler for a seq we already skipped past via fast-forward.
+        // The old behavior dropped these, which silently lost chat lines when
+        // the IPC layer delivered an event >stallMs after the ones that followed
+        // it. Render it instead — a mildly reordered line beats a missing one.
+        applied.add(m.seq)
+        dispatch(m)
+        return
+      }
       if (m.seq === nextSeq) {
+        applied.add(nextSeq)
         dispatch(m)
         nextSeq++
         lastAdvance = Date.now()
