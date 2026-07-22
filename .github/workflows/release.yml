@@ -70,14 +70,14 @@ jobs:
         with:
           go-version: ">=1.25.0"
           cache-dependency-path: graal-rc/go.sum
-      - name: Install wails3 CLI
-        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.117
-      - name: Put Go bin on PATH
-        run: echo "$HOME/go/bin" >> "$GITHUB_PATH"
       - name: Install GTK4/WebKitGTK6 deps + libfuse2
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libadwaita-1-dev libfuse2t64 file zip pkg-config
+      - name: Install wails3 CLI
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.117
+      - name: Put Go bin on PATH
+        run: echo "$HOME/go/bin" >> "$GITHUB_PATH"
       - name: Fetch appimagetool
         run: |
           curl -sSL -o "$HOME/appimagetool" https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
@@ -135,15 +135,21 @@ jobs:
         with:
           go-version: ">=1.25.0"
           cache-dependency-path: graal-rc/go.sum
-      - name: Enable i386 architecture + install 32-bit webkit/gtk + libfuse2
+      - name: Install deps (64-bit gtk4/webkit6 for the wails3 CLI + i386 webkit/gtk for the 32-bit app)
         run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libadwaita-1-dev libfuse2t64 file pkg-config
           sudo dpkg --add-architecture i386
           sudo apt-get update
-          sudo apt-get install -y gcc-multilib libwebkit2gtk-4.1-dev:i386 libgtk-3-dev:i386 libfuse2t64 file pkg-config
+          # 32-bit webkit stack is the fragile part — best-effort; the 32-bit
+          # build step fails gracefully if these are unavailable.
+          sudo apt-get install -y gcc-multilib libwebkit2gtk-4.1-dev:i386 libgtk-3-dev:i386 || true
+      - name: Install wails3 CLI
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.117
+      - name: Put Go bin on PATH
+        run: echo "$HOME/go/bin" >> "$GITHUB_PATH"
       - name: Build frontend
         run: |
-          export PATH="$HOME/go/bin:$PATH"
-          go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.117
           wails3 generate bindings -f "-tags production" -clean=true -ts -i
           cd frontend && PRODUCTION=true npm install --no-audit --no-fund && npm run build
       - name: Build 32-bit binary (linux/386, CGO)
