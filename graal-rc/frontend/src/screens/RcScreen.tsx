@@ -11,6 +11,7 @@ import {Button} from "@/components/ui/button"
 import {Input} from "@/components/ui/input"
 import {Tabs, TabsContent, TabsList, TabsTrigger} from "@/components/ui/tabs"
 import {ChatLine} from "@/components/features/chat/ChatLine"
+import {ScriptHelpResult} from "@/components/features/chat/ScriptHelpResult"
 import {useChat} from "@/hooks/useChat"
 import {useChatSettings} from "@/hooks/useChatSettings"
 import {serverDisplay} from "@/lib/server"
@@ -88,7 +89,11 @@ function ChatPane({
           ) : (
             messages.map((m) => (
               <div key={m.id}>
-                <ChatLine message={m} settings={settings} />
+                {m.scriptHelp ? (
+                  <ScriptHelpResult query={m.text} entries={m.scriptHelp} />
+                ) : (
+                  <ChatLine message={m} settings={settings} />
+                )}
               </div>
             ))
           )}

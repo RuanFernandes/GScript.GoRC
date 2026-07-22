@@ -23,7 +23,8 @@ import {toast} from "sonner"
 import {Events} from "@wailsio/runtime"
 
 import type {RcService} from "@/services/rcService"
-import type {ChatMessage, ChatTab} from "@/types"
+import type {ChatMessage, ChatTab, GsFunction} from "@/types"
+import {loadGsFunctions, searchFunctions} from "@/lib/gscriptApi"
 
 const SERVER_CHANNEL = ""
 const MAX_LINES_PER_TAB = 1000
@@ -198,6 +199,44 @@ export function useChat(service: RcService): UseChatResult {
     setTabs((prev) => prev.map((t) => (t.channel === target ? {...t, messages: []} : t)))
   }, [])
 
+  // pushScriptHelp appends a /scripthelp2 result line: a system-style line whose
+  // scriptHelp payload the chat renders as a hoverable function list.
+  const pushScriptHelp = useCallback(
+    (channel: string, query: string, entries: GsFunction[]) => {
+      const target = channel || SERVER_CHANNEL
+      const msg: ChatMessage = {
+        id: nextId(),
+        channel: target,
+        text: query,
+        source: "system",
+        ts: Date.now(),
+        scriptHelp: entries,
+      }
+      setTabs((prev) => {
+        const idx = prev.findIndex((t) => t.channel === target)
+        if (idx === -1) return [...prev, {channel: target, label: target, messages: [msg]}]
+        const next = [...prev]
+        next[idx] = appendLine(next[idx], msg)
+        return next
+      })
+    },
+    [nextId]
+  )
+
+  // handleScriptHelp fetches (cached) the gscript.dev reference and pushes the
+  // matching functions for the query.
+  const handleScriptHelp = useCallback(
+    async (channel: string, query: string) => {
+      try {
+        const all = await loadGsFunctions()
+        pushScriptHelp(channel, query, searchFunctions(all, query))
+      } catch (err) {
+        push(channel, `scripthelp2 failed: ${err instanceof Error ? err.message : String(err)}`, "system")
+      }
+    },
+    [pushScriptHelp, push]
+  )
+
   const send = useCallback(
     async (channel: string, text: string): Promise<boolean> => {
       const trimmed = text.trim()
@@ -206,6 +245,18 @@ export function useChat(service: RcService): UseChatResult {
       // without sending anything to the server.
       if (trimmed === "/clear") {
         clearChannel(channel)
+        return true
+      }
+      // "/scripthelp2 <query>" is a client-only command: search the cached
+      // gscript.dev function reference and render hoverable results. (/scripthelp
+      // without the 2 is the server's own outdated command, left untouched.)
+      if (trimmed === "/scripthelp2" || trimmed.startsWith("/scripthelp2 ")) {
+        const query = trimmed.slice("/scripthelp2".length).trim()
+        if (!query) {
+          push(channel, "Usage: /scripthelp2 <name> — e.g. /scripthelp2 setani", "system")
+        } else {
+          void handleScriptHelp(channel, query)
+        }
         return true
       }
       try {
@@ -224,7 +275,7 @@ export function useChat(service: RcService): UseChatResult {
         return false
       }
     },
-    [service, clearChannel]
+    [service, clearChannel, handleScriptHelp]
   )
 
   // reorderTabs moves a tab (drag-and-drop reorder). The server tab stays in

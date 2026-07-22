@@ -7,17 +7,21 @@ export type {Status as SessionStatus} from "../../bindings/graal-rc/internal/con
 export type {AccountSummary, LoginRequest} from "../../bindings/graal-rc/models"
 export type {Weapon, Class, NPC, ScriptReply} from "../../bindings/graal-rc/rclib/models"
 export type {CodingSettings, RemoteTheme} from "../../bindings/graal-rc/models"
+import type {GsFunction} from "@/lib/gscriptApi"
+export type {GsFunction}
 
 // A single chat line. channel "" = server (RC) chat; otherwise the IRC channel.
 // source drives the prefix tag and coloring: "rc" ([RC], on_message), "nc"
 // ([NC], on_serverdata type=nc_message), "irc" ([IRC], on_irc_message), or
-// "system" (other server data, gray).
+// "system" (other server data, gray). scriptHelp, when set, renders the line as
+// a /scripthelp2 result list (hoverable function reference).
 export interface ChatMessage {
   id: number
   channel: string
   text: string
   source: "rc" | "nc" | "irc" | "system"
   ts: number
+  scriptHelp?: GsFunction[]
 }
 
 // A chat tab: the always-present server chat (channel "") plus one per IRC
