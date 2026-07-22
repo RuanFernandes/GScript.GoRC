@@ -109,26 +109,24 @@ type Class struct {
 
 // RCNPC mirrors grclib's RCNPC struct (include/grclib.h):
 //
-//	struct { int id; char* name; char* type; char* image; char* script; char* level; }
+//	struct { int id; char* name; char* type; char* image; char* script; }
 //
-// x64 layout: id@0 (4 bytes), pad@4, name@8, type@16, image@24, script@32,
-// level@40 -> 48 bytes. The int32 pads to the next 8-byte boundary before name.
+// x64 layout: id@0 (4 bytes), pad@4, name@8, type@16, image@24, script@32
+// -> 40 bytes. The int32 pads to the next 8-byte boundary before name.
 type RCNPC struct {
-	ID     int32
-	_      int32
-	Name   *byte
-	Type   *byte
-	Image  *byte
-	Script *byte
-	Level  *byte
+	ID    int32
+	_     int32
+	Name  *byte
+	Type  *byte
+	Image *byte
+	_     *byte // script (unused in list view; fetched via RequestNPCScript)
 }
 
 // NPC is the Go-friendly copy of an RCNPC entry.
 type NPC struct {
-	ID    int    `json:"id"`
-	Name  string `json:"name"`
-	Type  string `json:"type"`
-	Level string `json:"level"`
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
 }
 
 // ScriptReply carries a fetched script / flags / attributes payload back to the
@@ -956,7 +954,7 @@ func GetNPCs(h Handle) ([]NPC, error) {
 	out := make([]NPC, count)
 	for i := 0; i < count; i++ {
 		n := arr[i]
-		out[i] = NPC{ID: int(n.ID), Name: bptrToString(n.Name), Type: bptrToString(n.Type), Level: bptrToString(n.Level)}
+		out[i] = NPC{ID: int(n.ID), Name: bptrToString(n.Name), Type: bptrToString(n.Type)}
 	}
 	return out, nil
 }
