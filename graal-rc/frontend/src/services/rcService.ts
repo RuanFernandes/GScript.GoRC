@@ -16,6 +16,10 @@ import type {
   RemoteTheme,
   ScriptReply,
   Server,
+  RightsData,
+  AttrsData,
+  BanData,
+  CommentsData,
   SqliteInfo,
   SqliteResult,
   SqliteSchema,
@@ -45,8 +49,34 @@ export interface RcService {
   sendIrcText(command: string, p1: string, p2: string, p3: string): Promise<void>
   execute(message: string): Promise<void>
   getPlayers(): Promise<Player[] | null>
+  // Private + admin messaging (main server socket).
+  sendPrivateMessage(playerID: number, message: string): Promise<void>
+  sendMassPM(playerIDs: number[], message: string): Promise<void>
+  sendAdminMessage(playerID: number, message: string): Promise<void>
+  sendAdminMessageAll(message: string): Promise<void>
+  // Player admin editors (rights / attributes / ban) — main server socket.
+  openRights(account: string): Promise<RightsData | null>
+  setRights(account: string, rights: number, ipRange: string, folderAccess: string): Promise<void>
+  openAttrs(account: string): Promise<AttrsData | null>
+  setAttrs(account: string, propertiesJson: string): Promise<void>
+  parseAttrsText(text: string): Promise<string>
+  openBan(account: string): Promise<BanData | null>
+  openComments(account: string): Promise<CommentsData | null>
+  setComments(account: string, comments: string): Promise<void>
+  openRightsWindow(account: string): Promise<void>
+  openAttrsWindow(account: string): Promise<void>
+  openBanWindow(account: string): Promise<void>
+  openCommentsWindow(account: string): Promise<void>
+  openBanHistoryWindow(account: string): Promise<void>
+  openStaffActivityWindow(account: string): Promise<void>
+  setBan(target: string, world: string, banned: boolean, banType: string, releaseTime: string, reason: string): Promise<void>
+  getBanTypes(): Promise<string>
+  requestBanHistory(account: string): Promise<string>
+  requestStaffActivity(account: string): Promise<string>
   setChatLogConfig(enabled: boolean, dir: string): Promise<void>
   appendChatLog(line: string): Promise<void>
+  setPmLogConfig(enabled: boolean, dir: string): Promise<void>
+  appendPmLog(otherAccount: string, line: string): Promise<void>
   chooseDirectory(): Promise<string>
   openPlayerList(): Promise<void>
   // Script management (NC server).
@@ -131,8 +161,35 @@ export const rcService: RcService = {
   sendIrcText: (command, p1, p2, p3) => App.SendIrcText(command, p1, p2, p3),
   execute: (message) => App.Execute(message),
   getPlayers: () => App.GetPlayers(),
+  // Private + admin messaging (main server socket).
+  sendPrivateMessage: (playerID, message) => App.SendPrivateMessage(playerID, message),
+  sendMassPM: (playerIDs, message) => App.SendMassPM(playerIDs, message),
+  sendAdminMessage: (playerID, message) => App.SendAdminMessage(playerID, message),
+  sendAdminMessageAll: (message) => App.SendAdminMessageAll(message),
+  // Player admin editors (rights / attributes / ban) — main server socket.
+  openRights: (account) => App.OpenRights(account),
+  setRights: (account, rights, ipRange, folderAccess) => App.SetRights(account, rights, ipRange, folderAccess),
+  openAttrs: (account) => App.OpenAttrs(account),
+  setAttrs: (account, propertiesJson) => App.SetAttrs(account, propertiesJson),
+  parseAttrsText: (text) => App.ParseAttrsText(text),
+  openBan: (account) => App.OpenBan(account),
+  openComments: (account) => App.OpenComments(account),
+  setComments: (account, comments) => App.SetComments(account, comments),
+  openRightsWindow: (account) => App.OpenRightsWindow(account),
+  openAttrsWindow: (account) => App.OpenAttrsWindow(account),
+  openBanWindow: (account) => App.OpenBanWindow(account),
+  openCommentsWindow: (account) => App.OpenCommentsWindow(account),
+  openBanHistoryWindow: (account) => App.OpenBanHistoryWindow(account),
+  openStaffActivityWindow: (account) => App.OpenStaffActivityWindow(account),
+  setBan: (target, world, banned, banType, releaseTime, reason) =>
+    App.SetBan(target, world, banned, banType, releaseTime, reason),
+  getBanTypes: () => App.GetBanTypes(),
+  requestBanHistory: (account) => App.RequestBanHistory(account),
+  requestStaffActivity: (account) => App.RequestStaffActivity(account),
   setChatLogConfig: (enabled, dir) => App.SetChatLogConfig(enabled, dir),
   appendChatLog: (line) => App.AppendChatLog(line),
+  setPmLogConfig: (enabled, dir) => App.SetPmLogConfig(enabled, dir),
+  appendPmLog: (otherAccount, line) => App.AppendPmLog(otherAccount, line),
   chooseDirectory: () => App.ChooseDirectory(),
   openPlayerList: () => App.OpenPlayerList(),
   // Script management (NC server).

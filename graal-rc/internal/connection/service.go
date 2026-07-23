@@ -75,6 +75,48 @@ type Service struct {
 	// from the NC server.
 	pendingMu sync.Mutex
 	pending   map[string]chan rclib.ScriptReply
+
+	// editor correlates a player-editor request (rights/attrs/ban/banhistory/
+	// staffactivity/bantypes/comments) keyed by "<kind>:<account>" to its reply.
+	// Replies arrive asynchronously on the main server pump goroutine. A wait is
+	// a done-channel closed when the reply lands, so multiple callers sharing one
+	// in-flight request (e.g. a window re-mounting) all observe the same reply
+	// instead of racing one value across two waiters.
+	editorMu sync.Mutex
+	editor   map[string]*editorWait
+
+	// banTypes is the latest server-reported ban-types list (name,seconds pairs),
+	// pushed via the BanListData callback with data_type=="bantypes". Guarded by
+	// editorMu. Empty until requested via GetBanTypes.
+	banTypes string
+}
+
+// RightsData is the reply payload for an OpenRights request.
+type RightsData struct {
+	Account      string `json:"account"`
+	Rights       int    `json:"rights"`
+	IPRange      string `json:"ipRange"`
+	FolderAccess string `json:"folderAccess"`
+}
+
+// AttrsData is the reply payload for an OpenAttrs request.
+type AttrsData struct {
+	Account        string `json:"account"`
+	PropertiesJSON string `json:"propertiesJson"`
+	EditorText     string `json:"editorText"`
+}
+
+// BanData is the reply payload for an OpenBan request.
+type BanData struct {
+	Account    string `json:"account"`
+	ComputerID string `json:"computerId"`
+	Details    string `json:"details"`
+}
+
+// CommentsData is the reply payload for an OpenComments request.
+type CommentsData struct {
+	Account string `json:"account"`
+	Content string `json:"content"`
 }
 
 // scriptTimeout is how long OpenScript/OpenNPC* waits for the NC server reply.
@@ -101,6 +143,70 @@ func (s *Service) registerPending(key string) chan rclib.ScriptReply {
 	s.pending[key] = ch
 	s.pendingMu.Unlock()
 	return ch
+}
+
+// editorWait is a fan-out reply slot: done is closed when reply lands, so every
+// caller sharing the in-flight request observes it. closed guards against a
+// double close when the same key is resolved more than once.
+type editorWait struct {
+	done   chan struct{}
+	reply  any
+	closed bool
+}
+
+// registerEditor installs a wait for an editor request key, returning it plus
+// whether this call created a fresh waiter. If a not-yet-resolved waiter exists
+// for the key (e.g. the window re-mounted), it is shared and isNew is false —
+// the caller must then NOT re-issue the request, avoiding duplicate packets.
+func (s *Service) registerEditor(key string) (*editorWait, bool) {
+	s.editorMu.Lock()
+	defer s.editorMu.Unlock()
+	if s.editor == nil {
+		s.editor = map[string]*editorWait{}
+	}
+	if w, ok := s.editor[key]; ok && !w.closed {
+		return w, false
+	}
+	w := &editorWait{done: make(chan struct{})}
+	s.editor[key] = w
+	return w, true
+}
+
+// resolveEditor delivers a reply to all waiters for key (if any) and drops it.
+// Called from pump-goroutine callbacks.
+func (s *Service) resolveEditor(key string, reply any) {
+	s.editorMu.Lock()
+	w, ok := s.editor[key]
+	if ok && !w.closed {
+		w.reply = reply
+		w.closed = true
+		close(w.done)
+	}
+	if ok && w.closed {
+		delete(s.editor, key)
+	}
+	s.editorMu.Unlock()
+}
+
+// dropEditor removes a timed-out waiter. Only the owning (isNew) caller drops.
+func (s *Service) dropEditor(key string) {
+	s.editorMu.Lock()
+	delete(s.editor, key)
+	s.editorMu.Unlock()
+}
+
+// awaitEditor blocks on the wait's reply or the timeout, returning the typed
+// reply. Only the owner (isNew) drops the key on timeout.
+func (s *Service) awaitEditor(w *editorWait, key string, isNew bool, kind string) (any, error) {
+	select {
+	case <-w.done:
+		return w.reply, nil
+	case <-time.After(scriptTimeout):
+		if isNew {
+			s.dropEditor(key)
+		}
+		return nil, errors.New(kind + " request timed out")
+	}
 }
 
 // resolvePending delivers a reply to the waiter for key (if any) and drops it.
@@ -475,6 +581,9 @@ func (s *Service) ConnectToServer(index int) error {
 		},
 		Message:    func(text string) { s.emitEvent("rc:message", text) },
 		IrcMessage: func(channel, line string) { s.handleIrcMessage(channel, line) },
+		PrivateMessage: func(playerID int, account, nick, message string) {
+			s.emitEvent("rc:pm", playerID, account, nick, message)
+		},
 		ServerData: func(dataType, content string) {
 			// Server-side text configs (options/folder_config/flags) are fetched
 			// via OpenServerText, which registers a pending waiter keyed by the
@@ -512,6 +621,50 @@ func (s *Service) ConnectToServer(index int) error {
 			s.emitEvent("rc:fbMaxUpload", maxSize)
 		},
 		FileReceived: func(path string, content []byte) { s.resolveFile(path, content) },
+		PlayerRights: func(account string, rights int, ipRange, folderAccess string) {
+			log.Printf("[editor-cb] player_rights account=%q rights=%d", account, rights)
+			s.resolveEditor(pendingKey("rights", account), RightsData{
+				Account: account, Rights: rights, IPRange: ipRange, FolderAccess: folderAccess,
+			})
+		},
+		PlayerAttributes: func(account, propertiesJSON, editorText string) {
+			log.Printf("[editor-cb] player_attributes account=%q editorLen=%d", account, len(editorText))
+			s.resolveEditor(pendingKey("attrs", account), AttrsData{
+				Account: account, PropertiesJSON: propertiesJSON, EditorText: editorText,
+			})
+		},
+		BanData: func(account, computerID, details string) {
+			log.Printf("[editor-cb] ban_data account=%q", account)
+			s.resolveEditor(pendingKey("ban", account), BanData{
+				Account: account, ComputerID: computerID, Details: details,
+			})
+		},
+		BanListData: func(dataType, account, content string) {
+			log.Printf("[editor-cb] ban_list_data type=%q account=%q len=%d", dataType, account, len(content))
+			switch dataType {
+			case "bantypes":
+				// Global list (no account correlation): cache for GetBanTypes.
+				s.editorMu.Lock()
+				s.banTypes = content
+				s.editorMu.Unlock()
+				s.resolveEditor(pendingKey("bantypes", ""), content)
+			case "banhistory":
+				s.resolveEditor(pendingKey("banhistory", account), content)
+			case "staffactivity":
+				s.resolveEditor(pendingKey("staffactivity", account), content)
+			default:
+				log.Printf("[banlistdata] %s %s: %q", dataType, account, content)
+			}
+		},
+		PlayerTextData: func(dataType, account, content string) {
+			log.Printf("[editor-cb] player_text_data type=%q account=%q len=%d", dataType, account, len(content))
+			switch dataType {
+			case "comments":
+				s.resolveEditor(pendingKey("comments", account), CommentsData{Account: account, Content: content})
+			default:
+				log.Printf("[playertextdata] %s %s: %q", dataType, account, content)
+			}
+		},
 	})
 	s.startPump(h)
 
@@ -652,7 +805,274 @@ func (s *Service) GetPlayers() ([]rclib.Player, error) {
 	return rclib.GetPlayers(h)
 }
 
-// handleScriptReceived resolves a pending OpenScript request (weapon/class keyed
+// SendPrivateMessage sends a private message to a single player id on the
+// active server.
+func (s *Service) SendPrivateMessage(playerID int, message string) error {
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
+	}
+	return rclib.SendPrivateMessage(h, playerID, message)
+}
+
+// SendMassPM sends one bulk PM packet to every id in playerIDs (single server
+// round-trip, mirrors the reference client's Mass PM button).
+func (s *Service) SendMassPM(playerIDs []int, message string) error {
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
+	}
+	return rclib.SendMassPM(h, playerIDs, message)
+}
+
+// SendAdminMessage sends an admin message to a single player id.
+func (s *Service) SendAdminMessage(playerID int, message string) error {
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
+	}
+	return rclib.SendAdminMessage(h, playerID, message)
+}
+
+// SendAdminMessageAll sends an admin message to every player on the server.
+func (s *Service) SendAdminMessageAll(message string) error {
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
+	}
+	return rclib.SendAdminMessageAll(h, message)
+}
+
+// SelfAccount returns the logged-in account name.
+func (s *Service) SelfAccount() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.creds.Account
+}
+
+// OpenRights requests an account's staff rights and waits for the reply.
+func (s *Service) OpenRights(account string) (RightsData, error) {
+	h, err := s.requireHandle()
+	if err != nil {
+		return RightsData{}, err
+	}
+	key := pendingKey("rights", account)
+	w, isNew := s.registerEditor(key)
+	if isNew {
+		log.Printf("[editor] request rights account=%q (self creds.Account=%q nickname=%q)", account, s.creds.Account, s.creds.Nickname)
+		if err := rclib.RequestPlayerRights(h, account); err != nil {
+			s.dropEditor(key)
+			return RightsData{}, err
+		}
+	} else {
+		log.Printf("[editor] dedup rights account=%q (awaiting in-flight request)", account)
+	}
+	reply, err := s.awaitEditor(w, key, isNew, "player rights")
+	if err != nil {
+		return RightsData{}, err
+	}
+	return reply.(RightsData), nil
+}
+
+// SetRights writes rights flags + ip range + folder access for an account.
+func (s *Service) SetRights(account string, rights int, ipRange, folderAccess string) error {
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
+	}
+	return rclib.SetPlayerRights(h, account, rights, ipRange, folderAccess)
+}
+
+// OpenAttrs requests an account's attributes and waits for the reply.
+func (s *Service) OpenAttrs(account string) (AttrsData, error) {
+	h, err := s.requireHandle()
+	if err != nil {
+		return AttrsData{}, err
+	}
+	key := pendingKey("attrs", account)
+	w, isNew := s.registerEditor(key)
+	if isNew {
+		log.Printf("[editor] request attrs account=%q (self creds.Account=%q nickname=%q)", account, s.creds.Account, s.creds.Nickname)
+		if err := rclib.RequestPlayerAttrs(h, account); err != nil {
+			s.dropEditor(key)
+			return AttrsData{}, err
+		}
+	} else {
+		log.Printf("[editor] dedup attrs account=%q (awaiting in-flight request)", account)
+	}
+	reply, err := s.awaitEditor(w, key, isNew, "player attributes")
+	if err != nil {
+		return AttrsData{}, err
+	}
+	return reply.(AttrsData), nil
+}
+
+// SetAttrs writes the properties JSON blob for an account.
+func (s *Service) SetAttrs(account, propertiesJSON string) error {
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
+	}
+	return rclib.SetPlayerAttributes(h, account, propertiesJSON)
+}
+
+// ParseAttrsText converts an INI-style attribute editor document into the
+// properties JSON blob the protocol expects.
+func (s *Service) ParseAttrsText(text string) (string, error) {
+	return rclib.ParsePlayerAttributesText(text)
+}
+
+// OpenBan requests an account's ban data and waits for the reply. Use
+// GetBanTypes separately (or before) to populate the duration dropdown.
+func (s *Service) OpenBan(account string) (BanData, error) {
+	h, err := s.requireHandle()
+	if err != nil {
+		return BanData{}, err
+	}
+	key := pendingKey("ban", account)
+	w, isNew := s.registerEditor(key)
+	if isNew {
+		log.Printf("[editor] request ban account=%q (self creds.Account=%q nickname=%q)", account, s.creds.Account, s.creds.Nickname)
+		if err := rclib.RequestPlayerBanByAccount(h, account); err != nil {
+			s.dropEditor(key)
+			return BanData{}, err
+		}
+	} else {
+		log.Printf("[editor] dedup ban account=%q (awaiting in-flight request)", account)
+	}
+	reply, err := s.awaitEditor(w, key, isNew, "player ban")
+	if err != nil {
+		return BanData{}, err
+	}
+	return reply.(BanData), nil
+}
+
+// SetBan writes ban data for a target. world is "local" or "all"; target is the
+// account or "pc:<computerID>"; releaseTime "" resets the ban timer.
+func (s *Service) SetBan(target, world string, banned bool, banType, releaseTime, reason string) error {
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
+	}
+	return rclib.SetBan(h, target, world, banned, banType, releaseTime, reason)
+}
+
+// OpenComments requests an account's comments text and waits for the reply.
+func (s *Service) OpenComments(account string) (CommentsData, error) {
+	h, err := s.requireHandle()
+	if err != nil {
+		return CommentsData{}, err
+	}
+	key := pendingKey("comments", account)
+	w, isNew := s.registerEditor(key)
+	if isNew {
+		log.Printf("[editor] request comments account=%q (self creds.Account=%q nickname=%q)", account, s.creds.Account, s.creds.Nickname)
+		if err := rclib.RequestPlayerComments(h, account); err != nil {
+			s.dropEditor(key)
+			return CommentsData{}, err
+		}
+	} else {
+		log.Printf("[editor] dedup comments account=%q (awaiting in-flight request)", account)
+	}
+	reply, err := s.awaitEditor(w, key, isNew, "player comments")
+	if err != nil {
+		return CommentsData{}, err
+	}
+	return reply.(CommentsData), nil
+}
+
+// SetComments writes the comments text for an account.
+func (s *Service) SetComments(account, comments string) error {
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
+	}
+	return rclib.SetPlayerComments(h, account, comments)
+}
+
+// GetBanTypes requests the available ban types/durations and waits for the
+// reply. Returns the raw "name,seconds\\n..." list.
+func (s *Service) GetBanTypes() (string, error) {
+	h, err := s.requireHandle()
+	if err != nil {
+		return "", err
+	}
+	// Serve from cache if a previous request already populated it.
+	s.editorMu.Lock()
+	cached := s.banTypes
+	s.editorMu.Unlock()
+	if cached != "" {
+		return cached, nil
+	}
+	key := pendingKey("bantypes", "")
+	w, isNew := s.registerEditor(key)
+	if isNew {
+		log.Printf("[editor] request bantypes")
+		if err := rclib.RequestBanTypes(h); err != nil {
+			s.dropEditor(key)
+			return "", err
+		}
+	}
+	reply, err := s.awaitEditor(w, key, isNew, "ban types")
+	if err != nil {
+		return "", err
+	}
+	if txt, ok := reply.(string); ok {
+		return txt, nil
+	}
+	return "", nil
+}
+
+// RequestBanHistory asks for an account's ban history and waits for the reply.
+func (s *Service) RequestBanHistory(account string) (string, error) {
+	h, err := s.requireHandle()
+	if err != nil {
+		return "", err
+	}
+	key := pendingKey("banhistory", account)
+	w, isNew := s.registerEditor(key)
+	if isNew {
+		log.Printf("[editor] request banhistory account=%q", account)
+		if err := rclib.RequestBanHistory(h, account); err != nil {
+			s.dropEditor(key)
+			return "", err
+		}
+	}
+	reply, err := s.awaitEditor(w, key, isNew, "ban history")
+	if err != nil {
+		return "", err
+	}
+	if txt, ok := reply.(string); ok {
+		return txt, nil
+	}
+	return "", nil
+}
+
+// RequestStaffActivity asks for an account's staff activity and waits for the reply.
+func (s *Service) RequestStaffActivity(account string) (string, error) {
+	h, err := s.requireHandle()
+	if err != nil {
+		return "", err
+	}
+	key := pendingKey("staffactivity", account)
+	w, isNew := s.registerEditor(key)
+	if isNew {
+		log.Printf("[editor] request staffactivity account=%q", account)
+		if err := rclib.RequestStaffActivity(h, account); err != nil {
+			s.dropEditor(key)
+			return "", err
+		}
+	}
+	reply, err := s.awaitEditor(w, key, isNew, "staff activity")
+	if err != nil {
+		return "", err
+	}
+	if txt, ok := reply.(string); ok {
+		return txt, nil
+	}
+	return "", nil
+}
+
 // by name, npc keyed by id). Called on the pump goroutine.
 func (s *Service) handleScriptReceived(scriptType, name string, id int, script string) {
 	key := name

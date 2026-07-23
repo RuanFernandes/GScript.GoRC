@@ -13,6 +13,11 @@ import {AccountSelectScreen} from "@/screens/AccountSelectScreen"
 import {AddAccountScreen} from "@/screens/AddAccountScreen"
 import {FileBrowserWindowScreen} from "@/screens/FileBrowserWindowScreen"
 import {PlayerListWindowScreen} from "@/screens/PlayerListWindowScreen"
+import {RightsWindowScreen} from "@/screens/RightsWindowScreen"
+import {AttrsWindowScreen} from "@/screens/AttrsWindowScreen"
+import {BanWindowScreen} from "@/screens/BanWindowScreen"
+import {CommentsWindowScreen} from "@/screens/CommentsWindowScreen"
+import {PlayerTextRecordWindowScreen} from "@/screens/PlayerTextRecordWindowScreen"
 import {RcScreen} from "@/screens/RcScreen"
 import {ScriptEditorWindowScreen} from "@/screens/ScriptEditorWindowScreen"
 import {ScriptManagerWindowScreen} from "@/screens/ScriptManagerWindowScreen"
@@ -196,6 +201,12 @@ function App() {
   if (typeof window === "undefined") return <Shell />
   const hash = window.location.hash
   if (hash.startsWith("#players")) return <PlayerListWindowScreen />
+  if (hash.startsWith("#rights")) return <RightsWindowScreen />
+  if (hash.startsWith("#attrs")) return <AttrsWindowScreen />
+  if (hash.startsWith("#banhistory")) return <PlayerTextRecordWindowScreen />
+  if (hash.startsWith("#staffactivity")) return <PlayerTextRecordWindowScreen />
+  if (hash.startsWith("#ban")) return <BanWindowScreen />
+  if (hash.startsWith("#comments")) return <CommentsWindowScreen />
   if (hash.startsWith("#files")) return <FileBrowserWindowScreen />
   if (hash.startsWith("#scripts")) return <ScriptManagerWindowScreen />
   if (hash.startsWith("#settings")) return <SettingsWindowScreen />
