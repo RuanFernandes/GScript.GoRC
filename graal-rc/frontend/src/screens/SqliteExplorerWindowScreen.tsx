@@ -429,10 +429,10 @@ export function SqliteExplorerWindowScreen() {
               <TabsContent value="diagram" className="mt-2 min-h-0 flex-1 overflow-hidden">
                 <div className="h-full w-full">
                   {schema.length > 0 ? (
-                    <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView>
+                    <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView colorMode="dark">
                       <Background />
-                      <Controls />
-                      <MiniMap />
+                      <Controls showInteractive={false} />
+                      <MiniMap pannable zoomable />
                     </ReactFlow>
                   ) : (
                     <div className="flex h-full items-center justify-center text-sm text-muted-foreground">No tables.</div>
