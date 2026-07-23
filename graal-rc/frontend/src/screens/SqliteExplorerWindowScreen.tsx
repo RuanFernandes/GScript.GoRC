@@ -71,6 +71,15 @@ function TableNode({data}: {data: Record<string, unknown>}) {
 
 const nodeTypes = {table: TableNode}
 
+// Vivid palette for the minimap so each table reads against the dark canvas
+// (default grey nodes camouflage against the grey table cards).
+const MINIMAP_PALETTE = ["#38bdf8", "#f472b6", "#a3e635", "#f59e0b", "#a78bfa", "#34d399", "#fb7185", "#22d3ee"]
+function miniNodeColor(n: {id: string}): string {
+  let h = 0
+  for (let i = 0; i < n.id.length; i++) h = (h * 31 + n.id.charCodeAt(i)) >>> 0
+  return MINIMAP_PALETTE[h % MINIMAP_PALETTE.length]
+}
+
 export function SqliteExplorerWindowScreen() {
   const remotePath = useRef(parsePath()).current
   const [tables, setTables] = useState<SqliteTable[]>([])
@@ -432,7 +441,15 @@ export function SqliteExplorerWindowScreen() {
                     <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView colorMode="dark">
                       <Background />
                       <Controls showInteractive={false} />
-                      <MiniMap pannable zoomable nodeColor="#475569" nodeStrokeColor="#94a3b8" maskColor="rgb(0 0 0 / 0.6)" />
+                      <MiniMap
+                        pannable
+                        zoomable
+                        nodeColor={miniNodeColor}
+                        nodeStrokeColor="#0f172a"
+                        nodeStrokeWidth={3}
+                        nodeBorderRadius={4}
+                        maskColor="rgb(0 0 0 / 0.65)"
+                      />
                     </ReactFlow>
                   ) : (
                     <div className="flex h-full items-center justify-center text-sm text-muted-foreground">No tables.</div>
