@@ -7,6 +7,7 @@ import {toast} from "sonner"
 
 import type {RcService} from "@/services/rcService"
 import type {LoginRequest, Server} from "@/types"
+import {serverDisplay} from "@/lib/server"
 
 export type SessionPhase = "idle" | "ready"
 
@@ -98,7 +99,7 @@ export function useSession(service: RcService): UseSessionResult {
   const connect = useCallback(
     async (index: number): Promise<boolean> => {
       const server = servers[index]
-      const label = server ? server.name : `server ${index}`
+      const label = server ? serverDisplay(server.name).label : `server ${index}`
       setStatusText(`Connecting to ${label}...`)
       // connectToServer is a void/error-only binding: Wails resolves it to null
       // on success, so "no throw" (not a null return value) is the success

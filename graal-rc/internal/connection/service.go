@@ -49,6 +49,15 @@ type Service struct {
 	pumpCancel    context.CancelFunc
 	lastNCAttempt time.Time // last ConnectToNCServer attempt; throttles retries
 	emit          func(name string, data ...any)
+
+	// maxUpload is the latest server-reported max upload size (bytes), pushed via
+	// the MaxUploadSize callback. 0 means unknown. Guarded by mu.
+	maxUpload int64
+
+	// pendingFiles correlates a file download request (by remote path) to its
+	// content bytes, delivered asynchronously via the FileReceived callback.
+	pendingFilesMu sync.Mutex
+	pendingFiles   map[string]chan []byte
 	// channels is the authoritative set of joined IRC channels, derived from the
 	// join/left marker lines. It is the single source of truth for which IRC
 	// tabs the frontend should show; the frontend reconciles its tabs against a
@@ -70,6 +79,12 @@ type Service struct {
 
 // scriptTimeout is how long OpenScript/OpenNPC* waits for the NC server reply.
 const scriptTimeout = 15 * time.Second
+
+// downloadTimeout is how long a file download waits for the full content. File
+// transfers can be large and the server slow (30 MB over a sluggish link can
+// take minutes; grclib streams "Received chunk" progress meanwhile), so this is
+// far longer than scriptTimeout.
+const downloadTimeout = 10 * time.Minute
 
 // pendingKey builds the correlation key for a script/flags/attributes request.
 func pendingKey(kind, idOrName string) string { return kind + ":" + idOrName }
@@ -105,6 +120,37 @@ func (s *Service) resolvePending(key string, reply rclib.ScriptReply) {
 	}
 }
 
+// registerFile installs a content channel for a download keyed by remote path,
+// returning it. Called before FileBrowserDownload so the matching FileReceived
+// callback resolves it.
+func (s *Service) registerFile(path string) chan []byte {
+	ch := make(chan []byte, 1)
+	s.pendingFilesMu.Lock()
+	if s.pendingFiles == nil {
+		s.pendingFiles = map[string]chan []byte{}
+	}
+	s.pendingFiles[path] = ch
+	s.pendingFilesMu.Unlock()
+	return ch
+}
+
+// resolveFile delivers downloaded content to the waiter for path (if any) and
+// drops it. Called from the pump-goroutine FileReceived callback; non-blocking.
+func (s *Service) resolveFile(path string, content []byte) {
+	s.pendingFilesMu.Lock()
+	ch, ok := s.pendingFiles[path]
+	if ok {
+		delete(s.pendingFiles, path)
+	}
+	s.pendingFilesMu.Unlock()
+	if ok {
+		select {
+		case ch <- content:
+		default:
+		}
+	}
+}
+
 // channelState tracks one IRC channel's join state plus a pending (debounced)
 // leave deadline. leaveAt is the zero time when no leave is pending.
 type channelState struct {
@@ -118,6 +164,17 @@ const channelLeaveCooldown = 600 * time.Millisecond
 
 // NewService returns an empty service.
 func NewService() *Service { return &Service{} }
+
+// displayServerName strips a raw listserver server name's single-letter type
+// prefix + space (e.g. "H Testbed3d" → "Testbed3d", "P …" gold, "U …" classic).
+// Applied where the session stores the server name so every window/tray title
+// shows the clean name.
+func displayServerName(name string) string {
+	if len(name) >= 3 && name[1] == ' ' && name[0] >= 'A' && name[0] <= 'Z' {
+		return name[2:]
+	}
+	return name
+}
 
 // SetEmitter wires the bridge used to push grclib callbacks to the frontend
 // (Wails runtime.EventsEmit). Must be set before ConnectToServer so chat/IRC/
@@ -388,10 +445,12 @@ func (s *Service) ConnectToServer(index int) error {
 	}
 
 	// Resolve the server name from the cached listserver list by index, so the
-	// App layer can brand window/tray titles with it once connected.
+	// App layer can brand window/tray titles with it once connected. Strip the
+	// single-letter type prefix (e.g. "H Testbed3d" → "Testbed3d") — mirrors the
+	// reference client's getServerListName and the frontend serverDisplay helper.
 	var serverName string
 	if servers, err := rclib.GetServers(h); err == nil && index >= 0 && index < len(servers) {
-		serverName = servers[index].Name
+		serverName = displayServerName(servers[index].Name)
 	}
 
 	connected := make(chan struct{}, 1)
@@ -425,6 +484,10 @@ func (s *Service) ConnectToServer(index int) error {
 				s.resolvePending(pendingKey("serverdata", dataType), rclib.ScriptReply{Type: dataType, Script: content})
 				return
 			}
+			// Log every non-text server-data packet to the Go terminal (raw
+			// protocol lines like [PLO_RC_PLAYERPROPSCHANGE] '2$ arrive here and
+			// are shown gray in chat; mirror them to stdout for later tooling).
+			log.Printf("[serverdata] %s: %q", dataType, content)
 			s.emitEvent("rc:serverdata", dataType, content)
 		},
 		ScriptReceived: func(scriptType, name string, id int, script string) {
@@ -439,6 +502,16 @@ func (s *Service) ConnectToServer(index int) error {
 		NPCAttributes: func(id int, attrs string) {
 			s.resolvePending(pendingKey("npcattr", strconv.Itoa(id)), rclib.ScriptReply{Type: "npcattr", ID: id, Script: attrs})
 		},
+		FileBrowserFolders: func(count int) { s.emitEvent("rc:fbFolders", count) },
+		FileBrowserFiles:   func(folder string, count int) { s.emitEvent("rc:fbFiles", folder, count) },
+		FileBrowserMessage: func(message string) { s.emitEvent("rc:fbMessage", message) },
+		MaxUploadSize: func(maxSize int64) {
+			s.mu.Lock()
+			s.maxUpload = maxSize
+			s.mu.Unlock()
+			s.emitEvent("rc:fbMaxUpload", maxSize)
+		},
+		FileReceived: func(path string, content []byte) { s.resolveFile(path, content) },
 	})
 	s.startPump(h)
 
@@ -929,6 +1002,139 @@ func (s *Service) RefreshWeapons() error {
 // weaponListGetPacket is PLI_NC_WEAPONLISTGET (IEnums.h) — re-request the weapon
 // list from the NC server.
 const weaponListGetPacket = 115
+
+// --- File browser (main server socket) ---
+
+// StartFileBrowser begins a file-browser session. The folder/file data arrives
+// asynchronously via the rc:fbFolders / rc:fbFiles events.
+func (s *Service) StartFileBrowser() error {
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
+	}
+	return rclib.FileBrowserStart(h)
+}
+
+// FileBrowserCd changes the current browser folder.
+func (s *Service) FileBrowserCd(folder string) error {
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
+	}
+	return rclib.FileBrowserCd(h, folder)
+}
+
+// FileBrowserDelete deletes a remote file.
+func (s *Service) FileBrowserDelete(path string) error {
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
+	}
+	if err := rclib.FileBrowserDelete(h, path); err != nil {
+		return err
+	}
+	s.emitEvent("rc:fbChanged")
+	return nil
+}
+
+// FileBrowserRename renames a remote file.
+func (s *Service) FileBrowserRename(oldPath, newPath string) error {
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
+	}
+	if err := rclib.FileBrowserRename(h, oldPath, newPath); err != nil {
+		return err
+	}
+	s.emitEvent("rc:fbChanged")
+	return nil
+}
+
+// FileBrowserMove moves a file into a destination folder.
+func (s *Service) FileBrowserMove(destFolder, filePath string) error {
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
+	}
+	if err := rclib.FileBrowserMove(h, destFolder, filePath); err != nil {
+		return err
+	}
+	s.emitEvent("rc:fbChanged")
+	return nil
+}
+
+// GetFileBrowserFolders returns the current browser folders (snapshotted from
+// the DLL cache). Call after an rc:fbFolders event.
+func (s *Service) GetFileBrowserFolders() ([]rclib.FileBrowserFolder, error) {
+	h, err := s.requireHandle()
+	if err != nil {
+		return nil, err
+	}
+	return rclib.CopyFileBrowserFolders(h)
+}
+
+// GetFileBrowserFiles returns the current browser files (snapshotted from the
+// DLL cache). Call after an rc:fbFiles event.
+func (s *Service) GetFileBrowserFiles() ([]rclib.FileBrowserEntry, error) {
+	h, err := s.requireHandle()
+	if err != nil {
+		return nil, err
+	}
+	return rclib.CopyFileBrowserFiles(h)
+}
+
+// MaxUploadFileSize returns the latest server-reported max upload size (bytes),
+// or 0 if unknown.
+func (s *Service) MaxUploadFileSize() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.maxUpload
+}
+
+// DownloadFile requests a file and waits for its content via the FileReceived
+// callback (correlated by remote path). Returns the raw bytes.
+func (s *Service) DownloadFile(path string) ([]byte, error) {
+	h, err := s.requireHandle()
+	if err != nil {
+		return nil, err
+	}
+	ch := s.registerFile(path)
+	if err := rclib.FileBrowserDownload(h, path); err != nil {
+		s.pendingFilesMu.Lock()
+		delete(s.pendingFiles, path)
+		s.pendingFilesMu.Unlock()
+		return nil, err
+	}
+	select {
+	case content := <-ch:
+		if content == nil {
+			return nil, errors.New("server returned no file content")
+		}
+		return content, nil
+	case <-time.After(downloadTimeout):
+		s.pendingFilesMu.Lock()
+		delete(s.pendingFiles, path)
+		s.pendingFilesMu.Unlock()
+		return nil, errors.New("file download timed out (no response from server)")
+	}
+}
+
+// UploadFile uploads raw bytes to a remote path. When the max upload size is
+// known, oversize uploads are rejected up front with a clear error.
+func (s *Service) UploadFile(path string, content []byte) error {
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
+	}
+	if max := s.MaxUploadFileSize(); max > 0 && int64(len(content)) > max {
+		return fmt.Errorf("file is %d bytes; server max upload is %d bytes", len(content), max)
+	}
+	if err := rclib.UploadFile(h, path, content); err != nil {
+		return err
+	}
+	s.emitEvent("rc:fbChanged")
+	return nil
+}
 
 // Logout drops the active handle and clears credentials.
 func (s *Service) Logout() {

@@ -1,12 +1,17 @@
 package main
 
 import (
+	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +23,7 @@ import (
 
 	"graal-rc/internal/connection"
 	"graal-rc/internal/credentials"
+	"graal-rc/internal/sqlite"
 	"graal-rc/rclib"
 )
 
@@ -56,6 +62,9 @@ type App struct {
 	settingsMu     sync.Mutex
 	settingsWindow *application.WebviewWindow
 
+	fileBrowserMu     sync.Mutex
+	fileBrowserWindow *application.WebviewWindow
+
 	editorMu      sync.Mutex
 	editorWindows map[string]*application.WebviewWindow
 
@@ -65,6 +74,21 @@ type App struct {
 
 	codingMu       sync.Mutex
 	codingSettings CodingSettings
+
+	fileBrowserCfgMu sync.Mutex
+	fileBrowserCfg   FileBrowserConfig
+
+	// Opened-file caches for the type-aware open behavior (double-click a file):
+	// textCache holds .txt content for the editor window; dbFiles maps a remote
+	// .db path to its local cache file (operated on by the SQLite explorer);
+	// dbHeaders keeps the original 100-byte header for version preservation on
+	// save. textWindows/sqliteWindows track one window per remote path.
+	openMu        sync.Mutex
+	textCache     map[string][]byte
+	dbFiles       map[string]string
+	dbHeaders     map[string][]byte
+	textWindows   map[string]*application.WebviewWindow
+	sqliteWindows map[string]*application.WebviewWindow
 }
 
 // NewApp creates a new App with a fresh connection service and an encrypted
@@ -77,7 +101,18 @@ func NewApp() *App {
 	} else {
 		migrateLegacyCredentials(vault)
 	}
-	return &App{sessions: connection.NewService(), vault: vault, editorWindows: map[string]*application.WebviewWindow{}, editorCache: map[string]rclib.ScriptReply{}, editorDirty: map[string]bool{}}
+	return &App{
+		sessions:       connection.NewService(),
+		vault:          vault,
+		editorWindows:  map[string]*application.WebviewWindow{},
+		editorCache:    map[string]rclib.ScriptReply{},
+		editorDirty:    map[string]bool{},
+		textCache:      map[string][]byte{},
+		dbFiles:        map[string]string{},
+		dbHeaders:      map[string][]byte{},
+		textWindows:    map[string]*application.WebviewWindow{},
+		sqliteWindows:  map[string]*application.WebviewWindow{},
+	}
 }
 
 // attach wires the v3 application handle and the event emitter (grclib
@@ -411,6 +446,476 @@ func (a *App) WarpNPC(id int, x, y float64, level string) error {
 // RefreshWeapons re-requests the weapon list from the NC server.
 func (a *App) RefreshWeapons() error { return a.sessions.RefreshWeapons() }
 
+// --- File browser (main server socket) ---
+
+// FileBrowserStart begins a file-browser session.
+func (a *App) FileBrowserStart() error { return a.sessions.StartFileBrowser() }
+
+// FileBrowserCd changes the current browser folder.
+func (a *App) FileBrowserCd(folder string) error { return a.sessions.FileBrowserCd(folder) }
+
+// FileBrowserDelete deletes a remote file.
+func (a *App) FileBrowserDelete(path string) error { return a.sessions.FileBrowserDelete(path) }
+
+// FileBrowserRename renames a remote file.
+func (a *App) FileBrowserRename(oldPath, newPath string) error {
+	return a.sessions.FileBrowserRename(oldPath, newPath)
+}
+
+// FileBrowserMove moves a file into a destination folder.
+func (a *App) FileBrowserMove(destFolder, filePath string) error {
+	return a.sessions.FileBrowserMove(destFolder, filePath)
+}
+
+// GetFileBrowserFolders returns the current browser folders.
+func (a *App) GetFileBrowserFolders() ([]rclib.FileBrowserFolder, error) {
+	return a.sessions.GetFileBrowserFolders()
+}
+
+// GetFileBrowserFiles returns the current browser files.
+func (a *App) GetFileBrowserFiles() ([]rclib.FileBrowserEntry, error) {
+	return a.sessions.GetFileBrowserFiles()
+}
+
+// FileBrowserMaxUploadSize returns the server's max upload size in bytes.
+func (a *App) FileBrowserMaxUploadSize() int64 { return a.sessions.MaxUploadFileSize() }
+
+// DownloadFile downloads a remote file. With saveAs=false it writes straight to
+// the configured downloads folder (which must be set); with saveAs=true it
+// prompts for a destination via a native Save dialog. Returns the saved path.
+func (a *App) DownloadFile(remotePath string, saveAs bool) (string, error) {
+	content, err := a.sessions.DownloadFile(remotePath)
+	if err != nil {
+		return "", err
+	}
+	name := filepath.Base(remotePath)
+	if name == "" || name == "." || name == string(filepath.Separator) {
+		name = "download"
+	}
+	var dest string
+	if saveAs {
+		chosen, err := a.app.Dialog.SaveFile().
+			SetMessage("Save " + name).
+			SetFilename(name).
+			PromptForSingleSelection()
+		if err != nil {
+			return "", err
+		}
+		if chosen == "" {
+			return "", nil // user cancelled
+		}
+		dest = chosen
+	} else {
+		dir := a.GetFileBrowserConfig().DownloadDir
+		if dir == "" {
+			return "", errors.New("no downloads folder set — configure it in Settings → Files")
+		}
+		dest = uniqueDownloadPath(dir, name)
+	}
+	if err := os.WriteFile(dest, content, 0o644); err != nil {
+		return "", err
+	}
+	return dest, nil
+}
+
+// UploadFileViaDialog opens a native file picker, reads the chosen file, and
+// uploads it to the current browser folder.
+func (a *App) UploadFileViaDialog() error {
+	chosen, err := a.app.Dialog.OpenFile().
+		SetTitle("Select a file to upload").
+		CanChooseFiles(true).
+		CanChooseDirectories(false).
+		PromptForSingleSelection()
+	if err != nil {
+		return err
+	}
+	if chosen == "" {
+		return nil // user cancelled
+	}
+	content, err := os.ReadFile(chosen)
+	if err != nil {
+		return err
+	}
+	return a.sessions.UploadFile(filepath.Base(chosen), content)
+}
+
+// UploadFileBytes uploads base64-encoded content (used for drag-in uploads from
+// the webview, which reads the dropped file and sends it as base64).
+func (a *App) UploadFileBytes(remotePath, b64 string) error {
+	content, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return fmt.Errorf("invalid file data: %w", err)
+	}
+	return a.sessions.UploadFile(remotePath, content)
+}
+
+// uniqueDownloadPath returns a non-colliding path inside dir for a file named
+// name, appending " (n)" before the extension when a file already exists.
+func uniqueDownloadPath(dir, name string) string {
+	dest := filepath.Join(dir, name)
+	if _, err := os.Stat(dest); os.IsNotExist(err) {
+		return dest
+	}
+	ext := filepath.Ext(name)
+	stem := strings.TrimSuffix(name, ext)
+	for i := 1; ; i++ {
+		candidate := filepath.Join(dir, fmt.Sprintf("%s (%d)%s", stem, i, ext))
+		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+			return candidate
+		}
+	}
+}
+
+// --- Type-aware file open (double-click a file in the browser) ---
+
+// fileCacheDir is where opened media/.db/.txt temp files live (so the SQLite
+// explorer can operate on + re-upload the .db). Created lazily.
+func fileCacheDir() (string, error) {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	p := filepath.Join(dir, "graal-rc", "filecache")
+	if err := os.MkdirAll(p, 0o755); err != nil {
+		return "", err
+	}
+	return p, nil
+}
+
+var (
+	mediaExts = map[string]bool{
+		"png": true, "jpg": true, "jpeg": true, "gif": true, "webp": true, "bmp": true, "ico": true,
+		"mp4": true, "webm": true, "mov": true, "avi": true, "mkv": true,
+		"mp3": true, "wav": true, "ogg": true, "m4a": true, "flac": true,
+	}
+	textExts = map[string]bool{
+		"txt": true, "ini": true, "cfg": true, "conf": true, "log": true, "md": true,
+		"json": true, "js": true, "ts": true, "csv": true, "xml": true,
+		"yml": true, "yaml": true, "html": true, "css": true,
+	}
+	dbExts = map[string]bool{"db": true, "sqlite": true, "sqlite3": true}
+)
+
+// ext returns the lower-cased extension (no dot) of a path.
+func extOf(path string) string {
+	e := filepath.Ext(path)
+	return strings.ToLower(strings.TrimPrefix(e, "."))
+}
+
+// osOpenPath launches a file/path with the OS default application.
+func osOpenPath(path string) error {
+	switch runtime.GOOS {
+	case "windows":
+		return exec.Command("cmd", "/c", "start", "", path).Start()
+	case "darwin":
+		return exec.Command("open", path).Start()
+	default:
+		return exec.Command("xdg-open", path).Start()
+	}
+}
+
+// OpenRemoteFile downloads a file and opens it by type. Returns a short kind
+// label for the toast. Called on a file double-click.
+func (a *App) OpenRemoteFile(remotePath string) (string, error) {
+	content, err := a.sessions.DownloadFile(remotePath)
+	if err != nil {
+		return "", err
+	}
+	name := filepath.Base(remotePath)
+	ext := extOf(remotePath)
+	switch {
+	case mediaExts[ext]:
+		dir, err := fileCacheDir()
+		if err != nil {
+			return "", err
+		}
+		local := filepath.Join(dir, name)
+		if err := os.WriteFile(local, content, 0o644); err != nil {
+			return "", err
+		}
+		if err := osOpenPath(local); err != nil {
+			return "", err
+		}
+		return "media", nil
+	case dbExts[ext]:
+		dir, err := fileCacheDir()
+		if err != nil {
+			return "", err
+		}
+		local := filepath.Join(dir, name)
+		if err := os.WriteFile(local, content, 0o644); err != nil {
+			return "", err
+		}
+		a.openMu.Lock()
+		a.dbFiles[remotePath] = local
+		if len(content) >= 100 {
+			hdr := make([]byte, 100)
+			copy(hdr, content[:100])
+			a.dbHeaders[remotePath] = hdr
+		}
+		a.openMu.Unlock()
+		if err := a.openSqliteWindow(remotePath); err != nil {
+			return "", err
+		}
+		return "database", nil
+	case textExts[ext]:
+		a.openMu.Lock()
+		a.textCache[remotePath] = content
+		a.openMu.Unlock()
+		if err := a.openTextWindow(remotePath); err != nil {
+			return "", err
+		}
+		return "text", nil
+	default:
+		// Unknown binary → plain download to the configured folder.
+		saved, err := a.DownloadFile(remotePath, false)
+		if err != nil {
+			return "", err
+		}
+		if saved != "" {
+			osOpenPath(saved)
+		}
+		return "download", nil
+	}
+}
+
+// OpenRemoteFileAsText downloads a file and opens it in the Monaco text editor
+// regardless of type — even binary files are shown as text (may be garbage, but
+// that's the point: force a text view).
+func (a *App) OpenRemoteFileAsText(remotePath string) error {
+	content, err := a.sessions.DownloadFile(remotePath)
+	if err != nil {
+		return err
+	}
+	a.openMu.Lock()
+	a.textCache[remotePath] = content
+	a.openMu.Unlock()
+	return a.openTextWindow(remotePath)
+}
+
+// GetTextFile returns the cached text content for a .txt editor window.
+func (a *App) GetTextFile(remotePath string) (string, error) {
+	a.openMu.Lock()
+	b, ok := a.textCache[remotePath]
+	a.openMu.Unlock()
+	if !ok {
+		return "", errors.New("text content not available — reopen the file")
+	}
+	return string(b), nil
+}
+
+// SaveTextFile uploads edited text content back to the remote path.
+func (a *App) SaveTextFile(remotePath, content string) error {
+	if err := a.sessions.UploadFile(remotePath, []byte(content)); err != nil {
+		return err
+	}
+	a.openMu.Lock()
+	a.textCache[remotePath] = []byte(content)
+	a.openMu.Unlock()
+	return nil
+}
+
+// openTextWindow opens (or focuses) the plain-text editor for remotePath.
+func (a *App) openTextWindow(remotePath string) error {
+	mapKey := "textfile:" + remotePath
+	a.editorMu.Lock()
+	if w, ok := a.editorWindows[mapKey]; ok {
+		w.Show()
+		w.Focus()
+		a.editorMu.Unlock()
+		return nil
+	}
+	a.editorMu.Unlock()
+	w := a.app.Window.NewWithOptions(application.WebviewWindowOptions{
+		Name:             sanitizeWindowName("textfile", remotePath),
+		Title:            editorTitle(a.sessions.Status().ServerName, "textfile", filepath.Base(remotePath)),
+		URL:              "/#textfile?p=" + url.QueryEscape(remotePath),
+		Width:            820,
+		Height:           620,
+		BackgroundColour: application.NewRGB(15, 17, 21),
+	})
+	a.editorMu.Lock()
+	a.editorWindows[mapKey] = w
+	a.editorMu.Unlock()
+	w.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
+		a.editorCacheMu.Lock()
+		dirty := a.editorDirty[mapKey]
+		a.editorCacheMu.Unlock()
+		if dirty {
+			a.app.Event.Emit("rc:editorConfirmClose", mapKey)
+			event.Cancel()
+		}
+	})
+	w.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
+		a.editorMu.Lock()
+		delete(a.editorWindows, mapKey)
+		a.editorMu.Unlock()
+		a.editorCacheMu.Lock()
+		delete(a.editorDirty, mapKey)
+		a.editorCacheMu.Unlock()
+		a.openMu.Lock()
+		delete(a.textCache, remotePath)
+		a.openMu.Unlock()
+	})
+	return nil
+}
+
+// --- SQLite explorer ---
+
+// SqliteTable is one entry of the explorer's table list.
+type SqliteTable struct {
+	Name   string `json:"name"`
+	Schema string `json:"schema"`
+}
+
+// SqliteInfo describes a remote .db for the explorer.
+type SqliteInfo struct {
+	Tables []SqliteTable `json:"tables"`
+}
+
+// SqliteResult is a query result (columns+rows for SELECT, rowsAffected for DML).
+type SqliteResult struct {
+	Columns      []string `json:"columns"`
+	Rows         [][]any  `json:"rows"`
+	RowsAffected int64    `json:"rowsAffected"`
+}
+
+// sqliteDB opens the cached connection for a remote .db.
+func (a *App) sqliteDB(remotePath string) (*sqliteDBHandle, error) {
+	a.openMu.Lock()
+	local := a.dbFiles[remotePath]
+	a.openMu.Unlock()
+	if local == "" {
+		return nil, errors.New("database not open — reopen it from the file browser")
+	}
+	db, err := sqlite.Open(local)
+	if err != nil {
+		return nil, err
+	}
+	return &sqliteDBHandle{db: db, local: local}, nil
+}
+
+type sqliteDBHandle struct {
+	db    *sql.DB
+	local string
+}
+
+// GetSqliteInfo lists the tables of a remote .db.
+func (a *App) GetSqliteInfo(remotePath string) (SqliteInfo, error) {
+	h, err := a.sqliteDB(remotePath)
+	if err != nil {
+		return SqliteInfo{}, err
+	}
+	tables, err := sqlite.Tables(h.db)
+	if err != nil {
+		return SqliteInfo{}, err
+	}
+	out := SqliteInfo{}
+	for _, t := range tables {
+		out.Tables = append(out.Tables, SqliteTable{Name: t.Name, Schema: t.Schema})
+	}
+	return out, nil
+}
+
+// SqliteQuery runs arbitrary SQL against a remote .db.
+func (a *App) SqliteQuery(remotePath, query string, args []any) (SqliteResult, error) {
+	h, err := a.sqliteDB(remotePath)
+	if err != nil {
+		return SqliteResult{}, err
+	}
+	res, err := sqlite.Query(h.db, query, args)
+	if err != nil {
+		return SqliteResult{}, err
+	}
+	return SqliteResult{Columns: res.Columns, Rows: res.Rows, RowsAffected: res.RowsAffected}, nil
+}
+
+// SqliteUpdateCell sets one cell (table.column at rowid) — inline grid edit.
+func (a *App) SqliteUpdateCell(remotePath, table, column string, rowid int64, value any) error {
+	h, err := a.sqliteDB(remotePath)
+	if err != nil {
+		return err
+	}
+	return sqlite.UpdateCell(h.db, table, column, rowid, value)
+}
+
+// SqliteInsertRow adds a default-values row, returns its rowid.
+func (a *App) SqliteInsertRow(remotePath, table string) (int64, error) {
+	h, err := a.sqliteDB(remotePath)
+	if err != nil {
+		return 0, err
+	}
+	return sqlite.InsertRow(h.db, table)
+}
+
+// SqliteDeleteRow deletes a row by rowid.
+func (a *App) SqliteDeleteRow(remotePath, table string, rowid int64) error {
+	h, err := a.sqliteDB(remotePath)
+	if err != nil {
+		return err
+	}
+	return sqlite.DeleteRow(h.db, table, rowid)
+}
+
+// SaveSqliteFile re-reads the (edited) local .db, best-effort preserves the
+// original SQLite version (copy the header's version-valid-for bytes), and
+// uploads it. modernc preserves the schema-format version it read.
+func (a *App) SaveSqliteFile(remotePath string) error {
+	h, err := a.sqliteDB(remotePath)
+	if err != nil {
+		return err
+	}
+	// Flush WAL so the main file holds all edits, then read it.
+	_, _ = h.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
+	content, err := os.ReadFile(h.local)
+	if err != nil {
+		return err
+	}
+	a.openMu.Lock()
+	hdr := a.dbHeaders[remotePath]
+	a.openMu.Unlock()
+	if hdr != nil && len(content) >= 100 {
+		// Bytes 96–99 = "version valid for" (SQLite version that last wrote).
+		copy(content[96:100], hdr[96:100])
+	}
+	return a.sessions.UploadFile(remotePath, content)
+}
+
+// openSqliteWindow opens (or focuses) the SQLite explorer for remotePath.
+func (a *App) openSqliteWindow(remotePath string) error {
+	a.openMu.Lock()
+	if w, ok := a.sqliteWindows[remotePath]; ok {
+		w.Show()
+		w.Focus()
+		a.openMu.Unlock()
+		return nil
+	}
+	a.openMu.Unlock()
+	w := a.app.Window.NewWithOptions(application.WebviewWindowOptions{
+		Name:             sanitizeWindowName("sqlite", remotePath),
+		Title:            editorTitle(a.sessions.Status().ServerName, "sqlite", filepath.Base(remotePath)),
+		URL:              "/#sqlite?p=" + url.QueryEscape(remotePath),
+		Width:            960,
+		Height:           640,
+		BackgroundColour: application.NewRGB(15, 17, 21),
+	})
+	a.openMu.Lock()
+	a.sqliteWindows[remotePath] = w
+	a.openMu.Unlock()
+	w.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
+		a.openMu.Lock()
+		local := a.dbFiles[remotePath]
+		delete(a.sqliteWindows, remotePath)
+		delete(a.dbFiles, remotePath)
+		delete(a.dbHeaders, remotePath)
+		a.openMu.Unlock()
+		if local != "" {
+			sqlite.Close(local) // checkpoint + close, drop cached connection
+		}
+	})
+	return nil
+}
+
 // Status returns the current session status snapshot.
 func (a *App) Status() connection.Status { return a.sessions.Status() }
 
@@ -428,12 +933,14 @@ func (a *App) refreshServerChrome() {
 	playersTitle := "Players"
 	scriptsTitle := "Script Manager"
 	settingsTitle := "Settings"
+	filesTitle := "File Browser"
 	tooltip := "Graal Remote Control"
 	if connected {
 		mainTitle = st.ServerName + " RC"
 		playersTitle = st.ServerName + " Players"
 		scriptsTitle = st.ServerName + " Script Manager"
 		settingsTitle = st.ServerName + " Settings"
+		filesTitle = st.ServerName + " File Browser"
 		count := 0
 		if players, err := a.sessions.GetPlayers(); err == nil {
 			count = len(players)
@@ -446,6 +953,7 @@ func (a *App) refreshServerChrome() {
 	a.setWindowTitleLocked(&a.playerListMu, &a.playerListWindow, playersTitle)
 	a.setWindowTitleLocked(&a.scriptMgrMu, &a.scriptMgrWindow, scriptsTitle)
 	a.setWindowTitleLocked(&a.settingsMu, &a.settingsWindow, settingsTitle)
+	a.setWindowTitleLocked(&a.fileBrowserMu, &a.fileBrowserWindow, filesTitle)
 	if a.tray != nil {
 		a.tray.SetTooltip(tooltip)
 	}
@@ -574,6 +1082,31 @@ func (a *App) OpenSettings() {
 		a.settingsMu.Lock()
 		a.settingsWindow = nil
 		a.settingsMu.Unlock()
+	})
+}
+
+// OpenFileBrowser opens (or focuses) the File Browser window. Singleton.
+func (a *App) OpenFileBrowser() {
+	a.fileBrowserMu.Lock()
+	defer a.fileBrowserMu.Unlock()
+	if a.fileBrowserWindow != nil {
+		a.fileBrowserWindow.Show()
+		a.fileBrowserWindow.Focus()
+		return
+	}
+	w := a.app.Window.NewWithOptions(application.WebviewWindowOptions{
+		Name:             "files",
+		Title:            "File Browser",
+		URL:              "/#files",
+		Width:            920,
+		Height:           600,
+		BackgroundColour: application.NewRGB(15, 17, 21),
+	})
+	a.fileBrowserWindow = w
+	w.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
+		a.fileBrowserMu.Lock()
+		a.fileBrowserWindow = nil
+		a.fileBrowserMu.Unlock()
 	})
 }
 
@@ -835,6 +1368,79 @@ func (a *App) SetCodingSettings(theme, fontFamily string, fontSize int) error {
 	}
 	if a.app != nil {
 		a.app.Event.Emit("rc:codingSettings", string(b))
+	}
+	return nil
+}
+
+// FileBrowserConfig holds the file-browser preferences (the required downloads
+// folder), persisted to a file so every file-browser window reads the same
+// value — localStorage is not reliably shared across Wails v3 windows.
+type FileBrowserConfig struct {
+	DownloadDir string `json:"downloadDir"`
+}
+
+// fileBrowserPath returns the file-browser config file location.
+func fileBrowserPath() (string, error) {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "graal-rc", "filebrowser.json"), nil
+}
+
+// loadFileBrowserConfigLocked reads the persisted file-browser config. Caller
+// must hold a.fileBrowserCfgMu.
+func (a *App) loadFileBrowserConfigLocked() FileBrowserConfig {
+	a.fileBrowserCfg = FileBrowserConfig{}
+	path, err := fileBrowserPath()
+	if err != nil {
+		return a.fileBrowserCfg
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return a.fileBrowserCfg
+	}
+	var cfg FileBrowserConfig
+	if err := json.Unmarshal(b, &cfg); err == nil {
+		a.fileBrowserCfg = cfg
+	}
+	return a.fileBrowserCfg
+}
+
+// GetFileBrowserConfig returns the cached file-browser config (loading once).
+func (a *App) GetFileBrowserConfig() FileBrowserConfig {
+	a.fileBrowserCfgMu.Lock()
+	defer a.fileBrowserCfgMu.Unlock()
+	if a.fileBrowserCfg.DownloadDir == "" {
+		a.loadFileBrowserConfigLocked()
+	}
+	return a.fileBrowserCfg
+}
+
+// SetFileBrowserConfig persists the downloads folder and broadcasts it so the
+// file-browser window updates live.
+func (a *App) SetFileBrowserConfig(downloadDir string) error {
+	a.fileBrowserCfgMu.Lock()
+	a.fileBrowserCfg = FileBrowserConfig{DownloadDir: downloadDir}
+	cfg := a.fileBrowserCfg
+	a.fileBrowserCfgMu.Unlock()
+
+	path, err := fileBrowserPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	b, err := json.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		return err
+	}
+	if a.app != nil {
+		a.app.Event.Emit("rc:fbConfig", string(b))
 	}
 	return nil
 }

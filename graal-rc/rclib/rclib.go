@@ -139,6 +139,48 @@ type NPC struct {
 	Level string `json:"level"`
 }
 
+// RCFileBrowserFolder mirrors grclib's RCFileBrowserFolder struct (include/grclib.h):
+//
+//	struct { char* rights; char* pattern; }
+//
+// x64 layout: rights@0, pattern@8 -> 16 bytes. Note the field order is
+// rights-then-pattern (the header declares them in that order).
+type RCFileBrowserFolder struct {
+	Rights  *byte
+	Pattern *byte
+}
+
+// FileBrowserFolder is the Go-friendly copy of an RCFileBrowserFolder entry.
+type FileBrowserFolder struct {
+	Pattern string `json:"pattern"`
+	Rights  string `json:"rights"`
+}
+
+// RCFileBrowserEntry mirrors grclib's RCFileBrowserEntry struct (include/grclib.h):
+//
+//	struct { char* path; char* rights; int size; int modified; int is_directory; }
+//
+// x64 layout: path@0, rights@8, size@16, modified@20, is_directory@24,
+// pad@28 -> 32 bytes. The trailing int32 pad aligns the array stride (each
+// entry is 32 bytes) so iterating the C array does not drift.
+type RCFileBrowserEntry struct {
+	Path        *byte
+	Rights      *byte
+	Size        int32
+	Modified    int32
+	IsDirectory int32
+	_           int32 // pad to 32 bytes (array stride)
+}
+
+// FileBrowserEntry is the Go-friendly copy of an RCFileBrowserEntry entry.
+type FileBrowserEntry struct {
+	Path        string `json:"path"`
+	Rights      string `json:"rights"`
+	Size        int    `json:"size"`
+	Modified    int    `json:"modified"`
+	IsDirectory bool   `json:"isDirectory"`
+}
+
 // ScriptReply carries a fetched script / flags / attributes payload back to the
 // caller. Type is "weapon" | "class" | "npc" | "npcflags" | "npcattr".
 type ScriptReply struct {
@@ -222,6 +264,25 @@ var (
 	procOnNPCDeleted     *proc
 	procOnNPCFlags       *proc
 	procOnNPCAttributes  *proc
+
+	// File browser (main server socket).
+	procFileBrowserStart        *proc
+	procFileBrowserCd           *proc
+	procFileBrowserDownload     *proc
+	procFileBrowserDelete       *proc
+	procFileBrowserRename       *proc
+	procFileBrowserMove         *proc
+	procUploadFile              *proc
+	procGetMaxUploadFileSize    *proc
+	procCopyFileBrowserFolders  *proc
+	procFreeFileBrowserFolders  *proc
+	procCopyFileBrowserFiles    *proc
+	procFreeFileBrowserFiles    *proc
+	procOnFileBrowserFolders    *proc
+	procOnFileBrowserFiles      *proc
+	procOnFileBrowserMessage    *proc
+	procOnFileReceived          *proc
+	procOnMaxUploadFileSize     *proc
 )
 
 // Default listserver endpoint used by the reference client.
@@ -408,6 +469,23 @@ func registerAll(resolve func(name string) (*proc, error)) error {
 	procOnNPCDeleted = get("rc_on_npc_deleted")
 	procOnNPCFlags = get("rc_on_npc_flags")
 	procOnNPCAttributes = get("rc_on_npc_attributes")
+	procFileBrowserStart = get("rc_filebrowser_start")
+	procFileBrowserCd = get("rc_filebrowser_cd")
+	procFileBrowserDownload = get("rc_filebrowser_download")
+	procFileBrowserDelete = get("rc_filebrowser_delete")
+	procFileBrowserRename = get("rc_filebrowser_rename")
+	procFileBrowserMove = get("rc_filebrowser_move")
+	procUploadFile = get("rc_upload_file")
+	procGetMaxUploadFileSize = get("rc_get_max_upload_file_size")
+	procCopyFileBrowserFolders = get("rc_copy_filebrowser_folders")
+	procFreeFileBrowserFolders = get("rc_free_filebrowser_folders")
+	procCopyFileBrowserFiles = get("rc_copy_filebrowser_files")
+	procFreeFileBrowserFiles = get("rc_free_filebrowser_files")
+	procOnFileBrowserFolders = get("rc_on_filebrowser_folders")
+	procOnFileBrowserFiles = get("rc_on_filebrowser_files")
+	procOnFileBrowserMessage = get("rc_on_filebrowser_message")
+	procOnFileReceived = get("rc_on_file_received")
+	procOnMaxUploadFileSize = get("rc_on_max_upload_file_size")
 	return firstErr
 }
 
@@ -454,6 +532,14 @@ type EventCallbacks struct {
 	NPCChanged     func(id int)      // npc added or deleted
 	NPCFlags       func(id int, flags string)
 	NPCAttributes  func(id int, attrs string)
+
+	// File browser callbacks (main server socket). The folders/files callbacks
+	// only signal readiness with a count; the app snapshots via CopyFileBrowser*.
+	FileBrowserFolders func(count int)
+	FileBrowserFiles   func(folder string, count int)
+	FileBrowserMessage func(message string)
+	FileReceived       func(path string, content []byte)
+	MaxUploadSize      func(maxSize int64)
 }
 
 var (
@@ -472,6 +558,12 @@ var (
 	cbNPCDeleted     = newCallback(npcDeletedEntry)
 	cbNPCFlags       = newCallback(npcFlagsEntry)
 	cbNPCAttributes  = newCallback(npcAttributesEntry)
+
+	cbFileBrowserFolders = newCallback(fileBrowserFoldersEntry)
+	cbFileBrowserFiles   = newCallback(fileBrowserFilesEntry)
+	cbFileBrowserMessage = newCallback(fileBrowserMessageEntry)
+	cbFileReceived       = newCallback(fileReceivedEntry)
+	cbMaxUploadSize      = newCallback(maxUploadSizeEntry)
 
 	routeMu sync.Mutex
 	routes  = map[Handle]*EventCallbacks{}
@@ -610,6 +702,68 @@ func npcAttributesEntry(npcID, attrs, userData uintptr) uintptr {
 	return 0
 }
 
+// fileBrowserFoldersEntry is the shim for RC_OnFileBrowserFolders(count, user_data).
+// The callback only signals that folder data is ready; the app snapshots via
+// CopyFileBrowserFolders.
+func fileBrowserFoldersEntry(count, userData uintptr) uintptr {
+	fire(userData, func(c *EventCallbacks) {
+		if c.FileBrowserFolders != nil {
+			c.FileBrowserFolders(int(int32(count)))
+		}
+	})
+	return 0
+}
+
+// fileBrowserFilesEntry is the shim for RC_OnFileBrowserFiles(folder, count, user_data).
+func fileBrowserFilesEntry(folder, count, userData uintptr) uintptr {
+	f := bptrToString((*byte)(unsafe.Pointer(folder)))
+	fire(userData, func(c *EventCallbacks) {
+		if c.FileBrowserFiles != nil {
+			c.FileBrowserFiles(f, int(int32(count)))
+		}
+	})
+	return 0
+}
+
+// fileBrowserMessageEntry is the shim for RC_OnFileBrowserMessage(message, user_data).
+func fileBrowserMessageEntry(message, userData uintptr) uintptr {
+	msg := bptrToString((*byte)(unsafe.Pointer(message)))
+	fire(userData, func(c *EventCallbacks) {
+		if c.FileBrowserMessage != nil {
+			c.FileBrowserMessage(msg)
+		}
+	})
+	return 0
+}
+
+// fileReceivedEntry is the shim for RC_OnFileReceived(path, content, length, user_data).
+// The content buffer is owned by grclib and may be freed on return, so it is
+// copied into a fresh Go allocation before dispatch.
+func fileReceivedEntry(path, content, length, userData uintptr) uintptr {
+	p := bptrToString((*byte)(unsafe.Pointer(path)))
+	var data []byte
+	if content != 0 && length != 0 {
+		// Copy the C buffer into a Go-owned slice so it survives the call.
+		data = append([]byte(nil), unsafe.Slice((*byte)(unsafe.Pointer(content)), int(int32(length)))...)
+	}
+	fire(userData, func(c *EventCallbacks) {
+		if c.FileReceived != nil {
+			c.FileReceived(p, data)
+		}
+	})
+	return 0
+}
+
+// maxUploadSizeEntry is the shim for RC_OnMaxUploadFileSize(max_size, user_data).
+func maxUploadSizeEntry(maxSize, userData uintptr) uintptr {
+	fire(userData, func(c *EventCallbacks) {
+		if c.MaxUploadSize != nil {
+			c.MaxUploadSize(int64(maxSize))
+		}
+	})
+	return 0
+}
+
 func fire(userData uintptr, dispatch func(*EventCallbacks)) {
 	if cb := routeFor(Handle(userData)); cb != nil {
 		dispatch(cb)
@@ -646,6 +800,11 @@ func RegisterCallbacks(h Handle, cbs *EventCallbacks) {
 	procOnNPCDeleted.Call(uintptr(h), cbNPCDeleted, uintptr(h))
 	procOnNPCFlags.Call(uintptr(h), cbNPCFlags, uintptr(h))
 	procOnNPCAttributes.Call(uintptr(h), cbNPCAttributes, uintptr(h))
+	procOnFileBrowserFolders.Call(uintptr(h), cbFileBrowserFolders, uintptr(h))
+	procOnFileBrowserFiles.Call(uintptr(h), cbFileBrowserFiles, uintptr(h))
+	procOnFileBrowserMessage.Call(uintptr(h), cbFileBrowserMessage, uintptr(h))
+	procOnFileReceived.Call(uintptr(h), cbFileReceived, uintptr(h))
+	procOnMaxUploadFileSize.Call(uintptr(h), cbMaxUploadSize, uintptr(h))
 }
 
 // UnregisterCallbacks detaches event callbacks for the handle.
@@ -670,6 +829,11 @@ func UnregisterCallbacks(h Handle) {
 	procOnNPCDeleted.Call(uintptr(h), 0, 0)
 	procOnNPCFlags.Call(uintptr(h), 0, 0)
 	procOnNPCAttributes.Call(uintptr(h), 0, 0)
+	procOnFileBrowserFolders.Call(uintptr(h), 0, 0)
+	procOnFileBrowserFiles.Call(uintptr(h), 0, 0)
+	procOnFileBrowserMessage.Call(uintptr(h), 0, 0)
+	procOnFileReceived.Call(uintptr(h), 0, 0)
+	procOnMaxUploadFileSize.Call(uintptr(h), 0, 0)
 }
 
 // ProcessEvents pumps queued connection callbacks once. Call regularly from a
@@ -1233,6 +1397,125 @@ func SendNCPacket(h Handle, packetID int) error {
 		return errors.New(LastError(h))
 	}
 	return nil
+}
+
+// FileBrowserStart begins a file-browser session (requests the root folder list
+// + current files). Folder/file data arrives asynchronously via the
+// FileBrowserFolders / FileBrowserFiles callbacks.
+func FileBrowserStart(h Handle) error { return callHandle(h, procFileBrowserStart) }
+
+// FileBrowserCd changes the current browser folder. The server replies with an
+// updated folder/file set (delivered via the callbacks).
+func FileBrowserCd(h Handle, folder string) error {
+	return callStr1(h, procFileBrowserCd, folder)
+}
+
+// FileBrowserDownload requests a file; its content arrives asynchronously via
+// the FileReceived callback. Callers correlate by path.
+func FileBrowserDownload(h Handle, path string) error {
+	return callStr1(h, procFileBrowserDownload, path)
+}
+
+// FileBrowserDelete deletes a remote file.
+func FileBrowserDelete(h Handle, path string) error {
+	return callStr1(h, procFileBrowserDelete, path)
+}
+
+// FileBrowserRename renames a remote file (old path -> new path).
+func FileBrowserRename(h Handle, oldPath, newPath string) error {
+	return callStr2(h, procFileBrowserRename, oldPath, newPath)
+}
+
+// FileBrowserMove moves a file into a destination folder. NOTE the argument
+// order: (destination_folder, file_path), matching grclib's declaration.
+func FileBrowserMove(h Handle, destFolder, filePath string) error {
+	return callStr2(h, procFileBrowserMove, destFolder, filePath)
+}
+
+// UploadFile uploads raw bytes (content may contain NULs) to a remote path.
+// The length is passed explicitly — content is NOT treated as a C string.
+func UploadFile(h Handle, path string, content []byte) error {
+	if err := load(); err != nil {
+		return err
+	}
+	pathPtr, _ := syscall.BytePtrFromString(path)
+	var contentPtr unsafe.Pointer
+	if len(content) > 0 {
+		contentPtr = unsafe.Pointer(&content[0])
+	}
+	r1, _, _ := procUploadFile.Call(
+		uintptr(h),
+		uintptr(unsafe.Pointer(pathPtr)),
+		uintptr(contentPtr),
+		uintptr(len(content)),
+	)
+	if r1 == 0 {
+		return errors.New(LastError(h))
+	}
+	return nil
+}
+
+// GetMaxUploadFileSize returns the server's max upload size in bytes (0 if
+// unknown). The value is also pushed via the MaxUploadSize callback.
+func GetMaxUploadFileSize(h Handle) int64 {
+	if err := load(); err != nil {
+		return 0
+	}
+	r1, _, _ := procGetMaxUploadFileSize.Call(uintptr(h))
+	return int64(r1)
+}
+
+// CopyFileBrowserFolders snapshots the current browser folders into Go-owned
+// copies. Call after a FileBrowserFolders callback signals data is ready.
+func CopyFileBrowserFolders(h Handle) ([]FileBrowserFolder, error) {
+	if err := load(); err != nil {
+		return nil, err
+	}
+	var ptr uintptr
+	r1, _, _ := procCopyFileBrowserFolders.Call(uintptr(h), uintptr(unsafe.Pointer(&ptr)))
+	count := int(int32(r1))
+	if count <= 0 || ptr == 0 {
+		return nil, nil
+	}
+	arr := (*[1 << 20]RCFileBrowserFolder)(unsafe.Pointer(ptr))[:count:count]
+	out := make([]FileBrowserFolder, count)
+	for i := 0; i < count; i++ {
+		f := arr[i]
+		out[i] = FileBrowserFolder{
+			Pattern: bptrToString(f.Pattern),
+			Rights:  bptrToString(f.Rights),
+		}
+	}
+	procFreeFileBrowserFolders.Call(ptr, uintptr(count))
+	return out, nil
+}
+
+// CopyFileBrowserFiles snapshots the current browser files into Go-owned copies.
+// Call after a FileBrowserFiles callback signals data is ready.
+func CopyFileBrowserFiles(h Handle) ([]FileBrowserEntry, error) {
+	if err := load(); err != nil {
+		return nil, err
+	}
+	var ptr uintptr
+	r1, _, _ := procCopyFileBrowserFiles.Call(uintptr(h), uintptr(unsafe.Pointer(&ptr)))
+	count := int(int32(r1))
+	if count <= 0 || ptr == 0 {
+		return nil, nil
+	}
+	arr := (*[1 << 20]RCFileBrowserEntry)(unsafe.Pointer(ptr))[:count:count]
+	out := make([]FileBrowserEntry, count)
+	for i := 0; i < count; i++ {
+		e := arr[i]
+		out[i] = FileBrowserEntry{
+			Path:        bptrToString(e.Path),
+			Rights:      bptrToString(e.Rights),
+			Size:        int(e.Size),
+			Modified:    int(e.Modified),
+			IsDirectory: e.IsDirectory != 0,
+		}
+	}
+	procFreeFileBrowserFiles.Call(ptr, uintptr(count))
+	return out, nil
 }
 
 // callStr1 calls a (handle, const char*) DLL function returning int (0 = error).

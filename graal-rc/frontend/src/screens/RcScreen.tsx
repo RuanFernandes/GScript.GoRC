@@ -4,7 +4,7 @@
 // panel, and a chat-color settings dialog. Mirrors the reference client's
 // TRemoteFrame.
 import {useEffect, useRef, useState} from "react"
-import {Code2, Flag, FolderTree, LogOut, Settings, SlidersHorizontal, UserRound, Users} from "lucide-react"
+import {Code2, Flag, FolderOpen, FolderTree, LogOut, Settings, SlidersHorizontal, UserRound, Users} from "lucide-react"
 import {toast} from "sonner"
 
 import {Badge} from "@/components/ui/badge"
@@ -217,6 +217,10 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
           <Button variant="outline" size="sm" onClick={() => rcService.openScriptManager()}>
             <Code2 />
             Scripts
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => rcService.openFileBrowser()}>
+            <FolderOpen />
+            Files
           </Button>
           <Button variant="outline" size="sm" onClick={() => rcService.openPlayerList()}>
             <Users />

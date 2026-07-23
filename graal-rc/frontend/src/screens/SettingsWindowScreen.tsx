@@ -3,6 +3,7 @@
 // font family, font size) and Chat (the existing color/log settings via
 // ChatSettingsFields). Both persist to localStorage.
 import {useCallback, useEffect, useState} from "react"
+import {Events} from "@wailsio/runtime"
 
 import {Button} from "@/components/ui/button"
 import {Input} from "@/components/ui/input"
@@ -13,7 +14,7 @@ import {ChatSettingsFields} from "@/components/features/chat/ChatSettingsFields"
 import {useChatSettings} from "@/hooks/useChatSettings"
 import {useCodingSettings} from "@/hooks/useCodingSettings"
 import {rcService} from "@/services/rcService"
-import type {ChatSettings} from "@/types"
+import type {ChatSettings, FileBrowserConfig} from "@/types"
 
 export function SettingsWindowScreen() {
   const coding = useCodingSettings()
@@ -28,6 +29,7 @@ export function SettingsWindowScreen() {
         <TabsList>
           <TabsTrigger value="coding">Coding</TabsTrigger>
           <TabsTrigger value="chat">Chat</TabsTrigger>
+          <TabsTrigger value="files">Files</TabsTrigger>
         </TabsList>
         <TabsContent value="coding" className="mt-4 min-h-0 flex-1 overflow-y-auto">
           <CodingSection
@@ -45,7 +47,68 @@ export function SettingsWindowScreen() {
             onReset={chat.reset}
           />
         </TabsContent>
+        <TabsContent value="files" className="mt-4 min-h-0 flex-1 overflow-y-auto">
+          <FilesSection />
+        </TabsContent>
       </Tabs>
+    </div>
+  )
+}
+
+// FilesSection configures the required downloads folder (without it, downloads
+// in the File Browser are disabled). Persists via the backend and stays in sync
+// across windows via the raw rc:fbConfig event.
+function FilesSection() {
+  const [dir, setDir] = useState("")
+
+  useEffect(() => {
+    rcService
+      .getFileBrowserConfig()
+      .then((c) => setDir(c.downloadDir ?? ""))
+      .catch(() => {})
+    const off = Events.On("rc:fbConfig", (e: {data: string}) => {
+      try {
+        const c = JSON.parse(e.data) as FileBrowserConfig
+        setDir(c.downloadDir ?? "")
+      } catch {
+        // ignore
+      }
+    })
+    return () => {
+      off()
+    }
+  }, [])
+
+  const browse = async () => {
+    const chosen = await rcService.chooseDirectory()
+    if (chosen) {
+      await rcService.setFileBrowserConfig(chosen)
+      setDir(chosen)
+    }
+  }
+
+  const clear = async () => {
+    await rcService.setFileBrowserConfig("")
+    setDir("")
+  }
+
+  return (
+    <div className="grid gap-4">
+      <div className="grid grid-cols-[140px_1fr] items-center gap-2">
+        <Label htmlFor="dl-dir">Downloads folder</Label>
+        <Input id="dl-dir" value={dir} readOnly placeholder="Not set — downloads disabled" />
+      </div>
+      <p className="text-muted-foreground text-xs">
+        Downloaded files are saved here. Downloads are blocked until a folder is set.
+      </p>
+      <div className="flex gap-2">
+        <Button variant="outline" onClick={browse}>
+          Browse…
+        </Button>
+        <Button variant="ghost" onClick={clear} disabled={!dir}>
+          Clear
+        </Button>
+      </div>
     </div>
   )
 }

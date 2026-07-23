@@ -6,6 +6,9 @@ import type {
   AccountSummary,
   Class,
   CodingSettings,
+  FileBrowserConfig,
+  FileBrowserEntry,
+  FileBrowserFolder,
   LoginRequest,
   NCStatus,
   NPC,
@@ -13,6 +16,8 @@ import type {
   RemoteTheme,
   ScriptReply,
   Server,
+  SqliteInfo,
+  SqliteResult,
   Weapon,
 } from "@/types"
 
@@ -75,6 +80,33 @@ export interface RcService {
   getRemoteTheme(): Promise<RemoteTheme | null>
   saveRemoteTheme(name: string, definition: string): Promise<void>
   openSettings(): Promise<void>
+  // File browser (main server socket).
+  openFileBrowser(): Promise<void>
+  fileBrowserStart(): Promise<void>
+  fileBrowserCd(folder: string): Promise<void>
+  fileBrowserDelete(path: string): Promise<void>
+  fileBrowserRename(oldPath: string, newPath: string): Promise<void>
+  fileBrowserMove(destFolder: string, filePath: string): Promise<void>
+  getFileBrowserFolders(): Promise<FileBrowserFolder[] | null>
+  getFileBrowserFiles(): Promise<FileBrowserEntry[] | null>
+  fileBrowserMaxUploadSize(): Promise<number>
+  downloadFile(path: string, saveAs: boolean): Promise<string>
+  uploadFileViaDialog(): Promise<void>
+  uploadFileBytes(path: string, b64: string): Promise<void>
+  getFileBrowserConfig(): Promise<FileBrowserConfig>
+  setFileBrowserConfig(downloadDir: string): Promise<void>
+  // Type-aware file open (double-click).
+  openRemoteFile(path: string): Promise<string>
+  openRemoteFileAsText(path: string): Promise<void>
+  getTextFile(path: string): Promise<string>
+  saveTextFile(path: string, content: string): Promise<void>
+  // SQLite explorer.
+  getSqliteInfo(path: string): Promise<SqliteInfo>
+  sqliteQuery(path: string, sql: string, args: unknown[]): Promise<SqliteResult>
+  sqliteUpdateCell(path: string, table: string, column: string, rowid: number, value: unknown): Promise<void>
+  sqliteInsertRow(path: string, table: string): Promise<number>
+  sqliteDeleteRow(path: string, table: string, rowid: number): Promise<void>
+  saveSqliteFile(path: string): Promise<void>
 }
 
 // Default implementation backed by the generated Wails v3 bindings (App service).
@@ -135,4 +167,32 @@ export const rcService: RcService = {
   getRemoteTheme: () => App.GetRemoteTheme(),
   saveRemoteTheme: (name, definition) => App.SaveRemoteTheme(name, definition),
   openSettings: () => App.OpenSettings(),
+  // File browser (main server socket).
+  openFileBrowser: () => App.OpenFileBrowser(),
+  fileBrowserStart: () => App.FileBrowserStart(),
+  fileBrowserCd: (folder) => App.FileBrowserCd(folder),
+  fileBrowserDelete: (path) => App.FileBrowserDelete(path),
+  fileBrowserRename: (oldPath, newPath) => App.FileBrowserRename(oldPath, newPath),
+  fileBrowserMove: (destFolder, filePath) => App.FileBrowserMove(destFolder, filePath),
+  getFileBrowserFolders: () => App.GetFileBrowserFolders(),
+  getFileBrowserFiles: () => App.GetFileBrowserFiles(),
+  fileBrowserMaxUploadSize: () => App.FileBrowserMaxUploadSize(),
+  downloadFile: (path, saveAs) => App.DownloadFile(path, saveAs),
+  uploadFileViaDialog: () => App.UploadFileViaDialog(),
+  uploadFileBytes: (path, b64) => App.UploadFileBytes(path, b64),
+  getFileBrowserConfig: () => App.GetFileBrowserConfig(),
+  setFileBrowserConfig: (downloadDir) => App.SetFileBrowserConfig(downloadDir),
+  // Type-aware file open (double-click).
+  openRemoteFile: (path) => App.OpenRemoteFile(path),
+  openRemoteFileAsText: (path) => App.OpenRemoteFileAsText(path),
+  getTextFile: (path) => App.GetTextFile(path),
+  saveTextFile: (path, content) => App.SaveTextFile(path, content),
+  // SQLite explorer.
+  getSqliteInfo: (path) => App.GetSqliteInfo(path),
+  sqliteQuery: (path, sql, args) => App.SqliteQuery(path, sql, args),
+  sqliteUpdateCell: (path, table, column, rowid, value) =>
+    App.SqliteUpdateCell(path, table, column, rowid, value),
+  sqliteInsertRow: (path, table) => App.SqliteInsertRow(path, table),
+  sqliteDeleteRow: (path, table, rowid) => App.SqliteDeleteRow(path, table, rowid),
+  saveSqliteFile: (path) => App.SaveSqliteFile(path),
 }
