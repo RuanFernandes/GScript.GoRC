@@ -155,3 +155,35 @@
 *::-webkit-scrollbar-corner {
   background: transparent;
 }
+
+/* ReactFlow diagram (SQLite ER viewer): theme the Controls toolbar + MiniMap to
+   match the dark UI. Without this the controls render as a blank white box
+   (white buttons, invisible icons) and the minimap clashes with the dark pane. */
+.react-flow__controls {
+  border-radius: 6px;
+  overflow: hidden;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+.react-flow__controls-button {
+  background: var(--popover);
+  border-bottom: 1px solid var(--border);
+  color: var(--foreground);
+  fill: currentColor;
+}
+.react-flow__controls-button:hover {
+  background: var(--accent);
+}
+.react-flow__controls-button svg {
+  fill: currentColor;
+  width: 14px;
+  height: 14px;
+}
+.react-flow__minimap {
+  background: var(--card) !important;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+.react-flow__attribution {
+  background: transparent;
+  color: var(--muted-foreground);
+}

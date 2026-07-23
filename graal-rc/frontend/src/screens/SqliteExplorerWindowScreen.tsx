@@ -57,7 +57,7 @@ function TableNode({data}: {data: Record<string, unknown>}) {
     <div className="bg-popover w-52 overflow-hidden rounded-md border text-xs shadow-lg">
       <div className="bg-muted/60 px-2 py-1 font-semibold">{t.name}</div>
       <div>
-        {t.columns.map((c) => (
+        {(t.columns ?? []).map((c) => (
           <div key={c.name} className="flex items-center gap-1 border-t border-white/5 px-2 py-0.5">
             {c.pk && <span className="text-amber-400" title="primary key">★</span>}
             <span className="truncate">{c.name}</span>
@@ -334,6 +334,7 @@ export function SqliteExplorerWindowScreen() {
                       </thead>
                       <tbody>
                         {rows.map((row, r) => {
+                          if (!row) return null
                           const rowid = Number(row[0])
                           if (deletes.has(rowid)) return null
                           return (
@@ -480,6 +481,15 @@ interface MonacoT {
     registerCompletionItemProvider(lang: string, p: unknown): {dispose(): unknown}
   }
 }
+interface WordAtPos {
+  word: string
+  startColumn: number
+  endColumn: number
+}
+interface TextModelT {
+  getValueInRange(r: unknown): string
+  getWordUntilPosition(p: {lineNumber: number; column: number}): WordAtPos
+}
 interface EditorT {
   addCommand(kb: number, handler: () => void): void
   getValue(): string
@@ -487,22 +497,46 @@ interface EditorT {
 
 const SQL_KEYWORDS: {label: string; insert: string; snippet?: boolean}[] = [
   {label: "SELECT", insert: "SELECT"},
+  {label: "SELECT DISTINCT", insert: "SELECT DISTINCT "},
   {label: "FROM", insert: "FROM"},
   {label: "WHERE", insert: "WHERE"},
+  {label: "AS", insert: "AS "},
   {label: "INSERT INTO", insert: "INSERT INTO ${1:table} (${2:cols}) VALUES (${3:vals})", snippet: true},
   {label: "UPDATE", insert: "UPDATE ${1:table} SET ${2:col} = ${3:val} WHERE ${4:rowid} = ${5:0}", snippet: true},
   {label: "DELETE FROM", insert: "DELETE FROM ${1:table} WHERE ${2:rowid} = ${3:0}", snippet: true},
   {label: "JOIN", insert: "JOIN"},
-  {label: "LEFT JOIN", insert: "LEFT JOIN"},
   {label: "INNER JOIN", insert: "INNER JOIN"},
-  {label: "ON", insert: "ON"},
-  {label: "ORDER BY", insert: "ORDER BY"},
+  {label: "LEFT JOIN", insert: "LEFT JOIN"},
+  {label: "RIGHT JOIN", insert: "RIGHT JOIN"},
+  {label: "ON", insert: "ON "},
   {label: "GROUP BY", insert: "GROUP BY"},
+  {label: "HAVING", insert: "HAVING"},
+  {label: "ORDER BY", insert: "ORDER BY"},
+  {label: "ASC", insert: "ASC"},
+  {label: "DESC", insert: "DESC"},
   {label: "LIMIT", insert: "LIMIT"},
+  {label: "OFFSET", insert: "OFFSET"},
   {label: "AND", insert: "AND"},
   {label: "OR", insert: "OR"},
-  {label: "NOT NULL", insert: "NOT NULL"},
+  {label: "NOT", insert: "NOT"},
+  {label: "IN", insert: "IN"},
+  {label: "LIKE", insert: "LIKE"},
+  {label: "BETWEEN", insert: "BETWEEN"},
+  {label: "IS NULL", insert: "IS NULL"},
+  {label: "IS NOT NULL", insert: "IS NOT NULL"},
+  {label: "DISTINCT", insert: "DISTINCT"},
+  {label: "COUNT", insert: "COUNT($0)", snippet: true},
+  {label: "SUM", insert: "SUM($0)", snippet: true},
+  {label: "AVG", insert: "AVG($0)", snippet: true},
+  {label: "MIN", insert: "MIN($0)", snippet: true},
+  {label: "MAX", insert: "MAX($0)", snippet: true},
+  {label: "CREATE TABLE", insert: "CREATE TABLE ${1:name} (\n\t${2:col} ${3:TYPE}\n)", snippet: true},
+  {label: "DROP TABLE", insert: "DROP TABLE ${1:name}", snippet: true},
+  {label: "ALTER TABLE", insert: "ALTER TABLE ${1:name}", snippet: true},
   {label: "PRIMARY KEY", insert: "PRIMARY KEY"},
+  {label: "NOT NULL", insert: "NOT NULL"},
+  {label: "AUTOINCREMENT", insert: "AUTOINCREMENT"},
+  {label: "PRAGMA", insert: "PRAGMA "},
 ]
 
 function SqlConsole({
@@ -536,8 +570,8 @@ function SqlConsole({
     // Completion provider: keywords + tables + columns with context hints.
     providerRef.current = m.languages.registerCompletionItemProvider("sql", {
       triggerCharacters: [" ", "."],
-      provideCompletionItems(model: {getValueInRange(r: unknown): string}, position: {lineNumber: number; column: number}) {
-        const textUntil = (model.getValueInRange as unknown as (r: {startLineNumber: number; startColumn: number; endLineNumber: number; endColumn: number}) => string)({
+      provideCompletionItems(model: TextModelT, position: {lineNumber: number; column: number}) {
+        const textUntil = model.getValueInRange({
           startLineNumber: 1,
           startColumn: 1,
           endLineNumber: position.lineNumber,
@@ -546,20 +580,28 @@ function SqlConsole({
         const before = textUntil.toUpperCase()
         const sc = schemaRef.current
         const tables = sc.map((t) => t.name)
-        const allCols = Array.from(new Set(sc.flatMap((t) => t.columns.map((c) => c.name))))
+        const allCols = Array.from(new Set(sc.flatMap((t) => (t.columns ?? []).map((c) => c.name))))
 
         const wordBefore = before.match(/([A-Za-z_][\w]*)\s*\.?\s*$/)
         const afterDot = /\.\s*$/.test(before)
         const afterTableWord = /(?:FROM|JOIN|INTO|UPDATE|TABLE)\s+[\w]*$/i.test(before)
 
-        const range = {startLineNumber: position.lineNumber, startColumn: position.column, endLineNumber: position.lineNumber, endColumn: position.column}
+        // Word range so Monaco filters/inserts correctly (zero-width ranges drop
+        // keyword suggestions when a partial word precedes the cursor).
+        const word = model.getWordUntilPosition(position)
+        const range = {
+          startLineNumber: position.lineNumber,
+          startColumn: word.startColumn,
+          endLineNumber: position.lineNumber,
+          endColumn: word.endColumn,
+        }
         const suggestions: unknown[] = []
 
         if (afterDot && wordBefore) {
           const tbl = wordBefore[1].toLowerCase()
           const t = sc.find((x) => x.name.toLowerCase() === tbl)
           if (t) {
-            t.columns.forEach((c) => suggestions.push({label: c.name, kind: 5, insertText: c.name, range}))
+            (t.columns ?? []).forEach((c) => suggestions.push({label: c.name, kind: 5, sortText: "1" + c.name, insertText: c.name, range}))
             return {suggestions}
           }
         }
@@ -568,14 +610,15 @@ function SqlConsole({
           suggestions.push({
             label: k.label,
             kind: 14, // Keyword
+            sortText: "0" + k.label,
             insertText: k.insert,
             insertTextRules: k.snippet ? 4 : 0,
             range,
           }),
         )
         const tblKind = afterTableWord ? 25 /* Class/Module-ish, ranked high */ : 9
-        tables.forEach((t) => suggestions.push({label: t, kind: tblKind, insertText: t, range}))
-        allCols.forEach((c) => suggestions.push({label: c, kind: 5 /* Field */, insertText: c, range}))
+        tables.forEach((t) => suggestions.push({label: t, kind: tblKind, sortText: "2" + t, insertText: t, range}))
+        allCols.forEach((c) => suggestions.push({label: c, kind: 5 /* Field */, sortText: "3" + c, insertText: c, range}))
         return {suggestions}
       },
     })
@@ -600,7 +643,14 @@ function SqlConsole({
             value={value}
             onChange={(v) => onChange(v ?? "")}
             onMount={handleMount}
-            options={{minimap: {enabled: false}, scrollBeyondLastLine: false, fontSize: 13, automaticLayout: true}}
+            options={{
+              minimap: {enabled: false},
+              scrollBeyondLastLine: false,
+              fontSize: 13,
+              automaticLayout: true,
+              fixedOverflowWidgets: true,
+              suggest: {showWords: false},
+            }}
           />
         </div>
         <Button size="sm" onClick={onRun} disabled={running || !value.trim()}>
