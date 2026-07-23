@@ -432,7 +432,7 @@ export function SqliteExplorerWindowScreen() {
                     <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView colorMode="dark">
                       <Background />
                       <Controls showInteractive={false} />
-                      <MiniMap pannable zoomable />
+                      <MiniMap pannable zoomable nodeColor="#475569" nodeStrokeColor="#94a3b8" maskColor="rgb(0 0 0 / 0.6)" />
                     </ReactFlow>
                   ) : (
                     <div className="flex h-full items-center justify-center text-sm text-muted-foreground">No tables.</div>
