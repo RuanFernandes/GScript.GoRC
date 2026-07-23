@@ -368,6 +368,26 @@ func (a *App) SetNickname(nickname string) error { return a.sessions.SetNickname
 // GetPlayers returns the cached player list for the active server.
 func (a *App) GetPlayers() ([]rclib.Player, error) { return a.sessions.GetPlayers() }
 
+// SendPrivateMessage sends a private message to a single player id.
+func (a *App) SendPrivateMessage(playerID int, message string) error {
+	return a.sessions.SendPrivateMessage(playerID, message)
+}
+
+// SendMassPM sends one bulk PM to many player ids at once.
+func (a *App) SendMassPM(playerIDs []int, message string) error {
+	return a.sessions.SendMassPM(playerIDs, message)
+}
+
+// SendAdminMessage sends an admin message to a single player id.
+func (a *App) SendAdminMessage(playerID int, message string) error {
+	return a.sessions.SendAdminMessage(playerID, message)
+}
+
+// SendAdminMessageAll sends an admin message to every player.
+func (a *App) SendAdminMessageAll(message string) error {
+	return a.sessions.SendAdminMessageAll(message)
+}
+
 // --- Script management (NC server) ---
 
 // ScriptListType is "weapon" | "class" | "npc".

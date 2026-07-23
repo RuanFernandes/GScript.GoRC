@@ -45,6 +45,11 @@ export interface RcService {
   sendIrcText(command: string, p1: string, p2: string, p3: string): Promise<void>
   execute(message: string): Promise<void>
   getPlayers(): Promise<Player[] | null>
+  // Private + admin messaging (main server socket).
+  sendPrivateMessage(playerID: number, message: string): Promise<void>
+  sendMassPM(playerIDs: number[], message: string): Promise<void>
+  sendAdminMessage(playerID: number, message: string): Promise<void>
+  sendAdminMessageAll(message: string): Promise<void>
   setChatLogConfig(enabled: boolean, dir: string): Promise<void>
   appendChatLog(line: string): Promise<void>
   chooseDirectory(): Promise<string>
@@ -131,6 +136,11 @@ export const rcService: RcService = {
   sendIrcText: (command, p1, p2, p3) => App.SendIrcText(command, p1, p2, p3),
   execute: (message) => App.Execute(message),
   getPlayers: () => App.GetPlayers(),
+  // Private + admin messaging (main server socket).
+  sendPrivateMessage: (playerID, message) => App.SendPrivateMessage(playerID, message),
+  sendMassPM: (playerIDs, message) => App.SendMassPM(playerIDs, message),
+  sendAdminMessage: (playerID, message) => App.SendAdminMessage(playerID, message),
+  sendAdminMessageAll: (message) => App.SendAdminMessageAll(message),
   setChatLogConfig: (enabled, dir) => App.SetChatLogConfig(enabled, dir),
   appendChatLog: (line) => App.AppendChatLog(line),
   chooseDirectory: () => App.ChooseDirectory(),

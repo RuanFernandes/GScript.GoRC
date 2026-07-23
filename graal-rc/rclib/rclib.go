@@ -217,10 +217,15 @@ var (
 	procSendIrcText       *proc
 	procExecute           *proc
 	procSetNickname       *proc
-	procGetPlayers        *proc
-	procOnMessage         *proc
-	procOnIrcMessage      *proc
-	procOnServerData      *proc
+	procGetPlayers         *proc
+	procOnMessage          *proc
+	procOnIrcMessage       *proc
+	procOnServerData       *proc
+	procOnPrivateMessage   *proc
+	procSendPrivateMessage *proc
+	procSendMassPM         *proc
+	procSendAdminMessage   *proc
+	procSendAdminMessageAll *proc
 
 	// Script management (NC server).
 	procGetWeapons           *proc
@@ -433,6 +438,11 @@ func registerAll(resolve func(name string) (*proc, error)) error {
 	procOnMessage = get("rc_on_message")
 	procOnIrcMessage = get("rc_on_irc_message")
 	procOnServerData = get("rc_on_server_data")
+	procOnPrivateMessage = get("rc_on_private_message")
+	procSendPrivateMessage = get("rc_send_private_message")
+	procSendMassPM = get("rc_send_mass_pm")
+	procSendAdminMessage = get("rc_send_admin_message")
+	procSendAdminMessageAll = get("rc_send_admin_message_all")
 	procGetWeapons = get("rc_get_weapons")
 	procGetClasses = get("rc_get_classes")
 	procGetNPCs = get("rc_get_npcs")
@@ -524,6 +534,7 @@ type EventCallbacks struct {
 	Message      func(text string)
 	IrcMessage   func(channel, line string)
 	ServerData   func(dataType, content string)
+	PrivateMessage func(playerID int, account, nick, message string)
 
 	// Script/NC callbacks (fired on the pump goroutine).
 	ScriptReceived func(scriptType, name string, id int, script string)
@@ -548,6 +559,7 @@ var (
 	cbMessage      = newCallback(messageEntry)
 	cbIrcMessage   = newCallback(ircMessageEntry)
 	cbServerData   = newCallback(serverDataEntry)
+	cbPrivateMessage = newCallback(privateMessageEntry)
 
 	cbScriptReceived = newCallback(scriptReceivedEntry)
 	cbWeaponAdded    = newCallback(weaponCacheChangedEntry)
@@ -608,6 +620,19 @@ func ircMessageEntry(channel, line, userData uintptr) uintptr {
 	fire(userData, func(c *EventCallbacks) {
 		if c.IrcMessage != nil {
 			c.IrcMessage(ch, ln)
+		}
+	})
+	return 0
+}
+
+// privateMessageEntry is the shim for RC_OnPrivateMessage(player_id, account, nick, message, user_data).
+func privateMessageEntry(playerID, account, nick, message, userData uintptr) uintptr {
+	acct := bptrToString((*byte)(unsafe.Pointer(account)))
+	nm := bptrToString((*byte)(unsafe.Pointer(nick)))
+	msg := bptrToString((*byte)(unsafe.Pointer(message)))
+	fire(userData, func(c *EventCallbacks) {
+		if c.PrivateMessage != nil {
+			c.PrivateMessage(int(int32(playerID)), acct, nm, msg)
 		}
 	})
 	return 0
@@ -791,6 +816,7 @@ func RegisterCallbacks(h Handle, cbs *EventCallbacks) {
 	procOnMessage.Call(uintptr(h), cbMessage, uintptr(h))
 	procOnIrcMessage.Call(uintptr(h), cbIrcMessage, uintptr(h))
 	procOnServerData.Call(uintptr(h), cbServerData, uintptr(h))
+	procOnPrivateMessage.Call(uintptr(h), cbPrivateMessage, uintptr(h))
 	procOnScriptReceived.Call(uintptr(h), cbScriptReceived, uintptr(h))
 	procOnWeaponAdded.Call(uintptr(h), cbWeaponAdded, uintptr(h))
 	procOnWeaponDeleted.Call(uintptr(h), cbWeaponDeleted, uintptr(h))
@@ -820,6 +846,7 @@ func UnregisterCallbacks(h Handle) {
 	procOnMessage.Call(uintptr(h), 0, 0)
 	procOnIrcMessage.Call(uintptr(h), 0, 0)
 	procOnServerData.Call(uintptr(h), 0, 0)
+	procOnPrivateMessage.Call(uintptr(h), 0, 0)
 	procOnScriptReceived.Call(uintptr(h), 0, 0)
 	procOnWeaponAdded.Call(uintptr(h), 0, 0)
 	procOnWeaponDeleted.Call(uintptr(h), 0, 0)
@@ -1104,6 +1131,48 @@ func GetPlayers(h Handle) ([]Player, error) {
 		}
 	}
 	return out, nil
+}
+
+// SendPrivateMessage sends a private message to a single player id.
+func SendPrivateMessage(h Handle, playerID int, message string) error {
+	return callHandleIDStr(h, procSendPrivateMessage, playerID, message)
+}
+
+// SendMassPM sends one bulk PM packet to many player ids (single server round-trip).
+func SendMassPM(h Handle, playerIDs []int, message string) error {
+	if err := load(); err != nil {
+		return err
+	}
+	msg, _ := syscall.BytePtrFromString(message)
+	var idsPtr unsafe.Pointer
+	if len(playerIDs) > 0 {
+		// Build a contiguous C int array (4 bytes each) the DLL can read.
+		buf := make([]int32, len(playerIDs))
+		for i, id := range playerIDs {
+			buf[i] = int32(id)
+		}
+		idsPtr = unsafe.Pointer(&buf[0])
+	}
+	r1, _, _ := procSendMassPM.Call(
+		uintptr(h),
+		uintptr(idsPtr),
+		uintptr(len(playerIDs)),
+		uintptr(unsafe.Pointer(msg)),
+	)
+	if r1 == 0 {
+		return errors.New(LastError(h))
+	}
+	return nil
+}
+
+// SendAdminMessage sends an admin message to a single player id.
+func SendAdminMessage(h Handle, playerID int, message string) error {
+	return callHandleIDStr(h, procSendAdminMessage, playerID, message)
+}
+
+// SendAdminMessageAll sends an admin message to every player on the server.
+func SendAdminMessageAll(h Handle, message string) error {
+	return callHandleStr(h, procSendAdminMessageAll, message)
 }
 
 // Disconnect closes all sockets and frees the handle.
@@ -1567,6 +1636,20 @@ func callHandle(h Handle, p *proc) error {
 		return err
 	}
 	r1, _, _ := p.Call(uintptr(h))
+	if r1 == 0 {
+		return errors.New(LastError(h))
+	}
+	return nil
+}
+
+// callHandleIDStr calls a (handle, int player_id, const char*) DLL function
+// returning int (e.g. rc_send_private_message / rc_send_admin_message).
+func callHandleIDStr(h Handle, p *proc, playerID int, a string) error {
+	if err := load(); err != nil {
+		return err
+	}
+	ptr, _ := syscall.BytePtrFromString(a)
+	r1, _, _ := p.Call(uintptr(h), uintptr(playerID), uintptr(unsafe.Pointer(ptr)))
 	if r1 == 0 {
 		return errors.New(LastError(h))
 	}

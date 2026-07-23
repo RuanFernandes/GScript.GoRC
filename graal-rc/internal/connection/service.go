@@ -475,6 +475,9 @@ func (s *Service) ConnectToServer(index int) error {
 		},
 		Message:    func(text string) { s.emitEvent("rc:message", text) },
 		IrcMessage: func(channel, line string) { s.handleIrcMessage(channel, line) },
+		PrivateMessage: func(playerID int, account, nick, message string) {
+			s.emitEvent("rc:pm", playerID, account, nick, message)
+		},
 		ServerData: func(dataType, content string) {
 			// Server-side text configs (options/folder_config/flags) are fetched
 			// via OpenServerText, which registers a pending waiter keyed by the
@@ -652,7 +655,43 @@ func (s *Service) GetPlayers() ([]rclib.Player, error) {
 	return rclib.GetPlayers(h)
 }
 
-// handleScriptReceived resolves a pending OpenScript request (weapon/class keyed
+// SendPrivateMessage sends a private message to a single player id on the
+// active server.
+func (s *Service) SendPrivateMessage(playerID int, message string) error {
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
+	}
+	return rclib.SendPrivateMessage(h, playerID, message)
+}
+
+// SendMassPM sends one bulk PM packet to every id in playerIDs (single server
+// round-trip, mirrors the reference client's Mass PM button).
+func (s *Service) SendMassPM(playerIDs []int, message string) error {
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
+	}
+	return rclib.SendMassPM(h, playerIDs, message)
+}
+
+// SendAdminMessage sends an admin message to a single player id.
+func (s *Service) SendAdminMessage(playerID int, message string) error {
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
+	}
+	return rclib.SendAdminMessage(h, playerID, message)
+}
+
+// SendAdminMessageAll sends an admin message to every player on the server.
+func (s *Service) SendAdminMessageAll(message string) error {
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
+	}
+	return rclib.SendAdminMessageAll(h, message)
+}
 // by name, npc keyed by id). Called on the pump goroutine.
 func (s *Service) handleScriptReceived(scriptType, name string, id int, script string) {
 	key := name
