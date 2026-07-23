@@ -12,7 +12,7 @@ import Editor, {type OnMount} from "@monaco-editor/react"
 import {Events} from "@wailsio/runtime"
 import {toast} from "sonner"
 import {Loader2, Plus, RotateCcw, Save, Trash2} from "lucide-react"
-import {ReactFlow, Background, Controls, MiniMap, type Node, type Edge} from "@xyflow/react"
+import {ReactFlow, Background, Controls, type Node, type Edge} from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
 
 import {AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogHeader, AlertDialogTitle} from "@/components/ui/alert-dialog"
@@ -432,16 +432,6 @@ export function SqliteExplorerWindowScreen() {
                     <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView colorMode="dark">
                       <Background />
                       <Controls showInteractive={false} />
-                      <MiniMap
-                        pannable
-                        zoomable
-                        bgColor="#0a0a0a"
-                        nodeColor="#22d3ee"
-                        nodeStrokeColor="#0e7490"
-                        nodeStrokeWidth={2}
-                        nodeBorderRadius={4}
-                        maskColor="rgb(0 0 0 / 0.7)"
-                      />
                     </ReactFlow>
                   ) : (
                     <div className="flex h-full items-center justify-center text-sm text-muted-foreground">No tables.</div>
