@@ -35,7 +35,6 @@ export function PlayerListWindowScreen() {
   const [pmTarget, setPmTarget] = useState<PmTarget | null>(null)
   const [massPmOpen, setMassPmOpen] = useState(false)
   const [adminOpen, setAdminOpen] = useState(false)
-  const [toAllOpen, setToAllOpen] = useState(false)
 
   // Push PM-log config to the backend (same App process as the main window, but
   // this window issues the AppendPmLog calls, so ensure the config is set).
@@ -116,6 +115,12 @@ export function PlayerListWindowScreen() {
       case "comments":
         void rcService.openCommentsWindow(account)
         break
+      case "banhistory":
+        void rcService.openBanHistoryWindow(account)
+        break
+      case "staffactivity":
+        void rcService.openStaffActivityWindow(account)
+        break
     }
   }
 
@@ -156,15 +161,6 @@ export function PlayerListWindowScreen() {
     }
   }
 
-  const sendToAll = async (message: string) => {
-    try {
-      await rcService.sendToAll(message)
-      toast.success("To-All message sent")
-    } catch (err) {
-      toast.error("To-All failed", {description: err instanceof Error ? err.message : String(err)})
-    }
-  }
-
   return (
     <div className="bg-background flex h-svh flex-col">
       <header className="border-b">
@@ -181,10 +177,6 @@ export function PlayerListWindowScreen() {
             <Button variant="outline" size="sm" onClick={() => setAdminOpen(true)}>
               <Megaphone className="size-4" />
               Admin Msg
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => setToAllOpen(true)}>
-              <Megaphone className="size-4" />
-              To All
             </Button>
           </div>
         </div>
@@ -226,15 +218,6 @@ export function PlayerListWindowScreen() {
         singleLine
         onClose={() => setAdminOpen(false)}
         onSend={sendAdminAll}
-      />
-      <MessageComposeDialog
-        open={toAllOpen}
-        title="To All"
-        recipientLabel="everyone (global notice)"
-        sendLabel="Send to all"
-        singleLine
-        onClose={() => setToAllOpen(false)}
-        onSend={sendToAll}
       />
     </div>
   )

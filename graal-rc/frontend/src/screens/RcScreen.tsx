@@ -14,6 +14,7 @@ import {Tabs, TabsContent, TabsList, TabsTrigger} from "@/components/ui/tabs"
 import {ChatLine} from "@/components/features/chat/ChatLine"
 import {ScriptHelpResult} from "@/components/features/chat/ScriptHelpResult"
 import {useChat} from "@/hooks/useChat"
+import {useChatInputHistory} from "@/hooks/useChatInputHistory"
 import {useChatSettings} from "@/hooks/useChatSettings"
 import {usePlayers} from "@/hooks/usePlayers"
 import {serverDisplay} from "@/lib/server"
@@ -44,10 +45,12 @@ function ChatPane({
   messages,
   settings,
   onSend,
+  history,
 }: {
   messages: ChatMessage[]
   settings: ChatSettings
   onSend: (text: string) => Promise<boolean>
+  history: ReturnType<typeof useChatInputHistory>
 }) {
   const [text, setText] = useState("")
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -80,7 +83,10 @@ function ChatPane({
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (await onSend(text)) setText("")
+    if (await onSend(text)) {
+      history.record(text)
+      setText("")
+    }
   }
 
   return (
@@ -105,7 +111,8 @@ function ChatPane({
       <form onSubmit={submit} className="flex gap-2">
         <Input
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => setText(history.onTextChange(e.target.value))}
+          onKeyDown={(e) => history.handleKeyDown(e, text, setText)}
           placeholder="Type a message or command…"
           autoComplete="off"
         />
@@ -117,6 +124,7 @@ function ChatPane({
 
 export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps) {
   const {tabs, activeChannel, setActiveChannel, send, reorderTabs} = useChat(rcService)
+  const inputHistory = useChatInputHistory()
   const {settings} = useChatSettings()
   const [nc, setNc] = useState<NCStatus>({hasNc: false, connected: false, authenticated: false})
   const [profile, setProfile] = useState<AccountSummary | null>(null)
@@ -271,6 +279,7 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
                 messages={t.messages}
                 settings={settings}
                 onSend={(text) => send(t.channel, text)}
+                history={inputHistory}
               />
             </TabsContent>
           ))}

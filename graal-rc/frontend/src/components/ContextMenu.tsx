@@ -1,7 +1,7 @@
 // ContextMenu is a small dark right-click menu rendered absolutely at the cursor.
 // It closes on click-outside, Escape, scroll, or item click. Reusable: pass an
 // items list (label + onSelect + optional disabled/danger).
-import {useEffect, useRef} from "react"
+import {useEffect, useLayoutEffect, useRef, useState} from "react"
 
 export interface ContextMenuItem {
   label: string
@@ -23,6 +23,27 @@ export function ContextMenu({
   onClose: () => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
+  // Clamp the menu inside the viewport so a right-click near the window edge
+  // (or a small child window) doesn't get clipped. Measured after first paint,
+  // then re-checked on resize. 8px margin keeps it off the very edge.
+  const [pos, setPos] = useState({left: x, top: y})
+  const MARGIN = 8
+
+  const clamp = () => {
+    const el = ref.current
+    if (!el) return
+    const w = el.offsetWidth
+    const h = el.offsetHeight
+    setPos({
+      left: Math.min(x, window.innerWidth - w - MARGIN),
+      top: Math.min(y, window.innerHeight - h - MARGIN),
+    })
+  }
+
+  useLayoutEffect(() => {
+    clamp()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [x, y])
 
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
@@ -48,7 +69,7 @@ export function ContextMenu({
     <div
       ref={ref}
       className="bg-popover text-popover-foreground fixed z-50 min-w-[160px] rounded-md border p-1 text-sm shadow-lg"
-      style={{left: x, top: y}}
+      style={{left: pos.left, top: pos.top}}
     >
       {items.map((item, i) =>
         item.separator ? (

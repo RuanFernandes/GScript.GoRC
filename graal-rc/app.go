@@ -535,6 +535,18 @@ func (a *App) OpenCommentsWindow(account string) error {
 	return a.openPlayerWindow("comments", "Comments", account, 560, 560)
 }
 
+// OpenBanHistoryWindow opens the read-only ban-history viewer window for an
+// account (self if empty). Triggered from the player-list context menu.
+func (a *App) OpenBanHistoryWindow(account string) error {
+	return a.openPlayerWindow("banhistory", "Ban History", account, 640, 560)
+}
+
+// OpenStaffActivityWindow opens the read-only staff-activity viewer window for
+// an account (self if empty). Triggered from the player-list context menu.
+func (a *App) OpenStaffActivityWindow(account string) error {
+	return a.openPlayerWindow("staffactivity", "Staff Activity", account, 640, 560)
+}
+
 // --- Script management (NC server) ---
 
 // ScriptListType is "weapon" | "class" | "npc".
@@ -1262,12 +1274,6 @@ func (a *App) AppendPmLog(otherAccount, line string) error {
 	defer f.Close()
 	_, err = f.WriteString(line + "\n")
 	return err
-}
-
-// SendToAll broadcasts a "to all" message to every player on the server
-// (rc_send_toall_message), shown as a global notice prefixed with the sender.
-func (a *App) SendToAll(message string) error {
-	return a.sessions.SendToAll(message)
 }
 
 // ChooseDirectory opens a native folder picker and returns the chosen path

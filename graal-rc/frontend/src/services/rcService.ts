@@ -67,6 +67,8 @@ export interface RcService {
   openAttrsWindow(account: string): Promise<void>
   openBanWindow(account: string): Promise<void>
   openCommentsWindow(account: string): Promise<void>
+  openBanHistoryWindow(account: string): Promise<void>
+  openStaffActivityWindow(account: string): Promise<void>
   setBan(target: string, world: string, banned: boolean, banType: string, releaseTime: string, reason: string): Promise<void>
   getBanTypes(): Promise<string>
   requestBanHistory(account: string): Promise<string>
@@ -75,7 +77,6 @@ export interface RcService {
   appendChatLog(line: string): Promise<void>
   setPmLogConfig(enabled: boolean, dir: string): Promise<void>
   appendPmLog(otherAccount: string, line: string): Promise<void>
-  sendToAll(message: string): Promise<void>
   chooseDirectory(): Promise<string>
   openPlayerList(): Promise<void>
   // Script management (NC server).
@@ -178,6 +179,8 @@ export const rcService: RcService = {
   openAttrsWindow: (account) => App.OpenAttrsWindow(account),
   openBanWindow: (account) => App.OpenBanWindow(account),
   openCommentsWindow: (account) => App.OpenCommentsWindow(account),
+  openBanHistoryWindow: (account) => App.OpenBanHistoryWindow(account),
+  openStaffActivityWindow: (account) => App.OpenStaffActivityWindow(account),
   setBan: (target, world, banned, banType, releaseTime, reason) =>
     App.SetBan(target, world, banned, banType, releaseTime, reason),
   getBanTypes: () => App.GetBanTypes(),
@@ -187,7 +190,6 @@ export const rcService: RcService = {
   appendChatLog: (line) => App.AppendChatLog(line),
   setPmLogConfig: (enabled, dir) => App.SetPmLogConfig(enabled, dir),
   appendPmLog: (otherAccount, line) => App.AppendPmLog(otherAccount, line),
-  sendToAll: (message) => App.SendToAll(message),
   chooseDirectory: () => App.ChooseDirectory(),
   openPlayerList: () => App.OpenPlayerList(),
   // Script management (NC server).

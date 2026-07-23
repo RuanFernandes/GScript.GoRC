@@ -843,14 +843,6 @@ func (s *Service) SendAdminMessageAll(message string) error {
 	return rclib.SendAdminMessageAll(h, message)
 }
 
-// SendToAll broadcasts a "to all" notice to every player on the server.
-func (s *Service) SendToAll(message string) error {
-	h, err := s.requireHandle()
-	if err != nil {
-		return err
-	}
-	return rclib.SendToAllMessage(h, message)
-}
 // SelfAccount returns the logged-in account name.
 func (s *Service) SelfAccount() string {
 	s.mu.Lock()

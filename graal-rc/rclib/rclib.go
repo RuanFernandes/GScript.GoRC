@@ -226,7 +226,6 @@ var (
 	procSendMassPM         *proc
 	procSendAdminMessage   *proc
 	procSendAdminMessageAll *proc
-	procSendToAllMessage    *proc
 
 	// Player admin editors (rights / attributes / bans) on the main server.
 	procRequestPlayerRights       *proc
@@ -464,7 +463,6 @@ func registerAll(resolve func(name string) (*proc, error)) error {
 	procSendMassPM = get("rc_send_mass_pm")
 	procSendAdminMessage = get("rc_send_admin_message")
 	procSendAdminMessageAll = get("rc_send_admin_message_all")
-	procSendToAllMessage = get("rc_send_toall_message")
 	procRequestPlayerRights = get("rc_request_player_rights")
 	procSetPlayerRights = get("rc_set_player_rights")
 	procRequestPlayerAttrs = get("rc_request_player_attrs")
@@ -1302,13 +1300,6 @@ func SendAdminMessage(h Handle, playerID int, message string) error {
 // SendAdminMessageAll sends an admin message to every player on the server.
 func SendAdminMessageAll(h Handle, message string) error {
 	return callHandleStr(h, procSendAdminMessageAll, message)
-}
-
-// SendToAllMessage sends a "to all" broadcast message (rc_send_toall_message),
-// the reference client's TToallsWindow action. Shown to every player as a
-// global notice, prefixed with the sender's name by the server.
-func SendToAllMessage(h Handle, message string) error {
-	return callHandleStr(h, procSendToAllMessage, message)
 }
 
 // RequestPlayerRights asks the server for the current rights of an account.

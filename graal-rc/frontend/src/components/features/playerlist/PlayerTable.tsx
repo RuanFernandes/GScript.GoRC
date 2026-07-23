@@ -5,15 +5,15 @@
 // an unread badge when an inbound PM is pending for that id. Right-click opens
 // the admin context menu (PM / Edit Rights / Edit Access / Edit Attributes /
 // Edit Comments), mirroring the reference client's right-click tree menu.
-import {useEffect, useState} from "react"
-import {ChevronDown, ChevronRight, MessageSquare, ScrollText, Shield, SquareUser, Users, Wand2} from "lucide-react"
+import {useEffect, useLayoutEffect, useRef, useState} from "react"
+import {ChevronDown, ChevronRight, History, MessageSquare, ScrollText, Shield, SquareUser, Users, Wand2} from "lucide-react"
 
 import {Badge} from "@/components/ui/badge"
 import {Button} from "@/components/ui/button"
 import {parsePlayerTag} from "@/lib/playerTag"
 import type {Player} from "@/types"
 
-export type PlayerEditKind = "rights" | "ban" | "attrs" | "comments"
+export type PlayerEditKind = "rights" | "ban" | "attrs" | "comments" | "banhistory" | "staffactivity"
 
 interface PlayerTableProps {
   players: Player[]
@@ -137,6 +137,21 @@ function Group({label, icon: Icon, rows, unreadById, onPM, onContext, defaultOpe
 
 export function PlayerTable({players, unreadById, onPM, onEdit}: PlayerTableProps) {
   const [menu, setMenu] = useState<{x: number; y: number; player: Player} | null>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  // Clamp the menu inside the viewport so a right-click near a window edge
+  // doesn't clip it (the player list often sits in a small child window).
+  const [menuPos, setMenuPos] = useState<{left: number; top: number}>({left: 0, top: 0})
+
+  useLayoutEffect(() => {
+    if (!menu) return
+    const el = menuRef.current
+    if (!el) return
+    const MARGIN = 8
+    setMenuPos({
+      left: Math.min(menu.x, window.innerWidth - el.offsetWidth - MARGIN),
+      top: Math.min(menu.y, window.innerHeight - el.offsetHeight - MARGIN),
+    })
+  }, [menu])
 
   // Close the context menu on any outside click / escape / scroll.
   useEffect(() => {
@@ -179,6 +194,8 @@ export function PlayerTable({players, unreadById, onPM, onEdit}: PlayerTableProp
     {label: "Edit Access (Ban)", icon: Wand2, kind: "ban"},
     {label: "Edit Attributes", icon: SquareUser, kind: "attrs"},
     {label: "Edit Comments", icon: ScrollText, kind: "comments"},
+    {label: "Ban History", icon: History, kind: "banhistory"},
+    {label: "Staff Activity", icon: History, kind: "staffactivity"},
   ]
 
   return (
@@ -192,8 +209,9 @@ export function PlayerTable({players, unreadById, onPM, onEdit}: PlayerTableProp
 
       {menu && (
         <div
+          ref={menuRef}
           className="bg-popover text-popover-foreground fixed z-50 min-w-[180px] overflow-hidden rounded-md border py-1 text-sm shadow-xl"
-          style={{left: menu.x, top: menu.y}}
+          style={{left: menuPos.left, top: menuPos.top}}
           onClick={(e) => e.stopPropagation()}
         >
           <div className="text-muted-foreground truncate border-b px-2.5 py-1 text-xs">

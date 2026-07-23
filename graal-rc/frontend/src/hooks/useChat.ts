@@ -272,21 +272,6 @@ export function useChat(service: RcService): UseChatResult {
       }
       // /openrights, /openaccess, /open {account} open a client-side editor
       // window (self if no account). Intercepted locally — never sent to server.
-      // /toall <message> broadcasts a global "to all" notice (rc_send_toall_message).
-      const toallMatch = trimmed.match(/^\/toall(?:\s+(.*))?$/i)
-      if (toallMatch) {
-        const msg = (toallMatch[1] ?? "").trim()
-        if (!msg) {
-          push(channel, "Usage: /toall <message>", "system")
-        } else {
-          try {
-            await service.sendToAll(msg)
-          } catch (err) {
-            toast.error("To-All failed", {description: err instanceof Error ? err.message : String(err)})
-          }
-        }
-        return true
-      }
       const adminCmd = trimmed.match(/^\/(openrights|openaccess|opencomments|open)(?:\s+(.*))?$/i)
       if (adminCmd) {
         const arg = (adminCmd[2] ?? "").trim()
