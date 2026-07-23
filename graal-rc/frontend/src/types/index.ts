@@ -6,7 +6,22 @@ export type {NCStatus} from "../../bindings/graal-rc/internal/connection/models"
 export type {Status as SessionStatus} from "../../bindings/graal-rc/internal/connection/models"
 export type {AccountSummary, LoginRequest} from "../../bindings/graal-rc/models"
 export type {Weapon, Class, NPC, ScriptReply} from "../../bindings/graal-rc/rclib/models"
-export type {CodingSettings, RemoteTheme} from "../../bindings/graal-rc/models"
+export type {FileBrowserFolder, FileBrowserEntry} from "../../bindings/graal-rc/rclib/models"
+export type {
+  TableSchema as SqliteSchema,
+  Column as SqliteColumn,
+  ForeignKey as SqliteForeignKey,
+  Changes as SqliteChanges,
+  CellUpdate as SqliteCellUpdate,
+} from "../../bindings/graal-rc/internal/sqlite/models"
+export type {
+  CodingSettings,
+  RemoteTheme,
+  FileBrowserConfig,
+  SqliteInfo,
+  SqliteResult,
+  SqliteTable,
+} from "../../bindings/graal-rc/models"
 import type {GsFunction} from "@/lib/gscriptApi"
 export type {GsFunction}
 

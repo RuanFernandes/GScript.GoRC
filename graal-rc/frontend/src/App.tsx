@@ -11,12 +11,15 @@ import {useAccounts} from "@/hooks/useAccounts"
 import {useSession} from "@/hooks/useSession"
 import {AccountSelectScreen} from "@/screens/AccountSelectScreen"
 import {AddAccountScreen} from "@/screens/AddAccountScreen"
+import {FileBrowserWindowScreen} from "@/screens/FileBrowserWindowScreen"
 import {PlayerListWindowScreen} from "@/screens/PlayerListWindowScreen"
 import {RcScreen} from "@/screens/RcScreen"
 import {ScriptEditorWindowScreen} from "@/screens/ScriptEditorWindowScreen"
 import {ScriptManagerWindowScreen} from "@/screens/ScriptManagerWindowScreen"
 import {ServerListScreen} from "@/screens/ServerListScreen"
 import {SettingsWindowScreen} from "@/screens/SettingsWindowScreen"
+import {SqliteExplorerWindowScreen} from "@/screens/SqliteExplorerWindowScreen"
+import {TextEditorWindowScreen} from "@/screens/TextEditorWindowScreen"
 import type {AppView, LoginRequest} from "@/types"
 
 type PendingConfirm =
@@ -193,9 +196,12 @@ function App() {
   if (typeof window === "undefined") return <Shell />
   const hash = window.location.hash
   if (hash.startsWith("#players")) return <PlayerListWindowScreen />
+  if (hash.startsWith("#files")) return <FileBrowserWindowScreen />
   if (hash.startsWith("#scripts")) return <ScriptManagerWindowScreen />
   if (hash.startsWith("#settings")) return <SettingsWindowScreen />
   if (hash.startsWith("#editor")) return <ScriptEditorWindowScreen />
+  if (hash.startsWith("#textfile")) return <TextEditorWindowScreen />
+  if (hash.startsWith("#sqlite")) return <SqliteExplorerWindowScreen />
   return <Shell />
 }
 
