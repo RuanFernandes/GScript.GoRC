@@ -1,11 +1,31 @@
 name: release
 
-# On every push to main: build Windows (x64 + x86) and Linux x64, then publish a
-# rolling "continuous" GitHub release.
+# Manual release: build Windows (x64 + x86) and Linux x64, then publish a
+# GitHub release. Triggered from the Actions tab via "Run workflow".
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release tag name (e.g. continuous, v1.0.0)"
+        required: true
+        default: "continuous"
+      release_name:
+        description: "Release title"
+        required: true
+        default: "Continuous build"
+      prerelease:
+        description: "Mark as pre-release"
+        type: boolean
+        required: true
+        default: true
+      make_latest:
+        description: "Set as latest release"
+        type: choice
+        options:
+          - "false"
+          - "true"
+        required: true
+        default: "false"
 
 permissions:
   contents: write # softprops/action-gh-release needs this to create the release
@@ -137,10 +157,12 @@ jobs:
           ls -la release
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: continuous
-          name: Continuous build
+          tag_name: ${{ github.event.inputs.tag_name }}
+          name: ${{ github.event.inputs.release_name }}
+          prerelease: ${{ github.event.inputs.prerelease }}
+          make_latest: ${{ github.event.inputs.make_latest }}
           body: |
-            Auto-built from push ${{ github.sha }} to `${{ github.ref_name }}`.
+            Built from commit ${{ github.sha }} on `${{ github.ref_name }}` via manual dispatch.
 
             Targets:
             - Windows x64 + x86 (NSIS installers)
