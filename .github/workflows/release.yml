@@ -1,6 +1,6 @@
 name: release
 
-# Manual release: build Windows (x64 + x86) and Linux x64, then publish a
+# Manual release: build Windows x64 and Linux x64, then publish a
 # GitHub release. Triggered from the Actions tab via "Run workflow".
 on:
   workflow_dispatch:
@@ -32,7 +32,7 @@ permissions:
 
 jobs:
   windows:
-    name: Windows (amd64 + 386)
+    name: Windows (amd64)
     runs-on: windows-latest
     defaults:
       run:
@@ -66,11 +66,11 @@ jobs:
           }
           "$nsisDir" | Out-File -FilePath $env:GITHUB_PATH -Append
           & "$nsisDir\makensis.exe" /VERSION
-      - name: Build NSIS installers (amd64 + 386)
+      - name: Build NSIS installer (amd64)
         shell: bash
         env:
           CGO_ENABLED: "0" # syscall loader — no C toolchain needed for Windows
-        run: wails3 task windows:package:all
+        run: wails3 task windows:package
       - uses: actions/upload-artifact@v4
         with:
           name: windows
@@ -165,7 +165,7 @@ jobs:
             Built from commit ${{ github.sha }} on `${{ github.ref_name }}` via manual dispatch.
 
             Targets:
-            - Windows x64 + x86 (NSIS installers)
+            - Windows x64 (NSIS installer)
             - Linux x64 (AppImage)
 
             Native grclib libs are bundled per bitness.
