@@ -18,6 +18,8 @@ import type {
   Server,
   SqliteInfo,
   SqliteResult,
+  SqliteSchema,
+  SqliteChanges,
   Weapon,
 } from "@/types"
 
@@ -102,10 +104,9 @@ export interface RcService {
   saveTextFile(path: string, content: string): Promise<void>
   // SQLite explorer.
   getSqliteInfo(path: string): Promise<SqliteInfo>
+  getSqliteSchema(path: string): Promise<SqliteSchema[] | null>
   sqliteQuery(path: string, sql: string, args: unknown[]): Promise<SqliteResult>
-  sqliteUpdateCell(path: string, table: string, column: string, rowid: number, value: unknown): Promise<void>
-  sqliteInsertRow(path: string, table: string): Promise<number>
-  sqliteDeleteRow(path: string, table: string, rowid: number): Promise<void>
+  commitSqlite(path: string, changes: SqliteChanges): Promise<void>
   saveSqliteFile(path: string): Promise<void>
 }
 
@@ -189,10 +190,8 @@ export const rcService: RcService = {
   saveTextFile: (path, content) => App.SaveTextFile(path, content),
   // SQLite explorer.
   getSqliteInfo: (path) => App.GetSqliteInfo(path),
+  getSqliteSchema: (path) => App.GetSqliteSchema(path),
   sqliteQuery: (path, sql, args) => App.SqliteQuery(path, sql, args),
-  sqliteUpdateCell: (path, table, column, rowid, value) =>
-    App.SqliteUpdateCell(path, table, column, rowid, value),
-  sqliteInsertRow: (path, table) => App.SqliteInsertRow(path, table),
-  sqliteDeleteRow: (path, table, rowid) => App.SqliteDeleteRow(path, table, rowid),
+  commitSqlite: (path, changes) => App.CommitSqlite(path, changes),
   saveSqliteFile: (path) => App.SaveSqliteFile(path),
 }

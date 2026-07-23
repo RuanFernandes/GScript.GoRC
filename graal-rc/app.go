@@ -817,7 +817,43 @@ func (a *App) GetSqliteInfo(remotePath string) (SqliteInfo, error) {
 	return out, nil
 }
 
-// SqliteQuery runs arbitrary SQL against a remote .db.
+// GetSqliteSchema returns columns + foreign keys per table (for the Diagram).
+func (a *App) GetSqliteSchema(remotePath string) ([]sqlite.TableSchema, error) {
+	h, err := a.sqliteDB(remotePath)
+	if err != nil {
+		return nil, err
+	}
+	return sqlite.Schema(h.db)
+}
+
+// CommitSqlite applies staged changes (inserts/edits/deletes for one table) in a
+// single transaction, then — on success — checkpoints, re-reads the file,
+// best-effort preserves the SQLite version, and uploads it. A failing statement
+// rolls back (nothing written, no upload) and returns an error naming the op.
+func (a *App) CommitSqlite(remotePath string, changes sqlite.Changes) error {
+	h, err := a.sqliteDB(remotePath)
+	if err != nil {
+		return err
+	}
+	if err := sqlite.Commit(h.db, changes); err != nil {
+		return err
+	}
+	// Flush WAL so the main file holds all committed edits, then read + upload.
+	if _, err := h.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+		return err
+	}
+	content, err := os.ReadFile(h.local)
+	if err != nil {
+		return err
+	}
+	a.openMu.Lock()
+	hdr := a.dbHeaders[remotePath]
+	a.openMu.Unlock()
+	if hdr != nil && len(content) >= 100 {
+		copy(content[96:100], hdr[96:100]) // preserve version-valid-for
+	}
+	return a.sessions.UploadFile(remotePath, content)
+}
 func (a *App) SqliteQuery(remotePath, query string, args []any) (SqliteResult, error) {
 	h, err := a.sqliteDB(remotePath)
 	if err != nil {
@@ -902,6 +938,19 @@ func (a *App) openSqliteWindow(remotePath string) error {
 	a.openMu.Lock()
 	a.sqliteWindows[remotePath] = w
 	a.openMu.Unlock()
+	mapKey := "sqlite:" + remotePath
+	// Intercept close when there are unsaved staged changes: the hook runs
+	// before the internal close listener, so Cancel() prevents the close and
+	// lets the frontend prompt (Save / Discard / Cancel).
+	w.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
+		a.editorCacheMu.Lock()
+		dirty := a.editorDirty[mapKey]
+		a.editorCacheMu.Unlock()
+		if dirty {
+			a.app.Event.Emit("rc:editorConfirmClose", mapKey)
+			event.Cancel()
+		}
+	})
 	w.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
 		a.openMu.Lock()
 		local := a.dbFiles[remotePath]
@@ -909,6 +958,9 @@ func (a *App) openSqliteWindow(remotePath string) error {
 		delete(a.dbFiles, remotePath)
 		delete(a.dbHeaders, remotePath)
 		a.openMu.Unlock()
+		a.editorCacheMu.Lock()
+		delete(a.editorDirty, mapKey)
+		a.editorCacheMu.Unlock()
 		if local != "" {
 			sqlite.Close(local) // checkpoint + close, drop cached connection
 		}
