@@ -169,6 +169,4 @@ jobs:
             - Linux x64 (AppImage)
 
             Native grclib libs are bundled per bitness.
-          prerelease: true
-          make_latest: "false"
           files: release/*
