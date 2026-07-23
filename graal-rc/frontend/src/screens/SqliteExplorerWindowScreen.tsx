@@ -444,11 +444,12 @@ export function SqliteExplorerWindowScreen() {
                       <MiniMap
                         pannable
                         zoomable
+                        bgColor="#0a0a0a"
                         nodeColor={miniNodeColor}
-                        nodeStrokeColor="#0f172a"
-                        nodeStrokeWidth={3}
+                        nodeStrokeColor="#000000"
+                        nodeStrokeWidth={4}
                         nodeBorderRadius={4}
-                        maskColor="rgb(0 0 0 / 0.65)"
+                        maskColor="rgb(0 0 0 / 0.7)"
                       />
                     </ReactFlow>
                   ) : (
