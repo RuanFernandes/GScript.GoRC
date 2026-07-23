@@ -170,11 +170,14 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
     })
   }
 
-  // Push the log config to the backend whenever it changes so AppendChatLog
-  // knows whether (and where) to write.
+  // Push the log config to the backend whenever it changes so AppendChatLog /
+  // AppendPmLog know whether (and where) to write.
   useEffect(() => {
     rcService.setChatLogConfig(settings.logChat, settings.logDir).catch(() => {})
   }, [settings.logChat, settings.logDir])
+  useEffect(() => {
+    rcService.setPmLogConfig(settings.pmLog, settings.pmLogDir).catch(() => {})
+  }, [settings.pmLog, settings.pmLogDir])
 
   return (
     <div className="bg-background flex h-svh flex-col overflow-hidden">

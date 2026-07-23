@@ -2,19 +2,24 @@
 // avatar list, prettier than the reference C++ tree view. Players with an empty
 // level are staff (admins) and group under "Admins"; the rest under "Players" —
 // same split TPlayerList::refresh uses. Each row exposes a PM action and shows
-// an unread badge when an inbound PM is pending for that id.
-import {useState} from "react"
-import {ChevronDown, ChevronRight, MessageSquare, Shield, Users} from "lucide-react"
+// an unread badge when an inbound PM is pending for that id. Right-click opens
+// the admin context menu (PM / Edit Rights / Edit Access / Edit Attributes /
+// Edit Comments), mirroring the reference client's right-click tree menu.
+import {useEffect, useState} from "react"
+import {ChevronDown, ChevronRight, MessageSquare, ScrollText, Shield, SquareUser, Users, Wand2} from "lucide-react"
 
 import {Badge} from "@/components/ui/badge"
 import {Button} from "@/components/ui/button"
 import {parsePlayerTag} from "@/lib/playerTag"
 import type {Player} from "@/types"
 
+export type PlayerEditKind = "rights" | "ban" | "attrs" | "comments"
+
 interface PlayerTableProps {
   players: Player[]
   unreadById: Record<number, number>
   onPM: (player: Player) => void
+  onEdit: (player: Player, kind: PlayerEditKind) => void
 }
 
 interface GroupProps {
@@ -23,6 +28,7 @@ interface GroupProps {
   rows: Player[]
   unreadById: Record<number, number>
   onPM: (player: Player) => void
+  onContext: (e: React.MouseEvent, player: Player) => void
   defaultOpen?: boolean
 }
 
@@ -40,12 +46,15 @@ function hueFor(name: string): number {
   return h
 }
 
-function PlayerRow({player, unread, onPM}: {player: Player; unread: number; onPM: (p: Player) => void}) {
+function PlayerRow({player, unread, onPM, onContext}: {player: Player; unread: number; onPM: (p: Player) => void; onContext: (e: React.MouseEvent, p: Player) => void}) {
   const tag = parsePlayerTag(player.level)
   const nick = player.nick || player.account
   const hue = hueFor(nick)
   return (
-    <div className="group hover:bg-accent/50 flex items-center gap-3 rounded-lg px-2.5 py-2">
+    <div
+      className="group hover:bg-accent/50 flex items-center gap-3 rounded-lg px-2.5 py-2"
+      onContextMenu={(e) => onContext(e, player)}
+    >
       <div className="relative shrink-0">
         <div
           className="text-primary-foreground flex size-9 items-center justify-center rounded-full text-xs font-semibold shadow-sm"
@@ -94,7 +103,7 @@ function PlayerRow({player, unread, onPM}: {player: Player; unread: number; onPM
   )
 }
 
-function Group({label, icon: Icon, rows, unreadById, onPM, defaultOpen = true}: GroupProps) {
+function Group({label, icon: Icon, rows, unreadById, onPM, onContext, defaultOpen = true}: GroupProps) {
   const [open, setOpen] = useState(defaultOpen)
   const totalUnread = rows.reduce((sum, p) => sum + (unreadById[p.id] ?? 0), 0)
   const Chevron = open ? ChevronDown : ChevronRight
@@ -118,7 +127,7 @@ function Group({label, icon: Icon, rows, unreadById, onPM, defaultOpen = true}: 
       {open && (
         <div className="flex flex-col gap-0.5">
           {rows.map((p) => (
-            <PlayerRow key={`${p.account}-${p.id}`} player={p} unread={unreadById[p.id] ?? 0} onPM={onPM} />
+            <PlayerRow key={`${p.account}-${p.id}`} player={p} unread={unreadById[p.id] ?? 0} onPM={onPM} onContext={onContext} />
           ))}
         </div>
       )}
@@ -126,7 +135,33 @@ function Group({label, icon: Icon, rows, unreadById, onPM, defaultOpen = true}: 
   )
 }
 
-export function PlayerTable({players, unreadById, onPM}: PlayerTableProps) {
+export function PlayerTable({players, unreadById, onPM, onEdit}: PlayerTableProps) {
+  const [menu, setMenu] = useState<{x: number; y: number; player: Player} | null>(null)
+
+  // Close the context menu on any outside click / escape / scroll.
+  useEffect(() => {
+    if (!menu) return
+    const close = () => setMenu(null)
+    window.addEventListener("click", close)
+    window.addEventListener("contextmenu", close, true)
+    window.addEventListener("scroll", close, true)
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMenu(null)
+    }
+    window.addEventListener("keydown", onKey)
+    return () => {
+      window.removeEventListener("click", close)
+      window.removeEventListener("contextmenu", close, true)
+      window.removeEventListener("scroll", close, true)
+      window.removeEventListener("keydown", onKey)
+    }
+  }, [menu])
+
+  const openContext = (e: React.MouseEvent, player: Player) => {
+    e.preventDefault()
+    setMenu({x: e.clientX, y: e.clientY, player})
+  }
+
   if (players.length === 0) {
     return (
       <div className="text-muted-foreground flex flex-col items-center justify-center gap-2 py-16 text-sm">
@@ -138,12 +173,52 @@ export function PlayerTable({players, unreadById, onPM}: PlayerTableProps) {
   const admins = players.filter((p) => !p.level)
   const regular = players.filter((p) => !!p.level)
 
+  const items: {label: string; icon: typeof Users; kind?: PlayerEditKind; pm?: boolean}[] = [
+    {label: "Private Message", icon: MessageSquare, pm: true},
+    {label: "Edit Rights", icon: Shield, kind: "rights"},
+    {label: "Edit Access (Ban)", icon: Wand2, kind: "ban"},
+    {label: "Edit Attributes", icon: SquareUser, kind: "attrs"},
+    {label: "Edit Comments", icon: ScrollText, kind: "comments"},
+  ]
+
   return (
-    <div className="flex flex-col gap-3">
-      {admins.length > 0 && (
-        <Group label="Admins" icon={Shield} rows={admins} unreadById={unreadById} onPM={onPM} />
+    <>
+      <div className="flex flex-col gap-3">
+        {admins.length > 0 && (
+          <Group label="Admins" icon={Shield} rows={admins} unreadById={unreadById} onPM={onPM} onContext={openContext} />
+        )}
+        <Group label="Players" icon={Users} rows={regular} unreadById={unreadById} onPM={onPM} onContext={openContext} />
+      </div>
+
+      {menu && (
+        <div
+          className="bg-popover text-popover-foreground fixed z-50 min-w-[180px] overflow-hidden rounded-md border py-1 text-sm shadow-xl"
+          style={{left: menu.x, top: menu.y}}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="text-muted-foreground truncate border-b px-2.5 py-1 text-xs">
+            {menu.player.nick || menu.player.account} · <span className="font-mono">{menu.player.account}</span>
+          </div>
+          {items.map((it) => {
+            const Icon = it.icon
+            return (
+              <button
+                key={it.label}
+                type="button"
+                className="hover:bg-accent flex w-full items-center gap-2 px-2.5 py-1.5 text-left"
+                onClick={() => {
+                  if (it.pm) onPM(menu.player)
+                  else if (it.kind) onEdit(menu.player, it.kind)
+                  setMenu(null)
+                }}
+              >
+                <Icon className="size-4" />
+                {it.label}
+              </button>
+            )
+          })}
+        </div>
       )}
-      <Group label="Players" icon={Users} rows={regular} unreadById={unreadById} onPM={onPM} />
-    </div>
+    </>
   )
 }

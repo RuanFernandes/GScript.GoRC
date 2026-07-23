@@ -30,7 +30,7 @@ export function LoginForm({busy = false, defaultValues, onLogin}: LoginFormProps
         <Label htmlFor="nickname">Nickname</Label>
         <Input
           id="nickname"
-          placeholder="Staff nick"
+          placeholder="Community name / display nick (e.g. Repinho)"
           value={nickname}
           autoComplete="username"
           onChange={(e) => setNickname(e.target.value)}
@@ -40,12 +40,16 @@ export function LoginForm({busy = false, defaultValues, onLogin}: LoginFormProps
         <Label htmlFor="account">Account</Label>
         <Input
           id="account"
-          placeholder="account"
+          placeholder="Account id (e.g. Graal5766947) — NOT the community name"
           required
           autoComplete="username"
           value={account}
           onChange={(e) => setAccount(e.target.value)}
         />
+        <p className="text-muted-foreground text-xs">
+          Login identity. Player queries (rights/attrs/ban/comments) use this exact value, so it must be
+          the account id, not your community name. The nickname above is what others see in-game.
+        </p>
       </div>
       <div className="grid gap-2">
         <Label htmlFor="password">Password</Label>

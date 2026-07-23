@@ -10,6 +10,7 @@ interface ChatSettingsFieldsProps {
   settings: ChatSettings
   onChange: (patch: Partial<ChatSettings>) => void
   onBrowse: () => void | Promise<void>
+  onBrowsePm?: () => void | Promise<void>
 }
 
 const FIELDS: {key: keyof ChatSettings; label: string}[] = [
@@ -21,7 +22,7 @@ const FIELDS: {key: keyof ChatSettings; label: string}[] = [
   {key: "content", label: "Message content"},
 ]
 
-export function ChatSettingsFields({settings, onChange, onBrowse}: ChatSettingsFieldsProps) {
+export function ChatSettingsFields({settings, onChange, onBrowse, onBrowsePm}: ChatSettingsFieldsProps) {
   return (
     <div className="grid gap-4">
       <div className="grid gap-3">
@@ -61,6 +62,31 @@ export function ChatSettingsFields({settings, onChange, onBrowse}: ChatSettingsF
             readOnly
           />
           <Button variant="outline" onClick={() => onBrowse()}>
+            Browse
+          </Button>
+        </div>
+      </div>
+
+      <div className="border-t pt-3">
+        <p className="text-muted-foreground mb-2 text-xs">
+          PM logging writes each PM (in/out) to <code>{"{folder}/{server}/PM_{account}_Log.txt"}</code>.
+        </p>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={settings.pmLog}
+            onChange={(e) => onChange({pmLog: e.target.checked})}
+          />
+          Log PMs
+        </label>
+        <div className="mt-2 flex items-center gap-2">
+          <Input
+            value={settings.pmLogDir}
+            onChange={(e) => onChange({pmLogDir: e.target.value})}
+            placeholder="Select PM log folder…"
+            readOnly
+          />
+          <Button variant="outline" onClick={() => onBrowsePm?.()}>
             Browse
           </Button>
         </div>

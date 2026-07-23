@@ -226,6 +226,27 @@ var (
 	procSendMassPM         *proc
 	procSendAdminMessage   *proc
 	procSendAdminMessageAll *proc
+	procSendToAllMessage    *proc
+
+	// Player admin editors (rights / attributes / bans) on the main server.
+	procRequestPlayerRights       *proc
+	procSetPlayerRights           *proc
+	procRequestPlayerAttrs        *proc
+	procSetPlayerAttributes       *proc
+	procParsePlayerAttributesText *proc
+	procRequestPlayerBan          *proc
+	procRequestPlayerBanByAccount *proc
+	procRequestBanTypes           *proc
+	procRequestBanHistory         *proc
+	procRequestStaffActivity      *proc
+	procSetBan                    *proc
+	procOnPlayerRights            *proc
+	procOnPlayerAttributes        *proc
+	procOnBanData                 *proc
+	procOnBanListData             *proc
+	procRequestPlayerComments     *proc
+	procSetPlayerComments         *proc
+	procOnPlayerTextData          *proc
 
 	// Script management (NC server).
 	procGetWeapons           *proc
@@ -443,6 +464,25 @@ func registerAll(resolve func(name string) (*proc, error)) error {
 	procSendMassPM = get("rc_send_mass_pm")
 	procSendAdminMessage = get("rc_send_admin_message")
 	procSendAdminMessageAll = get("rc_send_admin_message_all")
+	procSendToAllMessage = get("rc_send_toall_message")
+	procRequestPlayerRights = get("rc_request_player_rights")
+	procSetPlayerRights = get("rc_set_player_rights")
+	procRequestPlayerAttrs = get("rc_request_player_attrs")
+	procSetPlayerAttributes = get("rc_set_player_attributes")
+	procParsePlayerAttributesText = get("rc_parse_player_attributes_text")
+	procRequestPlayerBan = get("rc_request_player_ban")
+	procRequestPlayerBanByAccount = get("rc_request_player_ban_by_account")
+	procRequestBanTypes = get("rc_request_ban_types")
+	procRequestBanHistory = get("rc_request_ban_history")
+	procRequestStaffActivity = get("rc_request_staff_activity")
+	procSetBan = get("rc_set_ban")
+	procOnPlayerRights = get("rc_on_player_rights")
+	procOnPlayerAttributes = get("rc_on_player_attributes")
+	procOnBanData = get("rc_on_ban_data")
+	procOnBanListData = get("rc_on_ban_list_data")
+	procRequestPlayerComments = get("rc_request_player_comments")
+	procSetPlayerComments = get("rc_set_player_comments")
+	procOnPlayerTextData = get("rc_on_player_text_data")
 	procGetWeapons = get("rc_get_weapons")
 	procGetClasses = get("rc_get_classes")
 	procGetNPCs = get("rc_get_npcs")
@@ -551,6 +591,13 @@ type EventCallbacks struct {
 	FileBrowserMessage func(message string)
 	FileReceived       func(path string, content []byte)
 	MaxUploadSize      func(maxSize int64)
+
+	// Player admin editor callbacks (fired on the pump goroutine).
+	PlayerRights     func(account string, rights int, ipRange, folderAccess string)
+	PlayerAttributes func(account, propertiesJSON, editorText string)
+	BanData          func(account, computerID, details string)
+	BanListData      func(dataType, account, content string)
+	PlayerTextData   func(dataType, account, content string)
 }
 
 var (
@@ -576,6 +623,12 @@ var (
 	cbFileBrowserMessage = newCallback(fileBrowserMessageEntry)
 	cbFileReceived       = newCallback(fileReceivedEntry)
 	cbMaxUploadSize      = newCallback(maxUploadSizeEntry)
+
+	cbPlayerRights     = newCallback(playerRightsEntry)
+	cbPlayerAttributes = newCallback(playerAttributesEntry)
+	cbBanData          = newCallback(banDataEntry)
+	cbBanListData      = newCallback(banListDataEntry)
+	cbPlayerTextData   = newCallback(playerTextDataEntry)
 
 	routeMu sync.Mutex
 	routes  = map[Handle]*EventCallbacks{}
@@ -789,6 +842,72 @@ func maxUploadSizeEntry(maxSize, userData uintptr) uintptr {
 	return 0
 }
 
+// playerRightsEntry is the shim for RC_OnPlayerRights(account, rights, ip_range, folder_access, user_data).
+func playerRightsEntry(account, rights, ipRange, folderAccess, userData uintptr) uintptr {
+	acct := bptrToString((*byte)(unsafe.Pointer(account)))
+	ip := bptrToString((*byte)(unsafe.Pointer(ipRange)))
+	fa := bptrToString((*byte)(unsafe.Pointer(folderAccess)))
+	fire(userData, func(c *EventCallbacks) {
+		if c.PlayerRights != nil {
+			c.PlayerRights(acct, int(int32(rights)), ip, fa)
+		}
+	})
+	return 0
+}
+
+// playerAttributesEntry is the shim for RC_OnPlayerAttributes(account, properties_json, editor_text, user_data).
+func playerAttributesEntry(account, properties, editorText, userData uintptr) uintptr {
+	acct := bptrToString((*byte)(unsafe.Pointer(account)))
+	prop := bptrToString((*byte)(unsafe.Pointer(properties)))
+	ed := bptrToString((*byte)(unsafe.Pointer(editorText)))
+	fire(userData, func(c *EventCallbacks) {
+		if c.PlayerAttributes != nil {
+			c.PlayerAttributes(acct, prop, ed)
+		}
+	})
+	return 0
+}
+
+// banDataEntry is the shim for RC_OnBanData(account, computer_id, details, user_data).
+func banDataEntry(account, computerID, details, userData uintptr) uintptr {
+	acct := bptrToString((*byte)(unsafe.Pointer(account)))
+	cid := bptrToString((*byte)(unsafe.Pointer(computerID)))
+	det := bptrToString((*byte)(unsafe.Pointer(details)))
+	fire(userData, func(c *EventCallbacks) {
+		if c.BanData != nil {
+			c.BanData(acct, cid, det)
+		}
+	})
+	return 0
+}
+
+// banListDataEntry is the shim for RC_OnBanListData(data_type, account, content, user_data).
+func banListDataEntry(dataType, account, content, userData uintptr) uintptr {
+	dt := bptrToString((*byte)(unsafe.Pointer(dataType)))
+	acct := bptrToString((*byte)(unsafe.Pointer(account)))
+	cnt := bptrToString((*byte)(unsafe.Pointer(content)))
+	fire(userData, func(c *EventCallbacks) {
+		if c.BanListData != nil {
+			c.BanListData(dt, acct, cnt)
+		}
+	})
+	return 0
+}
+
+// playerTextDataEntry is the shim for RC_OnPlayerTextData(data_type, account, content, user_data).
+// Carries comments / profile / account text replies.
+func playerTextDataEntry(dataType, account, content, userData uintptr) uintptr {
+	dt := bptrToString((*byte)(unsafe.Pointer(dataType)))
+	acct := bptrToString((*byte)(unsafe.Pointer(account)))
+	cnt := bptrToString((*byte)(unsafe.Pointer(content)))
+	fire(userData, func(c *EventCallbacks) {
+		if c.PlayerTextData != nil {
+			c.PlayerTextData(dt, acct, cnt)
+		}
+	})
+	return 0
+}
+
 func fire(userData uintptr, dispatch func(*EventCallbacks)) {
 	if cb := routeFor(Handle(userData)); cb != nil {
 		dispatch(cb)
@@ -831,6 +950,11 @@ func RegisterCallbacks(h Handle, cbs *EventCallbacks) {
 	procOnFileBrowserMessage.Call(uintptr(h), cbFileBrowserMessage, uintptr(h))
 	procOnFileReceived.Call(uintptr(h), cbFileReceived, uintptr(h))
 	procOnMaxUploadFileSize.Call(uintptr(h), cbMaxUploadSize, uintptr(h))
+	procOnPlayerRights.Call(uintptr(h), cbPlayerRights, uintptr(h))
+	procOnPlayerAttributes.Call(uintptr(h), cbPlayerAttributes, uintptr(h))
+	procOnBanData.Call(uintptr(h), cbBanData, uintptr(h))
+	procOnBanListData.Call(uintptr(h), cbBanListData, uintptr(h))
+	procOnPlayerTextData.Call(uintptr(h), cbPlayerTextData, uintptr(h))
 }
 
 // UnregisterCallbacks detaches event callbacks for the handle.
@@ -861,6 +985,11 @@ func UnregisterCallbacks(h Handle) {
 	procOnFileBrowserMessage.Call(uintptr(h), 0, 0)
 	procOnFileReceived.Call(uintptr(h), 0, 0)
 	procOnMaxUploadFileSize.Call(uintptr(h), 0, 0)
+	procOnPlayerRights.Call(uintptr(h), 0, 0)
+	procOnPlayerAttributes.Call(uintptr(h), 0, 0)
+	procOnBanData.Call(uintptr(h), 0, 0)
+	procOnBanListData.Call(uintptr(h), 0, 0)
+	procOnPlayerTextData.Call(uintptr(h), 0, 0)
 }
 
 // ProcessEvents pumps queued connection callbacks once. Call regularly from a
@@ -1175,7 +1304,168 @@ func SendAdminMessageAll(h Handle, message string) error {
 	return callHandleStr(h, procSendAdminMessageAll, message)
 }
 
-// Disconnect closes all sockets and frees the handle.
+// SendToAllMessage sends a "to all" broadcast message (rc_send_toall_message),
+// the reference client's TToallsWindow action. Shown to every player as a
+// global notice, prefixed with the sender's name by the server.
+func SendToAllMessage(h Handle, message string) error {
+	return callHandleStr(h, procSendToAllMessage, message)
+}
+
+// RequestPlayerRights asks the server for the current rights of an account.
+// Reply arrives via the PlayerRights callback.
+func RequestPlayerRights(h Handle, account string) error {
+	return callHandleStr(h, procRequestPlayerRights, account)
+}
+
+// SetPlayerRights writes rights flags + ip range + folder access for an account.
+func SetPlayerRights(h Handle, account string, rights int, ipRange, folderAccess string) error {
+	if err := load(); err != nil {
+		return err
+	}
+	acct, _ := syscall.BytePtrFromString(account)
+	ip, _ := syscall.BytePtrFromString(ipRange)
+	fa, _ := syscall.BytePtrFromString(folderAccess)
+	r1, _, _ := procSetPlayerRights.Call(
+		uintptr(h),
+		uintptr(unsafe.Pointer(acct)),
+		uintptr(rights),
+		uintptr(unsafe.Pointer(ip)),
+		uintptr(unsafe.Pointer(fa)),
+	)
+	if r1 == 0 {
+		return errors.New(LastError(h))
+	}
+	return nil
+}
+
+// RequestPlayerAttrs asks the server for the attributes of an account.
+// Reply arrives via the PlayerAttributes callback (properties JSON + editor text).
+func RequestPlayerAttrs(h Handle, account string) error {
+	return callHandleStr(h, procRequestPlayerAttrs, account)
+}
+
+// SetPlayerAttributes writes the properties JSON blob for an account.
+func SetPlayerAttributes(h Handle, account, propertiesJSON string) error {
+	if err := load(); err != nil {
+		return err
+	}
+	acct, _ := syscall.BytePtrFromString(account)
+	prop, _ := syscall.BytePtrFromString(propertiesJSON)
+	r1, _, _ := procSetPlayerAttributes.Call(
+		uintptr(h),
+		uintptr(unsafe.Pointer(acct)),
+		uintptr(unsafe.Pointer(prop)),
+	)
+	if r1 == 0 {
+		return errors.New(LastError(h))
+	}
+	return nil
+}
+
+// ParsePlayerAttributesText converts an INI-style attribute editor document
+// into the properties JSON blob the protocol expects. The returned C string is
+// allocated by grclib and freed here; the Go string is a fresh copy.
+func ParsePlayerAttributesText(text string) (string, error) {
+	if err := load(); err != nil {
+		return "", err
+	}
+	txt, _ := syscall.BytePtrFromString(text)
+	r1, _, _ := procParsePlayerAttributesText.Call(uintptr(unsafe.Pointer(txt)))
+	if r1 == 0 {
+		return "", errors.New("rc_parse_player_attributes_text returned null")
+	}
+	out := bptrToString((*byte)(unsafe.Pointer(r1)))
+	Free(r1)
+	return out, nil
+}
+
+// RequestPlayerBan asks the server for the ban data of an online player.
+func RequestPlayerBan(h Handle, account string, playerID int) error {
+	if err := load(); err != nil {
+		return err
+	}
+	acct, _ := syscall.BytePtrFromString(account)
+	r1, _, _ := procRequestPlayerBan.Call(uintptr(h), uintptr(unsafe.Pointer(acct)), uintptr(playerID))
+	if r1 == 0 {
+		return errors.New(LastError(h))
+	}
+	return nil
+}
+
+// RequestPlayerBanByAccount asks for ban data of an (possibly offline) account.
+func RequestPlayerBanByAccount(h Handle, account string) error {
+	return callHandleStr(h, procRequestPlayerBanByAccount, account)
+}
+
+// RequestBanTypes asks the server for the available ban types/durations.
+// Reply arrives via the BanListData callback with data_type == "bantypes".
+func RequestBanTypes(h Handle) error {
+	return callHandle(h, procRequestBanTypes)
+}
+
+// RequestBanHistory asks for the ban history of an account.
+func RequestBanHistory(h Handle, account string) error {
+	return callHandleStr(h, procRequestBanHistory, account)
+}
+
+// RequestStaffActivity asks for the staff activity log of an account.
+func RequestStaffActivity(h Handle, account string) error {
+	return callHandleStr(h, procRequestStaffActivity, account)
+}
+
+// SetBan writes ban data for a target. world is "local" or "all"; target is the
+// account or "pc:<computerID>"; banned toggles the ban; releaseTime "" resets.
+func SetBan(h Handle, target, world string, banned bool, banType, releaseTime, reason string) error {
+	if err := load(); err != nil {
+		return err
+	}
+	tgt, _ := syscall.BytePtrFromString(target)
+	wld, _ := syscall.BytePtrFromString(world)
+	bt, _ := syscall.BytePtrFromString(banType)
+	rt, _ := syscall.BytePtrFromString(releaseTime)
+	rsn, _ := syscall.BytePtrFromString(reason)
+	var bannedInt int
+	if banned {
+		bannedInt = 1
+	}
+	r1, _, _ := procSetBan.Call(
+		uintptr(h),
+		uintptr(unsafe.Pointer(tgt)),
+		uintptr(unsafe.Pointer(wld)),
+		uintptr(bannedInt),
+		uintptr(unsafe.Pointer(bt)),
+		uintptr(unsafe.Pointer(rt)),
+		uintptr(unsafe.Pointer(rsn)),
+	)
+	if r1 == 0 {
+		return errors.New(LastError(h))
+	}
+	return nil
+}
+
+// RequestPlayerComments asks the server for an account's comments text.
+// Reply arrives via the PlayerTextData callback with data_type == "comments".
+func RequestPlayerComments(h Handle, account string) error {
+	return callHandleStr(h, procRequestPlayerComments, account)
+}
+
+// SetPlayerComments writes the comments text for an account.
+func SetPlayerComments(h Handle, account, comments string) error {
+	if err := load(); err != nil {
+		return err
+	}
+	acct, _ := syscall.BytePtrFromString(account)
+	cmt, _ := syscall.BytePtrFromString(comments)
+	r1, _, _ := procSetPlayerComments.Call(
+		uintptr(h),
+		uintptr(unsafe.Pointer(acct)),
+		uintptr(unsafe.Pointer(cmt)),
+	)
+	if r1 == 0 {
+		return errors.New(LastError(h))
+	}
+	return nil
+}
 func Disconnect(h Handle) {
 	if err := load(); err != nil {
 		return

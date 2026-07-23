@@ -12,11 +12,12 @@ import {toast} from "sonner"
 
 import {MessageComposeDialog} from "@/components/features/playerlist/MessageComposeDialog"
 import {PmDialog, type PmLine, type PmTarget} from "@/components/features/playerlist/PmDialog"
-import {PlayerTable} from "@/components/features/playerlist/PlayerTable"
+import {PlayerTable, type PlayerEditKind} from "@/components/features/playerlist/PlayerTable"
 import {Button} from "@/components/ui/button"
 import {Input} from "@/components/ui/input"
 import {ScrollArea} from "@/components/ui/scroll-area"
 import {usePlayers} from "@/hooks/usePlayers"
+import {useChatSettings} from "@/hooks/useChatSettings"
 import {rcService} from "@/services/rcService"
 import type {Player} from "@/types"
 
@@ -24,6 +25,7 @@ type Evt = {seq: number; name: string; data: unknown[]}
 
 export function PlayerListWindowScreen() {
   const {players, loading} = usePlayers(rcService, true)
+  const chat = useChatSettings()
   const [query, setQuery] = useState("")
 
   // pmThreads holds the in-memory conversation per player id.
@@ -33,6 +35,21 @@ export function PlayerListWindowScreen() {
   const [pmTarget, setPmTarget] = useState<PmTarget | null>(null)
   const [massPmOpen, setMassPmOpen] = useState(false)
   const [adminOpen, setAdminOpen] = useState(false)
+  const [toAllOpen, setToAllOpen] = useState(false)
+
+  // Push PM-log config to the backend (same App process as the main window, but
+  // this window issues the AppendPmLog calls, so ensure the config is set).
+  useEffect(() => {
+    rcService.setPmLogConfig(chat.settings.pmLog, chat.settings.pmLogDir).catch(() => {})
+  }, [chat.settings.pmLog, chat.settings.pmLogDir])
+
+  // pmLogLine builds a timestamped log line for a PM direction.
+  const pmLogLine = (dir: "in" | "out", text: string) => {
+    const now = new Date()
+    const hh = String(now.getHours()).padStart(2, "0")
+    const mm = String(now.getMinutes()).padStart(2, "0")
+    return `[${hh}:${mm}] ${dir === "out" ? "->" : "<-"} ${text}`
+  }
 
   // Refs so the event listener (bound once) can read fresh state without
   // re-subscribing each render.
@@ -61,6 +78,7 @@ export function PlayerListWindowScreen() {
       if (!text) return
       const line: PmLine = {dir: "in", text, ts: Date.now()}
       setPmThreads((prev) => ({...prev, [id]: [...(prev[id] ?? []), line]}))
+      if (account) rcService.appendPmLog(account, pmLogLine("in", text)).catch(() => {})
       // If this dialog is open, the line is seen immediately; else bump unread.
       if (openIdRef.current === id) return
       setUnread((prev) => ({...prev, [id]: (prev[id] ?? 0) + 1}))
@@ -77,6 +95,30 @@ export function PlayerListWindowScreen() {
     setUnread((prev) => (prev[player.id] ? {...prev, [player.id]: 0} : prev))
   }
 
+  // Right-click admin actions: open the editor window for the row's (server-
+  // supplied) account name.
+  const editPlayer = (player: Player, kind: PlayerEditKind) => {
+    const account = player.account
+    if (!account) {
+      toast.error("This player has no account name")
+      return
+    }
+    switch (kind) {
+      case "rights":
+        void rcService.openRightsWindow(account)
+        break
+      case "ban":
+        void rcService.openBanWindow(account)
+        break
+      case "attrs":
+        void rcService.openAttrsWindow(account)
+        break
+      case "comments":
+        void rcService.openCommentsWindow(account)
+        break
+    }
+  }
+
   const sendPM = async (message: string) => {
     if (!pmTarget) return
     try {
@@ -85,6 +127,7 @@ export function PlayerListWindowScreen() {
         ...prev,
         [pmTarget.id]: [...(prev[pmTarget.id] ?? []), {dir: "out", text: message, ts: Date.now()}],
       }))
+      if (pmTarget.account) rcService.appendPmLog(pmTarget.account, pmLogLine("out", message)).catch(() => {})
     } catch (err) {
       toast.error("PM failed", {description: err instanceof Error ? err.message : String(err)})
     }
@@ -113,6 +156,15 @@ export function PlayerListWindowScreen() {
     }
   }
 
+  const sendToAll = async (message: string) => {
+    try {
+      await rcService.sendToAll(message)
+      toast.success("To-All message sent")
+    } catch (err) {
+      toast.error("To-All failed", {description: err instanceof Error ? err.message : String(err)})
+    }
+  }
+
   return (
     <div className="bg-background flex h-svh flex-col">
       <header className="border-b">
@@ -130,6 +182,10 @@ export function PlayerListWindowScreen() {
               <Megaphone className="size-4" />
               Admin Msg
             </Button>
+            <Button variant="outline" size="sm" onClick={() => setToAllOpen(true)}>
+              <Megaphone className="size-4" />
+              To All
+            </Button>
           </div>
         </div>
         <div className="px-4 pb-2.5">
@@ -145,7 +201,7 @@ export function PlayerListWindowScreen() {
         </div>
       </header>
       <ScrollArea className="min-h-0 flex-1 p-2">
-        <PlayerTable players={filtered} unreadById={unread} onPM={openPM} />
+        <PlayerTable players={filtered} unreadById={unread} onPM={openPM} onEdit={editPlayer} />
       </ScrollArea>
 
       <PmDialog
@@ -170,6 +226,15 @@ export function PlayerListWindowScreen() {
         singleLine
         onClose={() => setAdminOpen(false)}
         onSend={sendAdminAll}
+      />
+      <MessageComposeDialog
+        open={toAllOpen}
+        title="To All"
+        recipientLabel="everyone (global notice)"
+        sendLabel="Send to all"
+        singleLine
+        onClose={() => setToAllOpen(false)}
+        onSend={sendToAll}
       />
     </div>
   )

@@ -53,6 +53,11 @@ type App struct {
 	logEnabled bool
 	logDir     string
 
+	// PM log config (separate from chat log). When enabled, each PM (in/out) is
+	// appended to {pmLogDir}/{server}/PM_{otherAccount}_Log.txt.
+	pmLogEnabled bool
+	pmLogDir     string
+
 	playerListMu     sync.Mutex
 	playerListWindow *application.WebviewWindow
 
@@ -67,6 +72,12 @@ type App struct {
 
 	editorMu      sync.Mutex
 	editorWindows map[string]*application.WebviewWindow
+
+	// playerWindows holds the /openrights, /open, /openaccess editor windows,
+	// keyed "<kind>:<account>" so reopening focuses the existing window. Unlike
+	// the singleton windows, several accounts can be open at once.
+	playerWindowMu sync.Mutex
+	playerWindows  map[string]*application.WebviewWindow
 
 	editorCacheMu sync.Mutex
 	editorCache   map[string]rclib.ScriptReply
@@ -112,6 +123,7 @@ func NewApp() *App {
 		dbHeaders:      map[string][]byte{},
 		textWindows:    map[string]*application.WebviewWindow{},
 		sqliteWindows:  map[string]*application.WebviewWindow{},
+		playerWindows:  map[string]*application.WebviewWindow{},
 	}
 }
 
@@ -386,6 +398,141 @@ func (a *App) SendAdminMessage(playerID int, message string) error {
 // SendAdminMessageAll sends an admin message to every player.
 func (a *App) SendAdminMessageAll(message string) error {
 	return a.sessions.SendAdminMessageAll(message)
+}
+
+// resolveAccount trims the account argument. Player-editor commands always
+// require an explicit account (right-click a player or pass it to the slash
+// command); grclib never exposes the logged-in account name, so there is no
+// implicit self.
+func (a *App) resolveAccount(account string) string {
+	return strings.TrimSpace(account)
+}
+
+// OpenRights opens the staff-rights editor for an account (self if empty).
+func (a *App) OpenRights(account string) (connection.RightsData, error) {
+	return a.sessions.OpenRights(a.resolveAccount(account))
+}
+
+// SetRights writes staff rights for an account.
+func (a *App) SetRights(account string, rights int, ipRange, folderAccess string) error {
+	return a.sessions.SetRights(a.resolveAccount(account), rights, ipRange, folderAccess)
+}
+
+// OpenAttrs opens the attributes editor for an account (self if empty).
+func (a *App) OpenAttrs(account string) (connection.AttrsData, error) {
+	return a.sessions.OpenAttrs(a.resolveAccount(account))
+}
+
+// SetAttrs writes attributes (properties JSON) for an account.
+func (a *App) SetAttrs(account, propertiesJSON string) error {
+	return a.sessions.SetAttrs(a.resolveAccount(account), propertiesJSON)
+}
+
+// ParseAttrsText converts an INI-style attribute document to properties JSON.
+func (a *App) ParseAttrsText(text string) (string, error) {
+	return a.sessions.ParseAttrsText(text)
+}
+
+// OpenBan opens the ban editor for an account (self if empty).
+func (a *App) OpenBan(account string) (connection.BanData, error) {
+	return a.sessions.OpenBan(a.resolveAccount(account))
+}
+
+// OpenComments opens the comments editor for an account (self if empty).
+func (a *App) OpenComments(account string) (connection.CommentsData, error) {
+	return a.sessions.OpenComments(a.resolveAccount(account))
+}
+
+// SetComments writes comments for an account.
+func (a *App) SetComments(account, comments string) error {
+	return a.sessions.SetComments(a.resolveAccount(account), comments)
+}
+
+// SetBan writes ban data for a target.
+func (a *App) SetBan(target, world string, banned bool, banType, releaseTime, reason string) error {
+	return a.sessions.SetBan(target, world, banned, banType, releaseTime, reason)
+}
+
+// GetBanTypes returns the available ban types/durations list.
+func (a *App) GetBanTypes() (string, error) { return a.sessions.GetBanTypes() }
+
+// RequestBanHistory returns an account's ban history text (self if empty).
+func (a *App) RequestBanHistory(account string) (string, error) {
+	return a.sessions.RequestBanHistory(a.resolveAccount(account))
+}
+
+// RequestStaffActivity returns an account's staff activity text (self if empty).
+func (a *App) RequestStaffActivity(account string) (string, error) {
+	return a.sessions.RequestStaffActivity(a.resolveAccount(account))
+}
+
+// openPlayerWindow opens (or focuses) an external editor window for the given
+// kind ("rights"|"attrs"|"ban") and account. Empty account resolves to self.
+// Title is "<ACC>'s <Label> - <Server>". Several accounts may be open at once;
+// reopening the same kind+account focuses the existing window.
+func (a *App) openPlayerWindow(kind, label, account string, width, height int) error {
+	account = a.resolveAccount(account)
+	log.Printf("[editor] openPlayerWindow kind=%s account=%q", kind, account)
+	mapKey := kind + ":" + account
+
+	a.playerWindowMu.Lock()
+	if w, ok := a.playerWindows[mapKey]; ok {
+		w.Show()
+		w.Focus()
+		a.playerWindowMu.Unlock()
+		return nil
+	}
+	a.playerWindowMu.Unlock()
+
+	server := a.sessions.Status().ServerName
+	title := fmt.Sprintf("%s's %s", account, label)
+	if server != "" {
+		title = fmt.Sprintf("%s - %s", title, server)
+	}
+
+	w := a.app.Window.NewWithOptions(application.WebviewWindowOptions{
+		Name:             sanitizeWindowName(kind, account),
+		Title:            title,
+		URL:              "/#" + kind + "?a=" + url.QueryEscape(account),
+		Width:            width,
+		Height:           height,
+		BackgroundColour: application.NewRGB(15, 17, 21),
+	})
+	a.playerWindowMu.Lock()
+	a.playerWindows[mapKey] = w
+	a.playerWindowMu.Unlock()
+	w.Show()
+	w.Focus()
+	w.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
+		a.playerWindowMu.Lock()
+		delete(a.playerWindows, mapKey)
+		a.playerWindowMu.Unlock()
+	})
+	return nil
+}
+
+// OpenRightsWindow opens the /openrights editor window for an account (self if
+// empty). Triggered by typing /openrights in the RC chat.
+func (a *App) OpenRightsWindow(account string) error {
+	return a.openPlayerWindow("rights", "Rights", account, 480, 560)
+}
+
+// OpenAttrsWindow opens the /open (attributes) editor window for an account
+// (self if empty). Triggered by typing /open in the RC chat.
+func (a *App) OpenAttrsWindow(account string) error {
+	return a.openPlayerWindow("attrs", "Attributes", account, 480, 600)
+}
+
+// OpenBanWindow opens the /openaccess (ban) editor window for an account (self
+// if empty). Triggered by typing /openaccess in the RC chat.
+func (a *App) OpenBanWindow(account string) error {
+	return a.openPlayerWindow("ban", "Access", account, 520, 560)
+}
+
+// OpenCommentsWindow opens the /opencomments editor window for an account (self
+// if empty). Triggered by typing /opencomments in the RC chat.
+func (a *App) OpenCommentsWindow(account string) error {
+	return a.openPlayerWindow("comments", "Comments", account, 560, 560)
 }
 
 // --- Script management (NC server) ---
@@ -958,6 +1105,8 @@ func (a *App) openSqliteWindow(remotePath string) error {
 	a.openMu.Lock()
 	a.sqliteWindows[remotePath] = w
 	a.openMu.Unlock()
+	w.Show()
+	w.Focus()
 	mapKey := "sqlite:" + remotePath
 	// Intercept close when there are unsaved staged changes: the hook runs
 	// before the internal close listener, so Cancel() prevents the close and
@@ -1069,6 +1218,58 @@ func (a *App) AppendChatLog(line string) error {
 	return err
 }
 
+// SetPmLogConfig updates whether PM logging is active and the output folder.
+// PM logs are written under {dir}/{server}/PM_{otherAccount}_Log.txt.
+func (a *App) SetPmLogConfig(enabled bool, dir string) {
+	a.logMu.Lock()
+	defer a.logMu.Unlock()
+	a.pmLogEnabled = enabled
+	a.pmLogDir = dir
+}
+
+// sanitizeName makes an account/server string safe for use as a file/folder name.
+func sanitizeName(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		s = "unknown"
+	}
+	repl := strings.NewReplacer(
+		string(os.PathSeparator), "_", string(filepath.Separator), "_",
+		"/", "_", "\\", "_", ":", "_", "*", "_", "?", "_", "\"", "_", "<", "_", ">", "_", "|", "_",
+	)
+	return repl.Replace(s)
+}
+
+// AppendPmLog appends a line to the PM log for the conversation with otherAccount
+// under {pmLogDir}/{server}/PM_{otherAccount}_Log.txt. No-op if logging disabled.
+func (a *App) AppendPmLog(otherAccount, line string) error {
+	a.logMu.Lock()
+	enabled, dir := a.pmLogEnabled, a.pmLogDir
+	a.logMu.Unlock()
+	if !enabled || dir == "" {
+		return nil
+	}
+	server := sanitizeName(a.sessions.Status().ServerName)
+	other := sanitizeName(otherAccount)
+	if err := os.MkdirAll(filepath.Join(dir, server), 0o755); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, server, "PM_"+other+"_Log.txt")
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(line + "\n")
+	return err
+}
+
+// SendToAll broadcasts a "to all" message to every player on the server
+// (rc_send_toall_message), shown as a global notice prefixed with the sender.
+func (a *App) SendToAll(message string) error {
+	return a.sessions.SendToAll(message)
+}
+
 // ChooseDirectory opens a native folder picker and returns the chosen path
 // (empty if the user cancels).
 func (a *App) ChooseDirectory() (string, error) {
@@ -1099,6 +1300,8 @@ func (a *App) OpenPlayerList() {
 		BackgroundColour: application.NewRGB(15, 17, 21),
 	})
 	a.playerListWindow = w
+	w.Show()
+	w.Focus()
 	w.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
 		a.playerListMu.Lock()
 		a.playerListWindow = nil
@@ -1125,6 +1328,8 @@ func (a *App) OpenScriptManager() {
 		BackgroundColour: application.NewRGB(15, 17, 21),
 	})
 	a.scriptMgrWindow = w
+	w.Show()
+	w.Focus()
 	w.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
 		a.scriptMgrMu.Lock()
 		a.scriptMgrWindow = nil
@@ -1150,6 +1355,8 @@ func (a *App) OpenSettings() {
 		BackgroundColour: application.NewRGB(15, 17, 21),
 	})
 	a.settingsWindow = w
+	w.Show()
+	w.Focus()
 	w.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
 		a.settingsMu.Lock()
 		a.settingsWindow = nil
@@ -1175,6 +1382,8 @@ func (a *App) OpenFileBrowser() {
 		BackgroundColour: application.NewRGB(15, 17, 21),
 	})
 	a.fileBrowserWindow = w
+	w.Show()
+	w.Focus()
 	w.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
 		a.fileBrowserMu.Lock()
 		a.fileBrowserWindow = nil
@@ -1270,6 +1479,8 @@ func (a *App) OpenScriptEditor(scriptType, key string) error {
 	a.editorMu.Lock()
 	a.editorWindows[mapKey] = w
 	a.editorMu.Unlock()
+	w.Show()
+	w.Focus()
 	// Intercept close when there are unsaved changes: the hook runs before the
 	// internal close listener, so Cancel() here prevents the window from closing
 	// and gives the frontend a chance to prompt (Save / Discard / Cancel).

@@ -16,6 +16,8 @@ export const DEFAULT_CHAT_SETTINGS: ChatSettings = {
   content: "#e5e7eb",
   logChat: false,
   logDir: "",
+  pmLog: false,
+  pmLogDir: "",
 }
 
 function load(): ChatSettings {

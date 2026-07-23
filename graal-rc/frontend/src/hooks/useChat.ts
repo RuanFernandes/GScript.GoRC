@@ -270,6 +270,54 @@ export function useChat(service: RcService): UseChatResult {
         clearChannel(channel)
         return true
       }
+      // /openrights, /openaccess, /open {account} open a client-side editor
+      // window (self if no account). Intercepted locally — never sent to server.
+      // /toall <message> broadcasts a global "to all" notice (rc_send_toall_message).
+      const toallMatch = trimmed.match(/^\/toall(?:\s+(.*))?$/i)
+      if (toallMatch) {
+        const msg = (toallMatch[1] ?? "").trim()
+        if (!msg) {
+          push(channel, "Usage: /toall <message>", "system")
+        } else {
+          try {
+            await service.sendToAll(msg)
+          } catch (err) {
+            toast.error("To-All failed", {description: err instanceof Error ? err.message : String(err)})
+          }
+        }
+        return true
+      }
+      const adminCmd = trimmed.match(/^\/(openrights|openaccess|opencomments|open)(?:\s+(.*))?$/i)
+      if (adminCmd) {
+        const arg = (adminCmd[2] ?? "").trim()
+        const cmdName = adminCmd[1].toLowerCase()
+        // These editors target a specific account — right-click a player in the
+        // list, or pass the account explicitly. No implicit self: grclib never
+        // exposes the logged-in account name, so an empty arg can't resolve.
+        if (!arg) {
+          push(channel, `Usage: /${cmdName} <account> — or right-click a player in the list`, "system")
+          return true
+        }
+        try {
+          switch (cmdName) {
+            case "openrights":
+              await service.openRightsWindow(arg)
+              break
+            case "openaccess":
+              await service.openBanWindow(arg)
+              break
+            case "opencomments":
+              await service.openCommentsWindow(arg)
+              break
+            case "open":
+              await service.openAttrsWindow(arg)
+              break
+          }
+        } catch (err) {
+          toast.error("Open failed", {description: err instanceof Error ? err.message : String(err)})
+        }
+        return true
+      }
       // "/scripthelp2 <query>" is a client-only command: search the cached
       // gscript.dev function reference and render hoverable results. (/scripthelp
       // without the 2 is the server's own outdated command, left untouched.)

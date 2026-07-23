@@ -310,6 +310,10 @@ function ChatSection({
           const dir = await rcService.chooseDirectory()
           if (dir) onChange({logDir: dir})
         }}
+        onBrowsePm={async () => {
+          const dir = await rcService.chooseDirectory()
+          if (dir) onChange({pmLogDir: dir})
+        }}
       />
       <div>
         <Button variant="ghost" onClick={onReset}>
