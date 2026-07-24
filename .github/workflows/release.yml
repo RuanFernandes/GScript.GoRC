@@ -1,18 +1,29 @@
 name: release
 
-# Manual release: build Windows x64 and Linux x64, then publish a
-# GitHub release. Triggered from the Actions tab via "Run workflow".
+# Manual release: build Windows x64, Linux x64 and macOS x64, then publish a
+# GitHub release. Triggered from the Actions tab via "Run workflow". Pick a
+# semver bump level (patch/minor/major) and the next tag is computed from the
+# latest existing tag automatically — no manual `git tag` needed.
 on:
   workflow_dispatch:
     inputs:
-      tag_name:
-        description: "Release tag name (e.g. continuous, v1.0.0)"
+      level:
+        description: "Version bump (auto-computes next tag from the latest one)"
         required: true
-        default: "continuous"
+        type: choice
+        default: minor
+        options:
+          - patch   # 0.0.1
+          - minor   # 0.1.0
+          - major   # 1.0.0
+      custom_tag:
+        description: "Override: explicit tag (e.g. v1.2.3). Blank = use bump."
+        required: false
+        default: ""
       release_name:
         description: "Release title"
         required: true
-        default: "Continuous build"
+        default: "Graal RC"
       prerelease:
         description: "Mark as pre-release"
         type: boolean
@@ -28,7 +39,7 @@ on:
         default: "false"
 
 permissions:
-  contents: write # softprops/action-gh-release needs this to create the release
+  contents: write # needed to push the computed tag and create the release
 
 jobs:
   windows:
@@ -54,6 +65,9 @@ jobs:
       - name: Put Go bin on PATH
         shell: bash
         run: echo "$HOME/go/bin" >> "$GITHUB_PATH"
+      - name: Install task
+        shell: bash
+        run: go install github.com/go-task/task/v3/cmd/task@latest
       - name: Ensure NSIS present
         shell: pwsh
         run: |
@@ -70,7 +84,7 @@ jobs:
         shell: bash
         env:
           CGO_ENABLED: "0" # syscall loader — no C toolchain needed for Windows
-        run: wails3 task windows:package
+        run: task windows:package
       - uses: actions/upload-artifact@v4
         with:
           name: windows
@@ -102,6 +116,8 @@ jobs:
         run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.117
       - name: Put Go bin on PATH
         run: echo "$HOME/go/bin" >> "$GITHUB_PATH"
+      - name: Install task
+        run: go install github.com/go-task/task/v3/cmd/task@latest
       - name: Fetch appimagetool
         run: |
           curl -sSL -o "$HOME/appimagetool" https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
@@ -110,14 +126,14 @@ jobs:
       - name: Build native binary (linux/amd64, CGO)
         env:
           CGO_ENABLED: "1"
-        run: wails3 task linux:build
-      - name: Assemble AppImage (bundles grclib64.so)
+        run: task linux:build
+      - name: Assemble AppImage (bundles grclib.so)
         run: |
           set -e
           rm -rf bin/AppDir
           mkdir -p bin/AppDir/usr/bin
           cp bin/graal-rc bin/AppDir/usr/bin/
-          cp rclib/grclib64.so bin/AppDir/usr/bin/
+          cp rclib/grclib.so bin/AppDir/usr/bin/
           cp build/appicon.png bin/AppDir/graal-rc.png
           cat > bin/AppDir/graal-rc.desktop <<'DESKTOP'
           [Desktop Entry]
@@ -141,23 +157,89 @@ jobs:
           path: graal-rc/bin/graal-rc-amd64.AppImage
           if-no-files-found: error
 
+  macos-amd64:
+    name: macOS x64 (tarball)
+    runs-on: macos-13 # Intel runner → native amd64 + CGO via system clang
+    defaults:
+      run:
+        working-directory: graal-rc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: graal-rc/frontend/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ">=1.25.0"
+          cache-dependency-path: graal-rc/go.sum
+      - name: Install wails3 CLI
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.117
+      - name: Put Go bin on PATH
+        run: echo "$HOME/go/bin" >> "$GITHUB_PATH"
+      - name: Install task
+        run: go install github.com/go-task/task/v3/cmd/task@latest
+      - name: Build native binary (darwin/amd64, CGO)
+        env:
+          CGO_ENABLED: "1"
+        run: task darwin:build
+      - name: Bundle binary + grclib.dylib
+        run: |
+          set -e
+          mkdir -p stage
+          cp bin/graal-rc stage/
+          cp rclib/grclib.dylib stage/
+          # rclib resolves the lib by searching the binary's dir and parents,
+          # so shipping them side-by-side is enough.
+          tar -C stage -czf bin/graal-rc-darwin-amd64.tar.gz .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-amd64
+          path: graal-rc/bin/graal-rc-darwin-amd64.tar.gz
+          if-no-files-found: error
+
   release:
-    name: Publish rolling release
-    needs: [windows, linux-amd64]
-    if: always() && (needs.windows.result == 'success' || needs.linux-amd64.result == 'success')
+    name: Publish release
+    needs: [windows, linux-amd64, macos-amd64]
+    if: always() && (needs.windows.result == 'success' || needs.linux-amd64.result == 'success' || needs.macos-amd64.result == 'success')
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need full history + tags to read the latest tag
+      - name: Compute release tag
+        id: tag
+        run: |
+          set -euo pipefail
+          custom="${{ github.event.inputs.custom_tag }}"
+          if [ -n "$custom" ]; then
+            tag="$custom"
+          else
+            latest=$(git tag -l 'v*' --sort=-v:refname | head -n1 || true)
+            base="${latest#v}"; [ -z "$base" ] && base="0.0.0"
+            IFS='.' read -r MA MI PA <<<"$base"
+            case "${{ github.event.inputs.level }}" in
+              major) MA=$((MA+1)); MI=0; PA=0 ;;
+              minor) MI=$((MI+1)); PA=0 ;;
+              patch) PA=$((PA+1)) ;;
+              *) echo "bad level"; exit 1 ;;
+            esac
+            tag="v${MA}.${MI}.${PA}"
+          fi
+          echo "Computed tag: $tag"
+          echo "name=$tag" >>"$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         with:
           path: dist
       - name: Flatten artifacts
         run: |
           mkdir -p release
-          find dist -type f \( -name '*.exe' -o -name '*.AppImage' \) -exec cp {} release/ \;
+          find dist -type f \( -name '*.exe' -o -name '*.AppImage' -o -name '*.tar.gz' \) -exec cp {} release/ \;
           ls -la release
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.tag_name }}
+          tag_name: ${{ steps.tag.outputs.name }}
           name: ${{ github.event.inputs.release_name }}
           prerelease: ${{ github.event.inputs.prerelease }}
           make_latest: ${{ github.event.inputs.make_latest }}
@@ -167,6 +249,7 @@ jobs:
             Targets:
             - Windows x64 (NSIS installer)
             - Linux x64 (AppImage)
+            - macOS x64 (tarball: binary + grclib.dylib)
 
-            Native grclib libs are bundled per bitness.
+            Native grclib libs are bundled per platform.
           files: release/*
