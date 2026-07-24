@@ -19,12 +19,15 @@ type proc struct {
 	addr uintptr
 }
 
-// Call invokes the native symbol via purego.SyscallN. Unlike stdlib
-// syscall.Syscall it handles any arg count with the correct C calling
-// convention, so the 8-arg rc_create_npc_on_server no longer needs special
-// casing. The third return is forwarded for parity with the Windows sibling;
-// call sites ignore it.
+// Call invokes the native symbol via purego.SyscallN under dllMu so no two
+// goroutines re-enter grclib concurrently (mirrors the single-threaded reference
+// client; see dllMu in rclib.go). Unlike stdlib syscall.Syscall it handles any
+// arg count with the correct C calling convention, so the 8-arg
+// rc_create_npc_on_server no longer needs special casing. The third return is
+// forwarded for parity with the Windows sibling; call sites ignore it.
 func (p *proc) Call(a ...uintptr) (uintptr, uintptr, error) {
+	dllMu.Lock()
+	defer dllMu.Unlock()
 	r1, r2, _ := purego.SyscallN(p.addr, a...)
 	return r1, r2, nil
 }

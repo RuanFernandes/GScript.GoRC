@@ -1,11 +1,12 @@
 // Package rclib binds the grclib native library (C ABI) without cgo: on Windows
-// it loads the DLL via the syscall package; on Linux it loads the .so via
-// github.com/ebitengine/purego (pure-Go dlopen) and invokes resolved symbols
-// through syscall.Syscall. Either way the project builds with CGO_ENABLED=0.
+// it loads the DLL via the syscall package; on Linux/macOS it dlopen's the .so /
+// .dylib via github.com/ebitengine/purego (pure-Go) and invokes resolved
+// symbols through purego.SyscallN. Either way the project builds with
+// CGO_ENABLED=0.
 //
-// The native file is selected by GOOS+GOARCH (grclib64.dll / grclib.dll /
-// grclib64.so / grclib.so) — a 32-bit lib cannot load into a 64-bit process, so
-// each build ships the matching bitness.
+// The native file is selected by GOOS: grclib64.dll (Windows), grclib.so
+// (Linux), grclib.dylib (macOS) — one amd64 lib per desktop target, shipped
+// committed under rclib/.
 //
 // Struct and signatures mirror how the reference C++ client consumes the
 // library: rc_connect -> rc_get_servers -> rc_connect_to_server.
@@ -14,10 +15,12 @@ package rclib
 import (
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -190,6 +193,15 @@ type ScriptReply struct {
 	Script string `json:"script"`
 }
 
+// dllMu serializes every grclib call. The reference C++ client is single-threaded
+// (GTK main loop + one 50ms timer), so only one external caller is ever inside
+// grclib at a time. The Go port fans calls across the event-pump goroutine plus N
+// Wails goroutines; without serialization two threads re-enter grclib and corrupt
+// shared socket/buffer state (observed as the NC socket dropping right after the
+// first weapon-script open). The mutex collapses all Go callers back to one.
+// (grclib's internal nc_recv_thread is managed by the DLL itself and is unaffected.)
+var dllMu sync.Mutex
+
 var (
 	once    sync.Once
 	loadErr error
@@ -330,21 +342,18 @@ func arg(a []uintptr, i int) uintptr {
 	return 0
 }
 
-// libFileName returns the native library filename for the current GOOS/GOARCH.
-// A 32-bit build (386) uses the un-suffixed name; a 64-bit build (amd64/arm64)
-// uses the "64" suffix. They are NOT interchangeable — the lib bitness must
-// match the process bitness.
+// libFileName returns the committed native library filename for the current
+// GOOS. All desktop targets are amd64; the lib bitness must match the process
+// bitness, so each platform ships exactly one lib (selected here). macOS uses
+// the .dylib extension (purego.Dlopen/dlsym load it the same as a .so).
 func libFileName() string {
-	sixtyFour := runtime.GOARCH == "amd64" || runtime.GOARCH == "arm64"
-	name := "grclib"
-	if sixtyFour {
-		name += "64"
-	}
 	switch runtime.GOOS {
 	case "windows":
-		return name + ".dll"
-	default:
-		return name + ".so"
+		return "grclib64.dll"
+	case "darwin":
+		return "grclib.dylib"
+	default: // linux and other ELF targets
+		return "grclib.so"
 	}
 }
 
@@ -549,8 +558,26 @@ func DLLPath() (string, error) {
 	return "", errors.New(libFileName() + " not found")
 }
 
+// maxString caps bptrToString's NUL scan. A non-terminated or corrupt C pointer
+// would otherwise walk unmapped memory until it segfaults (which, in a
+// windowsgui release build, takes the whole process down with no trace). 16 MiB
+// is far above any legitimate grclib string (scripts/configs are KiB-range).
+const maxString = 16 << 20
+
+// safeRecover logs a recovered panic from a grclib callback shim instead of
+// letting it kill the event-pump goroutine (which would silently drop the NC
+// socket and all chat). Mirrors the try/catch around each event in grclib's
+// rc_process_events (grclib.cpp ~5042).
+func safeRecover(label string) {
+	if r := recover(); r != nil {
+		log.Printf("[rclib] panic in %s: %v\n%s", label, r, debug.Stack())
+	}
+}
+
 // bptrToString reads a NUL-terminated C string and returns an owned copy
 // (decoupled from the DLL's memory, safe to keep after the buffer is released).
+// The scan is capped at maxString so a corrupt/unterminated pointer cannot walk
+// unmapped memory into a segfault.
 func bptrToString(p *byte) string {
 	if p == nil {
 		return ""
@@ -558,6 +585,10 @@ func bptrToString(p *byte) string {
 	n := 0
 	for ptr := unsafe.Pointer(p); *(*byte)(ptr) != 0; ptr = unsafe.Pointer(uintptr(ptr) + 1) {
 		n++
+		if n >= maxString {
+			log.Printf("[rclib] bptrToString hit %d-byte cap (possible corrupt C string)", maxString)
+			break
+		}
 	}
 	// unsafe.Slice + string() copies the bytes into a fresh Go allocation.
 	return string(unsafe.Slice(p, n))
@@ -634,6 +665,7 @@ var (
 
 // connectedEntry is the C-callable shim for RC_OnConnected(user_data).
 func connectedEntry(userData uintptr) uintptr {
+	defer safeRecover("on_connected")
 	fire(userData, func(c *EventCallbacks) {
 		if c.Connected != nil {
 			c.Connected()
@@ -644,6 +676,7 @@ func connectedEntry(userData uintptr) uintptr {
 
 // disconnectedEntry is the C-callable shim for RC_OnDisconnected(reason, user_data).
 func disconnectedEntry(reason, userData uintptr) uintptr {
+	defer safeRecover("on_disconnected")
 	msg := bptrToString((*byte)(unsafe.Pointer(reason)))
 	fire(userData, func(c *EventCallbacks) {
 		if c.Disconnected != nil {
@@ -655,6 +688,7 @@ func disconnectedEntry(reason, userData uintptr) uintptr {
 
 // messageEntry is the C-callable shim for RC_OnMessage(message, user_data).
 func messageEntry(message, userData uintptr) uintptr {
+	defer safeRecover("on_message")
 	msg := bptrToString((*byte)(unsafe.Pointer(message)))
 	fire(userData, func(c *EventCallbacks) {
 		if c.Message != nil {
@@ -666,6 +700,7 @@ func messageEntry(message, userData uintptr) uintptr {
 
 // ircMessageEntry is the C-callable shim for RC_OnIrcMessage(channel, line, user_data).
 func ircMessageEntry(channel, line, userData uintptr) uintptr {
+	defer safeRecover("on_irc_message")
 	ch := bptrToString((*byte)(unsafe.Pointer(channel)))
 	ln := bptrToString((*byte)(unsafe.Pointer(line)))
 	fire(userData, func(c *EventCallbacks) {
@@ -678,6 +713,7 @@ func ircMessageEntry(channel, line, userData uintptr) uintptr {
 
 // privateMessageEntry is the shim for RC_OnPrivateMessage(player_id, account, nick, message, user_data).
 func privateMessageEntry(playerID, account, nick, message, userData uintptr) uintptr {
+	defer safeRecover("on_private_message")
 	acct := bptrToString((*byte)(unsafe.Pointer(account)))
 	nm := bptrToString((*byte)(unsafe.Pointer(nick)))
 	msg := bptrToString((*byte)(unsafe.Pointer(message)))
@@ -691,6 +727,7 @@ func privateMessageEntry(playerID, account, nick, message, userData uintptr) uin
 
 // serverDataEntry is the C-callable shim for RC_OnServerData(data_type, content, user_data).
 func serverDataEntry(dataType, content, userData uintptr) uintptr {
+	defer safeRecover("on_server_data")
 	dt := bptrToString((*byte)(unsafe.Pointer(dataType)))
 	ct := bptrToString((*byte)(unsafe.Pointer(content)))
 	fire(userData, func(c *EventCallbacks) {
@@ -703,6 +740,7 @@ func serverDataEntry(dataType, content, userData uintptr) uintptr {
 
 // scriptReceivedEntry is the shim for RC_OnScriptReceived(script_type, name, id, script, user_data).
 func scriptReceivedEntry(scriptType, name, id, script, userData uintptr) uintptr {
+	defer safeRecover("on_script_received")
 	st := bptrToString((*byte)(unsafe.Pointer(scriptType)))
 	nm := bptrToString((*byte)(unsafe.Pointer(name)))
 	sc := bptrToString((*byte)(unsafe.Pointer(script)))
@@ -716,6 +754,7 @@ func scriptReceivedEntry(scriptType, name, id, script, userData uintptr) uintptr
 
 // weaponCacheChangedEntry is the shim for RC_OnWeaponAdded/RC_OnWeaponDeleted(name, user_data).
 func weaponCacheChangedEntry(name, userData uintptr) uintptr {
+	defer safeRecover("on_weapon_changed")
 	nm := bptrToString((*byte)(unsafe.Pointer(name)))
 	fire(userData, func(c *EventCallbacks) {
 		if c.WeaponChanged != nil {
@@ -727,6 +766,7 @@ func weaponCacheChangedEntry(name, userData uintptr) uintptr {
 
 // classCacheChangedEntry is the shim for RC_OnClassAdded/RC_OnClassDeleted(name, user_data).
 func classCacheChangedEntry(name, userData uintptr) uintptr {
+	defer safeRecover("on_class_changed")
 	nm := bptrToString((*byte)(unsafe.Pointer(name)))
 	fire(userData, func(c *EventCallbacks) {
 		if c.ClassChanged != nil {
@@ -738,6 +778,7 @@ func classCacheChangedEntry(name, userData uintptr) uintptr {
 
 // npcAddedEntry is the shim for RC_OnNPCAdded(id, name, user_data).
 func npcAddedEntry(id, _, userData uintptr) uintptr {
+	defer safeRecover("on_npc_added")
 	fire(userData, func(c *EventCallbacks) {
 		if c.NPCChanged != nil {
 			c.NPCChanged(int(int32(id)))
@@ -748,6 +789,7 @@ func npcAddedEntry(id, _, userData uintptr) uintptr {
 
 // npcDeletedEntry is the shim for RC_OnNPCDeleted(id, user_data).
 func npcDeletedEntry(id, userData uintptr) uintptr {
+	defer safeRecover("on_npc_deleted")
 	fire(userData, func(c *EventCallbacks) {
 		if c.NPCChanged != nil {
 			c.NPCChanged(int(int32(id)))
@@ -758,6 +800,7 @@ func npcDeletedEntry(id, userData uintptr) uintptr {
 
 // npcFlagsEntry is the shim for RC_OnNPCFlags(npc_id, flags, user_data).
 func npcFlagsEntry(npcID, flags, userData uintptr) uintptr {
+	defer safeRecover("on_npc_flags")
 	fl := bptrToString((*byte)(unsafe.Pointer(flags)))
 	fire(userData, func(c *EventCallbacks) {
 		if c.NPCFlags != nil {
@@ -769,6 +812,7 @@ func npcFlagsEntry(npcID, flags, userData uintptr) uintptr {
 
 // npcAttributesEntry is the shim for RC_OnNPCAttributes(npc_id, attributes, user_data).
 func npcAttributesEntry(npcID, attrs, userData uintptr) uintptr {
+	defer safeRecover("on_npc_attributes")
 	at := bptrToString((*byte)(unsafe.Pointer(attrs)))
 	fire(userData, func(c *EventCallbacks) {
 		if c.NPCAttributes != nil {
@@ -782,6 +826,7 @@ func npcAttributesEntry(npcID, attrs, userData uintptr) uintptr {
 // The callback only signals that folder data is ready; the app snapshots via
 // CopyFileBrowserFolders.
 func fileBrowserFoldersEntry(count, userData uintptr) uintptr {
+	defer safeRecover("on_filebrowser_folders")
 	fire(userData, func(c *EventCallbacks) {
 		if c.FileBrowserFolders != nil {
 			c.FileBrowserFolders(int(int32(count)))
@@ -792,6 +837,7 @@ func fileBrowserFoldersEntry(count, userData uintptr) uintptr {
 
 // fileBrowserFilesEntry is the shim for RC_OnFileBrowserFiles(folder, count, user_data).
 func fileBrowserFilesEntry(folder, count, userData uintptr) uintptr {
+	defer safeRecover("on_filebrowser_files")
 	f := bptrToString((*byte)(unsafe.Pointer(folder)))
 	fire(userData, func(c *EventCallbacks) {
 		if c.FileBrowserFiles != nil {
@@ -803,6 +849,7 @@ func fileBrowserFilesEntry(folder, count, userData uintptr) uintptr {
 
 // fileBrowserMessageEntry is the shim for RC_OnFileBrowserMessage(message, user_data).
 func fileBrowserMessageEntry(message, userData uintptr) uintptr {
+	defer safeRecover("on_filebrowser_message")
 	msg := bptrToString((*byte)(unsafe.Pointer(message)))
 	fire(userData, func(c *EventCallbacks) {
 		if c.FileBrowserMessage != nil {
@@ -816,6 +863,7 @@ func fileBrowserMessageEntry(message, userData uintptr) uintptr {
 // The content buffer is owned by grclib and may be freed on return, so it is
 // copied into a fresh Go allocation before dispatch.
 func fileReceivedEntry(path, content, length, userData uintptr) uintptr {
+	defer safeRecover("on_file_received")
 	p := bptrToString((*byte)(unsafe.Pointer(path)))
 	var data []byte
 	if content != 0 && length != 0 {
@@ -832,6 +880,7 @@ func fileReceivedEntry(path, content, length, userData uintptr) uintptr {
 
 // maxUploadSizeEntry is the shim for RC_OnMaxUploadFileSize(max_size, user_data).
 func maxUploadSizeEntry(maxSize, userData uintptr) uintptr {
+	defer safeRecover("on_max_upload_file_size")
 	fire(userData, func(c *EventCallbacks) {
 		if c.MaxUploadSize != nil {
 			c.MaxUploadSize(int64(maxSize))
@@ -842,6 +891,7 @@ func maxUploadSizeEntry(maxSize, userData uintptr) uintptr {
 
 // playerRightsEntry is the shim for RC_OnPlayerRights(account, rights, ip_range, folder_access, user_data).
 func playerRightsEntry(account, rights, ipRange, folderAccess, userData uintptr) uintptr {
+	defer safeRecover("on_player_rights")
 	acct := bptrToString((*byte)(unsafe.Pointer(account)))
 	ip := bptrToString((*byte)(unsafe.Pointer(ipRange)))
 	fa := bptrToString((*byte)(unsafe.Pointer(folderAccess)))
@@ -855,6 +905,7 @@ func playerRightsEntry(account, rights, ipRange, folderAccess, userData uintptr)
 
 // playerAttributesEntry is the shim for RC_OnPlayerAttributes(account, properties_json, editor_text, user_data).
 func playerAttributesEntry(account, properties, editorText, userData uintptr) uintptr {
+	defer safeRecover("on_player_attributes")
 	acct := bptrToString((*byte)(unsafe.Pointer(account)))
 	prop := bptrToString((*byte)(unsafe.Pointer(properties)))
 	ed := bptrToString((*byte)(unsafe.Pointer(editorText)))
@@ -868,6 +919,7 @@ func playerAttributesEntry(account, properties, editorText, userData uintptr) ui
 
 // banDataEntry is the shim for RC_OnBanData(account, computer_id, details, user_data).
 func banDataEntry(account, computerID, details, userData uintptr) uintptr {
+	defer safeRecover("on_ban_data")
 	acct := bptrToString((*byte)(unsafe.Pointer(account)))
 	cid := bptrToString((*byte)(unsafe.Pointer(computerID)))
 	det := bptrToString((*byte)(unsafe.Pointer(details)))
@@ -881,6 +933,7 @@ func banDataEntry(account, computerID, details, userData uintptr) uintptr {
 
 // banListDataEntry is the shim for RC_OnBanListData(data_type, account, content, user_data).
 func banListDataEntry(dataType, account, content, userData uintptr) uintptr {
+	defer safeRecover("on_ban_list_data")
 	dt := bptrToString((*byte)(unsafe.Pointer(dataType)))
 	acct := bptrToString((*byte)(unsafe.Pointer(account)))
 	cnt := bptrToString((*byte)(unsafe.Pointer(content)))
@@ -895,6 +948,7 @@ func banListDataEntry(dataType, account, content, userData uintptr) uintptr {
 // playerTextDataEntry is the shim for RC_OnPlayerTextData(data_type, account, content, user_data).
 // Carries comments / profile / account text replies.
 func playerTextDataEntry(dataType, account, content, userData uintptr) uintptr {
+	defer safeRecover("on_player_text_data")
 	dt := bptrToString((*byte)(unsafe.Pointer(dataType)))
 	acct := bptrToString((*byte)(unsafe.Pointer(account)))
 	cnt := bptrToString((*byte)(unsafe.Pointer(content)))
@@ -1012,6 +1066,19 @@ func LastError(h Handle) string {
 	return bptrToString((*byte)(unsafe.Pointer(r1)))
 }
 
+// surfaceError returns the DLL's last_error for the handle when one is set,
+// otherwise the supplied default. This is how the reference C++ client reports
+// every failure (it calls rc_last_error right after a 0/null return and pipes
+// the result to chat). Callers that today invent a generic message should use
+// this so the real server/DLL reason reaches the UI (toasts come for free via
+// rcService.ts' try/catch). rc_last_error(NULL) safely returns "Invalid handle".
+func surfaceError(h Handle, defaultMsg string) error {
+	if e := LastError(h); e != "" {
+		return errors.New(e)
+	}
+	return errors.New(defaultMsg)
+}
+
 // Connect connects to the listserver and stores the returned server list on the
 // handle. Pass account/password as plain text; PCID is derived inside grclib.
 func Connect(host string, port int, account, password string) (Handle, error) {
@@ -1029,9 +1096,11 @@ func Connect(host string, port int, account, password string) (Handle, error) {
 		uintptr(unsafe.Pointer(passPtr)),
 	)
 	if r1 == 0 {
-		// Handle is null, so rc_last_error is not usable; surface a generic
-		// reason. (Account/password rejected or network unreachable.)
-		return 0, errors.New("rc_connect returned null (check host/port/account/password)")
+		// Handle is null. rc_last_error safely returns "Invalid handle" for a
+		// null arg (grclib.cpp ~4249), and a real reason if grclib set a global
+		// last_error during the failed connect — surface either before falling
+		// back to the generic hint.
+		return 0, surfaceError(0, "rc_connect returned null (check host/port/account/password)")
 	}
 	return Handle(r1), nil
 }
@@ -1046,6 +1115,12 @@ func GetServers(h Handle) ([]Server, error) {
 	r1, _, _ := procGetServers.Call(uintptr(h), uintptr(unsafe.Pointer(&serversPtr)))
 	count := int(int32(r1))
 	if count <= 0 || serversPtr == 0 {
+		// Empty list is surfaced at a higher layer (Login maps it to "not staff
+		// anywhere" or the DLL last_error). Log the DLL reason here in case the
+		// emptiness is actually a silent failure (auth rejected, network).
+		if e := LastError(h); e != "" {
+			log.Printf("[rclib] get_servers empty list; last_error=%q", e)
+		}
 		// No servers cached for this handle. This is not an error at this
 		// layer (the listserver authenticated fine); callers decide what an
 		// empty list means (e.g. the account is not staff anywhere).
@@ -1243,6 +1318,9 @@ func GetPlayers(h Handle) ([]Player, error) {
 	r1, _, _ := procGetPlayers.Call(uintptr(h), uintptr(unsafe.Pointer(&playersPtr)))
 	count := int(int32(r1))
 	if count <= 0 || playersPtr == 0 {
+		if e := LastError(h); e != "" {
+			log.Printf("[rclib] get_players empty list; last_error=%q", e)
+		}
 		return nil, nil
 	}
 	arr := (*[1 << 20]RCPlayer)(unsafe.Pointer(playersPtr))[:count:count]
@@ -1481,6 +1559,9 @@ func GetWeapons(h Handle) ([]Weapon, error) {
 	r1, _, _ := procGetWeapons.Call(uintptr(h), uintptr(unsafe.Pointer(&ptr)))
 	count := int(int32(r1))
 	if count <= 0 || ptr == 0 {
+		if e := LastError(h); e != "" {
+			log.Printf("[rclib] get_weapons empty list; last_error=%q", e)
+		}
 		return nil, nil
 	}
 	arr := (*[1 << 20]RCWeapon)(unsafe.Pointer(ptr))[:count:count]
@@ -1500,6 +1581,9 @@ func GetClasses(h Handle) ([]Class, error) {
 	r1, _, _ := procGetClasses.Call(uintptr(h), uintptr(unsafe.Pointer(&ptr)))
 	count := int(int32(r1))
 	if count <= 0 || ptr == 0 {
+		if e := LastError(h); e != "" {
+			log.Printf("[rclib] get_classes empty list; last_error=%q", e)
+		}
 		return nil, nil
 	}
 	arr := (*[1 << 20]RCClass)(unsafe.Pointer(ptr))[:count:count]
@@ -1519,6 +1603,9 @@ func GetNPCs(h Handle) ([]NPC, error) {
 	r1, _, _ := procGetNPCs.Call(uintptr(h), uintptr(unsafe.Pointer(&ptr)))
 	count := int(int32(r1))
 	if count <= 0 || ptr == 0 {
+		if e := LastError(h); e != "" {
+			log.Printf("[rclib] get_npcs empty list; last_error=%q", e)
+		}
 		return nil, nil
 	}
 	arr := (*[1 << 20]RCNPC)(unsafe.Pointer(ptr))[:count:count]

@@ -24,9 +24,13 @@ type proc struct {
 	win  *syscall.Proc
 }
 
-// Call invokes the DLL export. The third return is the syscall error (nil if
-// the call did not set last_error); call sites ignore it.
+// Call invokes the DLL export under dllMu so no two goroutines re-enter grclib
+// concurrently (mirrors the single-threaded reference client; see dllMu in
+// rclib.go). The third return is the syscall error (nil if the call did not set
+// last_error); call sites ignore it.
 func (p *proc) Call(a ...uintptr) (uintptr, uintptr, error) {
+	dllMu.Lock()
+	defer dllMu.Unlock()
 	return p.win.Call(a...)
 }
 

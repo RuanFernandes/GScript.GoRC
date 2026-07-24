@@ -13,6 +13,9 @@ import (
 var assets embed.FS
 
 func main() {
+	initFileLogger()
+	InstallCrashHandler()
+
 	a := NewApp()
 
 	app := application.New(application.Options{

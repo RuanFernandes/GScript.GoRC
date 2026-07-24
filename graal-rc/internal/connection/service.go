@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -417,6 +418,11 @@ func (s *Service) startPump(h rclib.Handle) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.pumpCancel = cancel
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[pump] fatal panic (event pump stopped): %v\n%s", r, debug.Stack())
+			}
+		}()
 		ticker := time.NewTicker(15 * time.Millisecond)
 		defer ticker.Stop()
 		for {
