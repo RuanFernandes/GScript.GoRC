@@ -159,7 +159,13 @@ jobs:
 
   macos-amd64:
     name: macOS x64 (tarball)
-    runs-on: macos-13 # Intel runner → native amd64 + CGO via system clang
+    # macos-13 (Intel) runner pools are effectively gone from GitHub's free
+    # tier — jobs sit in "queued" indefinitely. macos-14 is Apple Silicon and
+    # always available, so we cross-compile to x86_64 via `clang -arch x86_64`
+    # (Apple's SDK still ships the x86_64 slice). Produces a real amd64 binary
+    # matching the x86_64 grclib.dylib; runs natively on Intel Macs and under
+    # Rosetta on Apple Silicon.
+    runs-on: macos-14
     defaults:
       run:
         working-directory: graal-rc
@@ -180,10 +186,17 @@ jobs:
         run: echo "$HOME/go/bin" >> "$GITHUB_PATH"
       - name: Install task
         run: go install github.com/go-task/task/v3/cmd/task@latest
-      - name: Build native binary (darwin/amd64, CGO)
+      - name: Build frontend + bindings
+        run: task common:build:frontend
+      - name: Cross-build darwin/amd64 (CGO x86_64)
         env:
+          GOOS: darwin
+          GOARCH: amd64
           CGO_ENABLED: "1"
-        run: task darwin:build
+          CGO_CFLAGS: "-arch x86_64 -mmacosx-version-min=12.0"
+          CGO_LDFLAGS: "-arch x86_64 -mmacosx-version-min=12.0"
+          MACOSX_DEPLOYMENT_TARGET: "12.0"
+        run: go build -tags production -trimpath -buildvcs=false -ldflags="-w -s" -o bin/graal-rc .
       - name: Bundle binary + grclib.dylib
         run: |
           set -e
