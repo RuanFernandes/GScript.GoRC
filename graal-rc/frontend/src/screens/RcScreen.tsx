@@ -14,13 +14,14 @@ import {Tabs, TabsContent, TabsList, TabsTrigger} from "@/components/ui/tabs"
 import {ChatLine} from "@/components/features/chat/ChatLine"
 import {ScriptHelpResult} from "@/components/features/chat/ScriptHelpResult"
 import {useChat} from "@/hooks/useChat"
+import {useChatAutocomplete} from "@/hooks/useChatAutocomplete"
 import {useChatInputHistory} from "@/hooks/useChatInputHistory"
 import {useChatSettings} from "@/hooks/useChatSettings"
 import {usePlayers} from "@/hooks/usePlayers"
 import {serverDisplay} from "@/lib/server"
 import {formatLogLine} from "@/lib/chatLine"
 import {rcService} from "@/services/rcService"
-import type {AccountSummary, ChatMessage, ChatSettings, NCStatus} from "@/types"
+import type {AccountSummary, ChatMessage, ChatSettings, NCStatus, Player} from "@/types"
 
 interface RcScreenProps {
   serverName: string
@@ -46,13 +47,17 @@ function ChatPane({
   settings,
   onSend,
   history,
+  players,
 }: {
   messages: ChatMessage[]
   settings: ChatSettings
   onSend: (text: string) => Promise<boolean>
   history: ReturnType<typeof useChatInputHistory>
+  players: Player[]
 }) {
   const [text, setText] = useState("")
+  const [ghostOff, setGhostOff] = useState(false)
+  const autocomplete = useChatAutocomplete(players)
   const scrollRef = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
   const lastLogged = useRef(0)
@@ -109,13 +114,63 @@ function ChatPane({
         </div>
       </div>
       <form onSubmit={submit} className="flex gap-2">
-        <Input
-          value={text}
-          onChange={(e) => setText(history.onTextChange(e.target.value))}
-          onKeyDown={(e) => history.handleKeyDown(e, text, setText)}
-          placeholder="Type a message or command…"
-          autoComplete="off"
-        />
+        {/* Ghost-text completion: the suggestion renders behind the input as a
+            transparent copy of the typed text (reserving its exact width) plus a
+            muted suffix. The input paints its opaque text on top, so only the
+            suffix reads as a grey hint — Tab accepts it. No pixel math: the
+            transparent run is the same glyphs at the same font, so the suffix
+            always starts where the caret is. */}
+        <div className="relative flex-1">
+          {(() => {
+            const ghost = !ghostOff ? autocomplete.suggest(text) : null
+            if (!ghost) return null
+            // Split at the first case-sensitive divergence between typed text
+            // and the suggestion. The identical run renders transparent (reserves
+            // its exact width); the rest renders muted. So a lowercase "r" typing
+            // toward "Ruan" greys from the "R" onward, and Tab swaps in the
+            // canonical casing.
+            let div = 0
+            const n = Math.min(text.length, ghost.length)
+            while (div < n && text[div] === ghost[div]) div++
+            return (
+              <span
+                aria-hidden
+                className="pointer-events-none absolute inset-0 flex items-center overflow-hidden px-3 text-base whitespace-pre md:text-sm"
+              >
+                <span className="text-transparent">{text.slice(0, div)}</span>
+                <span className="text-muted-foreground/60">{ghost.slice(div)}</span>
+              </span>
+            )
+          })()}
+          <Input
+            className="relative z-10"
+            value={text}
+            onChange={(e) => {
+              setGhostOff(false)
+              setText(history.onTextChange(e.target.value))
+            }}
+            onKeyDown={(e) => {
+              // Escape hides the ghost preview until the next edit.
+              if (e.key === "Escape") {
+                if (!ghostOff && autocomplete.suggest(text)) {
+                  e.preventDefault()
+                  setGhostOff(true)
+                }
+                return
+              }
+              // Tab completes the current token (Shift+Tab cycles back). Captured
+              // only in a "/" command context so plain Tab still works elsewhere.
+              if (e.key === "Tab" && text.startsWith("/")) {
+                e.preventDefault()
+                setGhostOff(false)
+                if (autocomplete.complete(text, setText, e.shiftKey)) return
+              }
+              history.handleKeyDown(e, text, setText)
+            }}
+            placeholder="Type a message or command…"
+            autoComplete="off"
+          />
+        </div>
         <Button type="submit">Send</Button>
       </form>
     </div>
@@ -280,6 +335,7 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
                 settings={settings}
                 onSend={(text) => send(t.channel, text)}
                 history={inputHistory}
+                players={players}
               />
             </TabsContent>
           ))}
