@@ -29,6 +29,13 @@ import {loadGsFunctions, searchFunctions} from "@/lib/gscriptApi"
 const SERVER_CHANNEL = ""
 const MAX_LINES_PER_TAB = 1000
 
+// SERVERDATA_HIDDEN are serverdata dataTypes that are pure server-state pushes
+// with no human-readable value for chat — they previously rendered as bare grey
+// "[clearweapons] " / "[staffguilds] …" / "[statuslist] …" noise lines. They are
+// still emitted by the backend (and logged there) but no longer dumped into RC
+// chat. Add more here as they're identified.
+const SERVERDATA_HIDDEN = new Set<string>(["clearweapons", "staffguilds", "statuslist"])
+
 type Source = ChatMessage["source"]
 
 function appendLine(tab: ChatTab, msg: ChatMessage): ChatTab {
@@ -142,7 +149,7 @@ export function useChat(service: RcService): UseChatResult {
           const [dataType, content] = m.data as [string, string]
           if (dataType === "nc_message") {
             push(SERVER_CHANNEL, content, "nc")
-          } else {
+          } else if (!SERVERDATA_HIDDEN.has(dataType)) {
             push(SERVER_CHANNEL, `[${dataType}] ${content}`, "system")
           }
           break

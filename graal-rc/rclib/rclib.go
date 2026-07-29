@@ -1824,12 +1824,17 @@ func UploadServerFlags(h Handle, content string) error {
 }
 
 // SendNCPacket sends a raw NC packet (used to re-request the weapon list with
-// packet id 115, PLI_NC_WEAPONLISTGET, since grclib only sends it once at auth).
+// packet id 115, PLI_NC_WEAPONLISTGET, since grclib only sends it once at auth,
+// and as a silent keepalive to keep the NC socket alive).
 func SendNCPacket(h Handle, packetID int) error {
 	if err := load(); err != nil {
 		return err
 	}
-	r1, _, _ := procSendNCPacket.Call(uintptr(h), uintptr(packetID), 0, 0)
+	// rc_send_nc_packet early-returns 0 when data is NULL, even for a
+	// zero-length payload — so pass a valid (unused) pointer. length stays 0,
+	// so the byte is never read.
+	var dummy [1]byte
+	r1, _, _ := procSendNCPacket.Call(uintptr(h), uintptr(packetID), uintptr(unsafe.Pointer(&dummy[0])), 0)
 	if r1 == 0 {
 		return errors.New(LastError(h))
 	}

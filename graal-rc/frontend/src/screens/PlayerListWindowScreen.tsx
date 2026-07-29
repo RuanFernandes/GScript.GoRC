@@ -193,7 +193,7 @@ export function PlayerListWindowScreen() {
         </div>
       </header>
       <ScrollArea className="min-h-0 flex-1 p-2">
-        <PlayerTable players={filtered} unreadById={unread} onPM={openPM} onEdit={editPlayer} />
+        <PlayerTable players={filtered} loading={loading} unreadById={unread} onPM={openPM} onEdit={editPlayer} />
       </ScrollArea>
 
       <PmDialog

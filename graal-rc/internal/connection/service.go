@@ -47,9 +47,10 @@ type Service struct {
 	handle        rclib.Handle
 	creds         Credentials
 	serverName    string // name of the server selected in ConnectToServer; "" when none
-	pumpCancel    context.CancelFunc
-	lastNCAttempt time.Time // last ConnectToNCServer attempt; throttles retries
-	emit          func(name string, data ...any)
+	pumpCancel     context.CancelFunc
+	lastNCAttempt  time.Time // last ConnectToNCServer attempt; throttles retries
+	lastNCKeepalive time.Time // last silent NC keepalive (weapon-list ping)
+	emit           func(name string, data ...any)
 
 	// maxUpload is the latest server-reported max upload size (bytes), pushed via
 	// the MaxUploadSize callback. 0 means unknown. Guarded by mu.
@@ -414,6 +415,7 @@ func (s *Service) startPump(h rclib.Handle) {
 	s.stopPump()
 	s.mu.Lock()
 	s.lastNCAttempt = time.Time{}
+	s.lastNCKeepalive = time.Time{}
 	s.mu.Unlock()
 	ctx, cancel := context.WithCancel(context.Background())
 	s.pumpCancel = cancel
@@ -432,6 +434,7 @@ func (s *Service) startPump(h rclib.Handle) {
 			case <-ticker.C:
 				rclib.ProcessEvents(h)
 				s.maybeConnectNC(h)
+				s.ncKeepalive(h)
 				s.settleChannelLeaves()
 			}
 		}
@@ -444,6 +447,12 @@ func (s *Service) startPump(h rclib.Handle) {
 // false for accounts the server did not expose an NC socket to, so those never
 // enter the retry loop at all.
 const ncReconnectInterval = 2 * time.Second
+
+// ncKeepaliveInterval is how often a silent NC packet is sent to keep the NC
+// (script) socket alive. The Graal server drops an idle NC session after a
+// while (surfacing as "[NC] DISCONNECT: You don't have admin rights."); issuing
+// a lightweight NC round-trip periodically prevents that idle timeout.
+const ncKeepaliveInterval = 30 * time.Second
 
 // maybeConnectNC opens the NC socket when the server exposes one to this
 // account (HasNCServer) and it is not yet connected. Unlike a one-shot latch,
@@ -465,6 +474,29 @@ func (s *Service) maybeConnectNC(h rclib.Handle) {
 	if err := rclib.ConnectToNCServer(h); err != nil {
 		log.Printf("nc connect (will retry in %s): %v", ncReconnectInterval, err)
 	}
+}
+
+// ncKeepalive sends a silent NC round-trip (weapon-list request, PLI 115) every
+// ncKeepaliveInterval while NC is connected. The response just refreshes the
+// cached list; nothing is surfaced to the UI or logs, so it acts purely as a
+// ping that keeps the idle NC socket from being dropped by the server. Skipped
+// when NC is down so it never triggers a reconnect itself.
+func (s *Service) ncKeepalive(h rclib.Handle) {
+	s.mu.Lock()
+	if !s.lastNCKeepalive.IsZero() && time.Since(s.lastNCKeepalive) < ncKeepaliveInterval {
+		s.mu.Unlock()
+		return
+	}
+	s.lastNCKeepalive = time.Now()
+	s.mu.Unlock()
+
+	hasNc := rclib.HasNCServer(h)
+	connected := rclib.IsNCConnected(h)
+	if !hasNc || !connected {
+		return
+	}
+	// Silent: ignore errors — this is best-effort keepalive, not a user action.
+	_ = rclib.SendNCPacket(h, weaponListGetPacket)
 }
 
 // stopPump stops the active event pump, if any.

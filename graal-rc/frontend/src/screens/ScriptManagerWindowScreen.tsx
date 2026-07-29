@@ -18,6 +18,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import {Label} from "@/components/ui/label"
+import {Skeleton} from "@/components/ui/skeleton"
 import {useScriptLists} from "@/hooks/useScriptLists"
 import {scriptCompare} from "@/lib/scriptSort"
 import {rcService} from "@/services/rcService"
@@ -195,6 +196,14 @@ function WeaponClassTab({
                 <td className="text-muted-foreground px-3 py-4">No entries.</td>
               </tr>
             )}
+            {loading && filtered.length === 0 &&
+              Array.from({length: 8}).map((_, i) => (
+                <tr key={`sk-${i}`} className="border-b">
+                  <td className="px-3 py-1.5">
+                    <Skeleton className="h-4" style={{width: `${40 + ((i * 37) % 50)}%`}} />
+                  </td>
+                </tr>
+              ))}
             {filtered.map((r) => (
               <tr
                 key={r.key}
@@ -391,6 +400,23 @@ function NPCTab({
                 <td className="text-muted-foreground px-3 py-4">No NPCs.</td>
               </tr>
             )}
+            {loading && filtered.length === 0 &&
+              Array.from({length: 8}).map((_, i) => (
+                <tr key={`sk-${i}`} className="border-b">
+                  <td className="px-3 py-1.5">
+                    <Skeleton className="h-4 w-8" />
+                  </td>
+                  <td className="px-3 py-1.5">
+                    <Skeleton className="h-4" style={{width: `${30 + ((i * 37) % 45)}%`}} />
+                  </td>
+                  <td className="px-3 py-1.5">
+                    <Skeleton className="h-4 w-12" />
+                  </td>
+                  <td className="px-3 py-1.5">
+                    <Skeleton className="h-4 w-24" />
+                  </td>
+                </tr>
+              ))}
             {filtered.map((n) => (
               <tr
                 key={n.id}

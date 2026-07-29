@@ -10,6 +10,7 @@ import {ChevronDown, ChevronRight, History, MessageSquare, ScrollText, Shield, S
 
 import {Badge} from "@/components/ui/badge"
 import {Button} from "@/components/ui/button"
+import {Skeleton} from "@/components/ui/skeleton"
 import {parsePlayerTag} from "@/lib/playerTag"
 import type {Player} from "@/types"
 
@@ -18,6 +19,7 @@ export type PlayerEditKind = "rights" | "ban" | "attrs" | "comments" | "banhisto
 interface PlayerTableProps {
   players: Player[]
   unreadById: Record<number, number>
+  loading?: boolean
   onPM: (player: Player) => void
   onEdit: (player: Player, kind: PlayerEditKind) => void
 }
@@ -135,7 +137,7 @@ function Group({label, icon: Icon, rows, unreadById, onPM, onContext, defaultOpe
   )
 }
 
-export function PlayerTable({players, unreadById, onPM, onEdit}: PlayerTableProps) {
+export function PlayerTable({players, unreadById, loading, onPM, onEdit}: PlayerTableProps) {
   const [menu, setMenu] = useState<{x: number; y: number; player: Player} | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   // Clamp the menu inside the viewport so a right-click near a window edge
@@ -178,6 +180,25 @@ export function PlayerTable({players, unreadById, onPM, onEdit}: PlayerTableProp
   }
 
   if (players.length === 0) {
+    if (loading) {
+      // Initial fetch: mirror the row layout with pulsing placeholders instead
+      // of the misleading "No players online." final-state message.
+      return (
+        <div className="flex flex-col gap-0.5">
+          {Array.from({length: 6}).map((_, i) => (
+            <div key={i} className="flex items-center gap-3 rounded-lg px-2.5 py-2">
+              <Skeleton className="size-9 shrink-0 rounded-full" />
+              <div className="flex-1 space-y-1.5">
+                <Skeleton className="h-3.5 w-32" />
+                <Skeleton className="h-3 w-24" />
+              </div>
+              <Skeleton className="hidden h-3 w-20 sm:block" />
+              <Skeleton className="h-3 w-10" />
+            </div>
+          ))}
+        </div>
+      )
+    }
     return (
       <div className="text-muted-foreground flex flex-col items-center justify-center gap-2 py-16 text-sm">
         <Users className="size-8 opacity-40" />

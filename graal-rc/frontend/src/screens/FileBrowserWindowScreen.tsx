@@ -31,6 +31,7 @@ import {ContextMenu} from "@/components/ContextMenu"
 import {Input} from "@/components/ui/input"
 import {Label} from "@/components/ui/label"
 import {ScrollArea} from "@/components/ui/scroll-area"
+import {Skeleton} from "@/components/ui/skeleton"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -364,7 +365,16 @@ export function FileBrowserWindowScreen() {
         <aside className="w-60 shrink-0 border-r">
           <ScrollArea className="h-full">
             <div className="p-1.5">
-              {tree.length === 0 ? (
+              {!fb.loaded ? (
+                <div className="flex flex-col gap-1.5 p-1">
+                  {Array.from({length: 8}).map((_, i) => (
+                    <div key={i} className="flex items-center gap-1.5" style={{paddingLeft: `${(i % 3) * 12}px`}}>
+                      <Skeleton className="size-3.5" />
+                      <Skeleton className="h-3.5" style={{width: `${45 + ((i * 29) % 40)}%`}} />
+                    </div>
+                  ))}
+                </div>
+              ) : tree.length === 0 ? (
                 <p className="text-muted-foreground p-2 text-xs">No folders.</p>
               ) : (
                 tree.map((node) => (
@@ -396,6 +406,7 @@ export function FileBrowserWindowScreen() {
         >
           <FileTable
             files={filteredFiles}
+            loaded={fb.loaded}
             selected={selected}
             onSelect={(path) => setSelected(path)}
             onContextMenu={(entry, x, y) => setCtx({x, y, entry})}
@@ -767,12 +778,14 @@ const MIN_WIDTH = 48
 //   - double click: open by type (parent)
 function FileTable({
   files,
+  loaded,
   selected,
   onSelect,
   onContextMenu,
   onOpen,
 }: {
   files: FileBrowserEntry[]
+  loaded?: boolean
   selected: string | null
   onSelect: (path: string) => void
   onContextMenu: (entry: FileBrowserEntry, x: number, y: number) => void
@@ -826,6 +839,22 @@ function FileTable({
   }
 
   if (files.length === 0) {
+    if (!loaded) {
+      // Initial load: mirror a few file rows instead of the premature "Empty
+      // folder." final-state message.
+      return (
+        <div className="flex flex-col gap-1 p-2">
+          {Array.from({length: 7}).map((_, i) => (
+            <div key={i} className="flex items-center gap-2 py-1">
+              <Skeleton className="size-4" />
+              <Skeleton className="h-4 flex-1" style={{maxWidth: `${40 + ((i * 37) % 45)}%`}} />
+              <Skeleton className="h-4 w-16" />
+              <Skeleton className="h-4 w-20" />
+            </div>
+          ))}
+        </div>
+      )
+    }
     return (
       <div className="text-muted-foreground flex h-full items-center justify-center text-sm">
         Empty folder.

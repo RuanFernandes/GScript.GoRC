@@ -24,6 +24,7 @@ export interface UseFileBrowserResult {
   config: FileBrowserConfig
   maxUpload: number
   loading: boolean
+  loaded: boolean
   refresh: () => Promise<void>
   cd: (folder: string) => Promise<void>
   download: (entry: FileBrowserEntry, saveAs?: boolean) => Promise<void>
@@ -76,6 +77,10 @@ export function useFileBrowser(service: RcService): UseFileBrowserResult {
   const [config, setConfig] = useState<FileBrowserConfig>({downloadDir: ""})
   const [maxUpload, setMaxUpload] = useState(0)
   const [loading, setLoading] = useState(true)
+  // loaded flips true once the first folder/file snapshot arrives, so the UI can
+  // show a skeleton instead of the "No folders." / "Empty folder." final-state
+  // text during the initial async gap (loading goes false before data lands).
+  const [loaded, setLoaded] = useState(false)
   // Keep the latest folders for move-destination picks without re-deriving state.
   const foldersRef = useRef<FileBrowserFolder[]>([])
   foldersRef.current = folders
@@ -91,6 +96,7 @@ export function useFileBrowser(service: RcService): UseFileBrowserResult {
   const snapshotFolders = useCallback(async () => {
     const list = await service.getFileBrowserFolders().catch(() => null)
     setFolders(list ?? [])
+    setLoaded(true)
   }, [service])
 
   const snapshotFiles = useCallback(
@@ -98,6 +104,7 @@ export function useFileBrowser(service: RcService): UseFileBrowserResult {
       setCurrentFolder(folder)
       const list = await service.getFileBrowserFiles().catch(() => null)
       setFiles(list ?? [])
+      setLoaded(true)
     },
     [service],
   )
@@ -279,6 +286,7 @@ export function useFileBrowser(service: RcService): UseFileBrowserResult {
     config,
     maxUpload,
     loading,
+    loaded,
     refresh,
     cd,
     download,
