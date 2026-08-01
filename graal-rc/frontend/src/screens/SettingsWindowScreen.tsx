@@ -4,6 +4,7 @@
 // ChatSettingsFields). Both persist to localStorage.
 import {useCallback, useEffect, useState} from "react"
 import {Events} from "@wailsio/runtime"
+import {Code2, FolderDown, MessageSquareText, Settings2} from "lucide-react"
 
 import {Button} from "@/components/ui/button"
 import {Input} from "@/components/ui/input"
@@ -22,16 +23,33 @@ export function SettingsWindowScreen() {
 
   return (
     <div className="bg-background flex h-svh flex-col">
-      <header className="border-b px-4 py-2.5">
-        <h1 className="text-base font-semibold">Settings</h1>
+      <header className="bg-card/30 border-b px-5 py-4">
+        <div className="flex items-center gap-3">
+          <div className="bg-primary text-primary-foreground flex size-9 items-center justify-center rounded-lg">
+            <Settings2 className="size-4" />
+          </div>
+          <div>
+            <h1 className="text-base font-semibold tracking-tight">Settings</h1>
+            <p className="text-muted-foreground text-xs">Tune the workspace to match your workflow.</p>
+          </div>
+        </div>
       </header>
-      <Tabs defaultValue="coding" className="flex min-h-0 flex-1 flex-col p-3">
-        <TabsList>
-          <TabsTrigger value="coding">Coding</TabsTrigger>
-          <TabsTrigger value="chat">Chat</TabsTrigger>
-          <TabsTrigger value="files">Files</TabsTrigger>
+      <Tabs defaultValue="coding" orientation="vertical" className="flex min-h-0 flex-1 flex-row gap-0">
+        <TabsList aria-label="Settings sections" className="h-auto w-44 shrink-0 flex-col items-stretch justify-start gap-1 rounded-none border-b-0 border-r bg-muted/20 p-3">
+          <TabsTrigger value="coding" className="justify-start border-b-0 border-l-2 border-transparent px-3 data-[state=active]:border-primary data-[state=active]:bg-accent">
+            <Code2 />
+            Coding
+          </TabsTrigger>
+          <TabsTrigger value="chat" className="justify-start border-b-0 border-l-2 border-transparent px-3 data-[state=active]:border-primary data-[state=active]:bg-accent">
+            <MessageSquareText />
+            Chat
+          </TabsTrigger>
+          <TabsTrigger value="files" className="justify-start border-b-0 border-l-2 border-transparent px-3 data-[state=active]:border-primary data-[state=active]:bg-accent">
+            <FolderDown />
+            Files
+          </TabsTrigger>
         </TabsList>
-        <TabsContent value="coding" className="mt-4 min-h-0 flex-1 overflow-y-auto">
+        <TabsContent value="coding" className="mt-0 min-h-0 flex-1 overflow-y-auto p-5 sm:p-6">
           <CodingSection
             theme={coding.settings.theme}
             fontFamily={coding.settings.fontFamily}
@@ -40,14 +58,14 @@ export function SettingsWindowScreen() {
             onReset={coding.reset}
           />
         </TabsContent>
-        <TabsContent value="chat" className="mt-4 min-h-0 flex-1 overflow-y-auto">
+        <TabsContent value="chat" className="mt-0 min-h-0 flex-1 overflow-y-auto p-5 sm:p-6">
           <ChatSection
             settings={chat.settings}
             onChange={chat.update}
             onReset={chat.reset}
           />
         </TabsContent>
-        <TabsContent value="files" className="mt-4 min-h-0 flex-1 overflow-y-auto">
+        <TabsContent value="files" className="mt-0 min-h-0 flex-1 overflow-y-auto p-5 sm:p-6">
           <FilesSection />
         </TabsContent>
       </Tabs>
@@ -93,21 +111,21 @@ function FilesSection() {
   }
 
   return (
-    <div className="grid gap-4">
-      <div className="grid grid-cols-[140px_1fr] items-center gap-2">
-        <Label htmlFor="dl-dir">Downloads folder</Label>
-        <Input id="dl-dir" value={dir} readOnly placeholder="Not set — downloads disabled" />
-      </div>
-      <p className="text-muted-foreground text-xs">
-        Downloaded files are saved here. Downloads are blocked until a folder is set.
-      </p>
-      <div className="flex gap-2">
-        <Button variant="outline" onClick={browse}>
-          Browse…
-        </Button>
-        <Button variant="ghost" onClick={clear} disabled={!dir}>
-          Clear
-        </Button>
+    <div className="mx-auto grid max-w-3xl gap-5">
+      <SectionHeading title="Files" description="Choose where downloaded server files should be stored." />
+      <div className="overflow-hidden rounded-lg border bg-card/40">
+        <div className="border-b px-4 py-3">
+          <p className="text-sm font-medium">Downloads</p>
+          <p className="text-muted-foreground mt-1 text-xs">A folder is required before downloads are enabled.</p>
+        </div>
+        <div className="grid gap-3 p-4">
+          <Label htmlFor="dl-dir">Downloads folder</Label>
+          <Input id="dl-dir" value={dir} readOnly placeholder="Not set — downloads disabled" />
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={browse}>Browse…</Button>
+            <Button variant="ghost" onClick={clear} disabled={!dir}>Clear</Button>
+          </div>
+        </div>
       </div>
     </div>
   )
@@ -156,28 +174,35 @@ function CodingSection({
   }, [onChange])
 
   return (
-    <div className="grid gap-4">
-      <div className="grid grid-cols-[140px_1fr] items-center gap-2">
-        <Label htmlFor="theme">Theme</Label>
-        <ThemeSelect
-          value={theme}
-          onChange={(k) => onChange({theme: k})}
-          extraOption={
-            theme === "remoteTheme" && remoteName
-              ? {key: "remoteTheme", label: `Remote: ${remoteName}`}
-              : undefined
-          }
-        />
-      </div>
+    <div className="mx-auto grid max-w-3xl gap-5">
+      <SectionHeading title="Coding" description="Set the editor appearance used by script and text windows." />
+      <div className="overflow-hidden rounded-lg border bg-card/40">
+        <div className="border-b px-4 py-3">
+          <p className="text-sm font-medium">Editor appearance</p>
+          <p className="text-muted-foreground mt-1 text-xs">Changes apply to every editor window.</p>
+        </div>
+        <div className="grid gap-4 p-4">
+          <div className="grid gap-2 sm:grid-cols-[140px_1fr] sm:items-center">
+            <Label htmlFor="theme">Theme</Label>
+            <ThemeSelect
+              value={theme}
+              onChange={(k) => onChange({theme: k})}
+              extraOption={
+                theme === "remoteTheme" && remoteName
+                  ? {key: "remoteTheme", label: `Remote: ${remoteName}`}
+                  : undefined
+              }
+            />
+          </div>
 
-      <div className="grid grid-cols-[140px_1fr] items-start gap-2">
+      <div className="grid gap-2 sm:grid-cols-[140px_1fr] sm:items-start">
         <Label htmlFor="remote" className="pt-2">
           Remote theme
         </Label>
         <RemoteThemePicker onActivate={activateRemote} />
       </div>
 
-      <div className="grid grid-cols-[140px_1fr] items-center gap-2">
+      <div className="grid gap-2 sm:grid-cols-[140px_1fr] sm:items-center">
         <Label htmlFor="font">Font family</Label>
         <Input
           id="font"
@@ -193,7 +218,7 @@ function CodingSection({
         </datalist>
       </div>
 
-      <div className="grid grid-cols-[140px_1fr] items-center gap-2">
+      <div className="grid gap-2 sm:grid-cols-[140px_1fr] sm:items-center">
         <Label htmlFor="size">Font size</Label>
         <div className="flex items-center gap-3">
           <input
@@ -209,10 +234,10 @@ function CodingSection({
         </div>
       </div>
 
-      <div>
-        <Button variant="ghost" onClick={onReset}>
-          Reset defaults
-        </Button>
+        </div>
+      </div>
+      <div className="flex justify-end">
+        <Button variant="ghost" onClick={onReset}>Reset defaults</Button>
       </div>
     </div>
   )
@@ -302,7 +327,9 @@ function ChatSection({
   onReset: () => void
 }) {
   return (
-    <div className="grid gap-4">
+    <div className="mx-auto grid max-w-3xl gap-5">
+      <SectionHeading title="Chat" description="Control message colors and local chat logging." />
+      <div className="overflow-hidden rounded-lg border bg-card/40 p-4">
       <ChatSettingsFields
         settings={settings}
         onChange={onChange}
@@ -315,11 +342,19 @@ function ChatSection({
           if (dir) onChange({pmLogDir: dir})
         }}
       />
-      <div>
-        <Button variant="ghost" onClick={onReset}>
-          Reset defaults
-        </Button>
       </div>
+      <div className="flex justify-end">
+        <Button variant="ghost" onClick={onReset}>Reset defaults</Button>
+      </div>
+    </div>
+  )
+}
+
+function SectionHeading({title, description}: {title: string; description: string}) {
+  return (
+    <div>
+      <h2 className="text-lg font-semibold tracking-tight">{title}</h2>
+      <p className="text-muted-foreground mt-1 text-sm">{description}</p>
     </div>
   )
 }
