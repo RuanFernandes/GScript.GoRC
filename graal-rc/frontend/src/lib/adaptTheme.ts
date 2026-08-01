@@ -15,7 +15,7 @@ interface ThemeRule {
   fontStyle?: string
 }
 
-interface ThemeData {
+export interface ThemeData {
   base?: "vs" | "vs-dark" | "hc-black" | "hc-light"
   inherit?: boolean
   rules?: ThemeRule[]
@@ -94,8 +94,14 @@ export function adaptMonacoTheme(def: ThemeData): ThemeData {
     {token: "constant.numeric", from: pick(rules, "constant.numeric", "number", "constant") ?? constant},
     {token: "variable", from: variable},
     {token: "variable.language", from: pick(rules, "variable.language", "variable", "variable.other", "variable.parameter", "support.variable") ?? variable},
+    {token: "variable.language.flag", from: pick(rules, "variable.language.flag", "variable.language", "variable") ?? variable},
+    {token: "type.identifier", from: pick(rules, "type.identifier", "type", "entity.name.type") ?? variable},
     {token: "entity.name.function", from: pick(rules, "entity.name.function", "entity.name.function.graalscript", "function", "support.function", "entity.name") ?? {foreground: fgColor}},
-    {token: "string", from: pick(rules, "string")},
+    {token: "string", from: pick(rules, "string.quoted.double.sql", "string")},
+    {token: "string.quoted.double.sql", from: pick(rules, "string.quoted.double.sql", "string")},
+    {token: "keyword.other.sql", from: pick(rules, "keyword.other.sql", "keyword.other", "keyword") ?? keyword},
+    {token: "constant.character.escape", from: pick(rules, "constant.character.escape", "constant") ?? constant},
+    {token: "keyword.operator.append", from: pick(rules, "keyword.operator.append", "keyword.operator", "operator") ?? keyword},
     {token: "punctuation", from: pick(rules, "punctuation") ?? {foreground: fgColor}},
   ]
 

@@ -1,7 +1,6 @@
 // SyncReviewWindowScreen lists scripts awaiting human resolution (conflicts,
-// new-local files, and delete-keep states). Each row expands to a Monaco
-// DiffEditor (local vs server) with Keep-local / Keep-server actions. The
-// engine never auto-resolves these — and never deletes in either direction.
+// server changes that need human review. Each row provides a diff and an
+// editable merge buffer; nothing is overwritten until the user chooses.
 import {useState} from "react"
 import {DiffEditor} from "@monaco-editor/react"
 
@@ -10,14 +9,7 @@ import {Badge} from "@/components/ui/badge"
 import {Skeleton} from "@/components/ui/skeleton"
 import {useSync} from "@/hooks/useSync"
 import type {SyncReviewItem, SyncState} from "@/types"
-
-const STATE_LABEL: Record<string, string> = {
-  conflict: "Conflict",
-  "initial-conflict": "First-run conflict",
-  "new-local": "New local file",
-  "local-missing-keep": "Local deleted",
-  "server-missing-keep": "Server deleted",
-}
+import {useLanguage} from "@/hooks/useLanguage"
 
 const STATE_BADGE: Record<string, "destructive" | "secondary" | "default"> = {
   conflict: "destructive",
@@ -31,19 +23,16 @@ const STATE_BADGE: Record<string, "destructive" | "secondary" | "default"> = {
 // server counterpart (new-local) or whose server entry was deleted. The local
 // file is never deleted — the single action quarantines it to .rejected and
 // stops tracking.
-function actionsFor(): {single: {label: string; choice: "local"}} {
-  return {single: {label: "Quarantine (move to .rejected)", choice: "local"}}
-}
-
 function ReviewRow({
   item,
   onResolve,
 }: {
   item: SyncReviewItem
-  onResolve: (kind: string, key: string, choice: "local" | "server") => Promise<void>
+  onResolve: (kind: string, key: string, choice: "local" | "server" | "merge", mergeContent?: string) => Promise<void>
 }) {
+  const {t} = useLanguage()
   const [open, setOpen] = useState(false)
-  const acts = actionsFor()
+  const [merged, setMerged] = useState(item.local ?? "")
 
   return (
     <div className="border-b">
@@ -53,7 +42,7 @@ function ReviewRow({
         className="hover:bg-accent flex w-full items-center gap-3 px-3 py-2 text-left"
       >
         <Badge variant={STATE_BADGE[item.state] ?? "default"}>
-          {STATE_LABEL[item.state] ?? item.state}
+          {t(`sync.state.${item.state === "initial-conflict" ? "initial" : item.state === "new-local" ? "newLocal" : item.state === "local-missing-keep" ? "localMissing" : item.state === "server-missing-keep" ? "serverMissing" : "conflict"}`)}
         </Badge>
         <span className="font-medium">{item.name}</span>
         <span className="text-muted-foreground text-xs uppercase">{item.kind}</span>
@@ -64,8 +53,8 @@ function ReviewRow({
       {open && (
         <div className="grid gap-2 px-3 pb-3">
           <div className="grid grid-cols-2 gap-2 text-xs">
-            <div className="text-muted-foreground">Local {item.local ? "" : "(absent)"}</div>
-            <div className="text-muted-foreground">Server {item.server ? "" : "(absent)"}</div>
+            <div className="text-muted-foreground">{t("sync.local")} {item.local ? "" : t("sync.absent")}</div>
+            <div className="text-muted-foreground">{t("sync.server")} {item.server ? "" : t("sync.absent")}</div>
           </div>
           <div className="h-[320px] overflow-hidden rounded-md border">
             <DiffEditor
@@ -82,10 +71,16 @@ function ReviewRow({
               }}
             />
           </div>
+          <textarea
+            value={merged}
+            onChange={(e) => setMerged(e.target.value)}
+            aria-label={t("sync.mergedContent")}
+            className="min-h-40 w-full rounded-md border bg-background p-3 font-mono text-xs outline-none focus:ring-2 focus:ring-ring"
+          />
           <div className="flex gap-2">
-            <Button onClick={() => onResolve(item.kind, item.key, acts.single.choice)}>
-              {acts.single.label}
-            </Button>
+            <Button variant="outline" onClick={() => onResolve(item.kind, item.key, "local")}>{t("sync.keepLocal")}</Button>
+            <Button variant="outline" onClick={() => onResolve(item.kind, item.key, "server")}>{t("sync.useServer")}</Button>
+            <Button onClick={() => onResolve(item.kind, item.key, "merge", merged)}>{t("sync.applyMerge")}</Button>
           </div>
         </div>
       )}
@@ -94,24 +89,25 @@ function ReviewRow({
 }
 
 export function SyncReviewWindowScreen() {
+  const {t} = useLanguage()
   const {status, loaded, resolveConflict, pause, resume} = useSync()
 
   return (
     <div className="bg-background flex h-svh flex-col">
       <header className="flex items-center gap-3 border-b px-4 py-2.5">
-        <h1 className="text-base font-semibold">Sync Review</h1>
+        <h1 className="text-base font-semibold">{t("sync.reviewTitle")}</h1>
         {status.paused ? (
           <Button variant="outline" size="sm" onClick={resume}>
-            Resume
+            {t("sync.resume")}
           </Button>
         ) : (
           <Button variant="ghost" size="sm" onClick={pause}>
-            Pause 1h
+            {t("sync.pause")}
           </Button>
         )}
         {status.reviewCount > 0 && (
           <Badge variant="destructive" className="ml-auto">
-            {status.reviewCount} pending
+            {status.reviewCount} {t("sync.pending")}
           </Badge>
         )}
       </header>
@@ -123,7 +119,7 @@ export function SyncReviewWindowScreen() {
           </div>
         ) : (status.items ?? []).length === 0 ? (
           <p className="text-muted-foreground p-6 text-sm">
-            No conflicts — all scripts in sync.
+            {t("sync.noConflicts")}
           </p>
         ) : (
           (status.items ?? []).map((it) => (

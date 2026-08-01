@@ -172,3 +172,7 @@
   opacity: 1;
   transition-delay: 60ms;
 }
+.sidebar-pinned .sidebar-label {
+  opacity: 1;
+  transition-delay: 0ms;
+}

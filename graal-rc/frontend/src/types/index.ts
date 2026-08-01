@@ -26,12 +26,18 @@ export type {
 export type {
   SyncConfig,
   SyncStatus,
+  SyncProgress,
   ReviewItem as SyncReviewItem,
   ScriptPair as SyncScriptPair,
   State as SyncState,
 } from "../../bindings/graal-rc/internal/sync/models"
 import type {GsFunction} from "@/lib/gscriptApi"
 export type {GsFunction}
+
+export interface PMLine { direction: "in" | "out"; text: string; timestamp: number }
+export interface PMConversation { playerId: number; account: string; nick: string; unread: number; lines: PMLine[] }
+export interface PMState { conversations: PMConversation[]; unreadTotal: number }
+export interface CustomTheme { key: string; name: string; definition: string }
 
 // A single chat line. channel "" = server (RC) chat; otherwise the IRC channel.
 // source drives the prefix tag and coloring: "rc" ([RC], on_message), "nc"

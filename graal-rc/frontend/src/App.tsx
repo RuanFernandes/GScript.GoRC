@@ -29,6 +29,8 @@ import {SyncReviewWindowScreen} from "@/screens/SyncReviewWindowScreen"
 import {SqliteExplorerWindowScreen} from "@/screens/SqliteExplorerWindowScreen"
 import {TextEditorWindowScreen} from "@/screens/TextEditorWindowScreen"
 import type {AppView, LoginRequest} from "@/types"
+import {useLanguage} from "@/hooks/useLanguage"
+import {LanguageWelcomeScreen} from "@/screens/LanguageWelcomeScreen"
 
 type PendingConfirm =
   | {kind: "login"; account: string}
@@ -42,6 +44,7 @@ const NICKNAME_STORAGE_KEY = "graal-rc:sessionNickname"
 function Shell() {
   const session = useSession(rcService)
   const accounts = useAccounts(rcService)
+  const language = useLanguage()
   const [view, setView] = useState<AppView>("select")
   const [pending, setPending] = useState<PendingConfirm>(null)
   const [confirmBusy, setConfirmBusy] = useState(false)
@@ -98,17 +101,17 @@ function Shell() {
       try {
         const payload = JSON.parse(event.data) as {name?: string; data?: unknown[]}
         if (payload.name !== "rc:disconnected") return
-        const reason = typeof payload.data?.[0] === "string" ? payload.data[0] : "Disconnected by server"
+        const reason = typeof payload.data?.[0] === "string" ? payload.data[0] : language.t("toast.disconnectedByServer")
         void (async () => {
           await returnToLogin()
-          toast.error("Connection lost", {description: reason})
+          toast.error(language.t("toast.connectionLost"), {description: reason})
         })()
       } catch {
         // Ignore malformed lifecycle events; the session remains usable.
       }
     })
     return off
-  }, [returnToLogin])
+  }, [returnToLogin, language.t])
 
   // State-driven safety net: the moment a server is connected (connectedServer
   // becomes non-empty), ensure we are on the RC screen regardless of which code
@@ -145,11 +148,11 @@ function Shell() {
     setConfirmBusy(true)
     try {
       await rcService.removeAccount(account)
-      toast.success(`Removed ${account}`)
+      toast.success(language.t("login.accountRemoved", {name: account}))
       await accounts.refresh()
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      toast.error("Failed to remove account", {description: message})
+      toast.error(language.t("login.removeFailed"), {description: message})
     } finally {
       setConfirmBusy(false)
       setPending(null)
@@ -157,6 +160,10 @@ function Shell() {
   }
 
   const cancelConfirm = () => setPending(null)
+
+  if (language.needsLanguage) {
+    return <LanguageWelcomeScreen language={language.language} onConfirm={language.setLanguage} />
+  }
 
   if (view === "add") {
     return (
@@ -204,7 +211,7 @@ function Shell() {
         onNicknameChange={setSessionNickname}
         onSelect={(accountName, nickname) => {
           if (!nickname.trim()) {
-            toast.error("Nickname required", {description: "Set the session nickname before logging in."})
+            toast.error(language.t("login.nicknameRequired"), {description: language.t("login.nicknameRequiredDescription")})
             return
           }
           setSessionNickname(nickname)
@@ -213,7 +220,7 @@ function Shell() {
         onRemove={(accountName) => setPending({kind: "delete", account: accountName})}
         onAdd={() => {
           if (!sessionNickname.trim()) {
-            toast.error("Nickname required", {description: "Set the session nickname before adding an account."})
+            toast.error(language.t("login.nicknameRequired"), {description: language.t("login.nicknameRequiredDescription")})
             return
           }
           setView("add")
@@ -222,18 +229,18 @@ function Shell() {
           try {
             await rcService.renameAccount(accountName, displayName)
             await accounts.refresh()
-            toast.success("Account renamed")
+            toast.success(language.t("login.accountRenamed"))
           } catch (err) {
-            toast.error("Rename failed", {description: String(err)})
+            toast.error(language.t("login.renameFailed"), {description: String(err)})
           }
         }}
         onPhoto={async (accountName, dataURL) => {
           try {
             await rcService.setAccountPhoto(accountName, dataURL)
             await accounts.refresh()
-            toast.success("Photo updated")
+            toast.success(language.t("login.photoUpdated"))
           } catch (err) {
-            toast.error("Photo update failed", {description: String(err)})
+            toast.error(language.t("login.photoUpdateFailed"), {description: String(err)})
           }
         }}
       />
@@ -251,8 +258,8 @@ function Shell() {
             ? "This removes the saved account from this device. You can add it again later."
             : "This will connect to the listserver with this account."
         }
-        confirmLabel={pending?.kind === "delete" ? "Delete" : "Log in"}
-        cancelLabel="Cancel"
+        confirmLabel={pending?.kind === "delete" ? language.t("common.delete") : language.t("common.logIn")}
+        cancelLabel={language.t("common.cancel")}
         onConfirm={pending?.kind === "delete" ? confirmDelete : confirmLogin}
         onCancel={cancelConfirm}
       />

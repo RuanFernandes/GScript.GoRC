@@ -13,9 +13,10 @@ interface ThemeSelectProps {
   onChange: (key: string) => void
   // Optional extra entry (e.g. the active remote theme) shown at the top.
   extraOption?: {key: string; label: string}
+  customOptions?: {key: string; label: string}[]
 }
 
-export function ThemeSelect({value, onChange, extraOption}: ThemeSelectProps) {
+export function ThemeSelect({value, onChange, extraOption, customOptions = []}: ThemeSelectProps) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   const selected =
@@ -69,6 +70,21 @@ export function ThemeSelect({value, onChange, extraOption}: ThemeSelectProps) {
               </button>
             </li>
           )}
+          {customOptions.map((o) => (
+            <li key={o.key}>
+              <button
+                type="button"
+                onClick={() => { onChange(o.key); setOpen(false) }}
+                className={cn(
+                  "flex w-full items-center justify-between px-2 py-1.5 text-left text-sm hover:bg-accent",
+                  o.key === value && "bg-accent",
+                )}
+              >
+                <span className="truncate">{o.label}</span>
+                {o.key === value && <Check className="size-4 shrink-0" />}
+              </button>
+            </li>
+          ))}
           {MONACO_THEME_OPTIONS.map((o) => (
             <li key={o.key}>
               <button

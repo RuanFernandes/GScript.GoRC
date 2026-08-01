@@ -6,6 +6,7 @@ import {type FormEvent, useEffect, useRef, useState} from "react"
 
 import {Modal} from "./Modal"
 import {Button} from "@/components/ui/button"
+import {useLanguage} from "@/hooks/useLanguage"
 
 interface MessageComposeDialogProps {
   open: boolean
@@ -28,6 +29,7 @@ export function MessageComposeDialog({
   onClose,
   onSend,
 }: MessageComposeDialogProps) {
+  const {t} = useLanguage()
   const [text, setText] = useState("")
   const [sending, setSending] = useState(false)
   const ref = useRef<HTMLTextAreaElement | null>(null)
@@ -59,15 +61,15 @@ export function MessageComposeDialog({
     <Modal
       open={open}
       title={title}
-      description={`To: ${recipientLabel}`}
+      description={`Para: ${recipientLabel}`}
       onClose={onClose}
       footer={
         <>
           <Button variant="ghost" onClick={onClose} disabled={sending}>
-            Cancel
+            {t("common.cancel")}
           </Button>
           <Button type="submit" form="message-compose-form" disabled={sending || !text.trim()}>
-            {sending ? "Sending…" : sendLabel}
+            {sending ? "…" : sendLabel}
           </Button>
         </>
       }
@@ -76,7 +78,7 @@ export function MessageComposeDialog({
         {singleLine ? (
           <input
             className="bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:ring-ring h-10 w-full rounded-md border px-3 text-sm outline-none focus-visible:ring-2"
-            placeholder={placeholder ?? "Message"}
+            placeholder={placeholder ?? t("rc.messagePlaceholder")}
             value={text}
             onChange={(e) => setText(e.target.value)}
           />
@@ -84,7 +86,7 @@ export function MessageComposeDialog({
           <textarea
             ref={ref}
             className="bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:ring-ring min-h-[120px] w-full resize-none rounded-md border px-3 py-2 text-sm outline-none focus-visible:ring-2"
-            placeholder={placeholder ?? "Type your message…"}
+            placeholder={placeholder ?? t("rc.messagePlaceholder")}
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => {
@@ -93,7 +95,7 @@ export function MessageComposeDialog({
           />
         )}
         {!singleLine && (
-          <p className="text-muted-foreground text-xs">Ctrl+Enter to send</p>
+          <p className="text-muted-foreground text-xs">Ctrl+Enter para enviar</p>
         )}
       </form>
     </Modal>

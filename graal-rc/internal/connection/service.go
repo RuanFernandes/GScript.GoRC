@@ -49,8 +49,9 @@ type Service struct {
 	creds           Credentials
 	serverName      string // name of the server selected in ConnectToServer; "" when none
 	pumpCancel      context.CancelFunc
-	lastNCAttempt   time.Time // last ConnectToNCServer attempt; throttles retries
-	lastNCKeepalive time.Time // last silent NC keepalive (weapon-list ping)
+	lastNCAttempt   time.Time  // last ConnectToNCServer attempt; throttles retries
+	lastNCKeepalive time.Time  // last silent NC keepalive (weapon-list ping)
+	ncRequestMu     sync.Mutex // one owner at a time for NC request/response work
 	emit            func(name string, data ...any)
 
 	// maxUpload is the latest server-reported max upload size (bytes), pushed via
@@ -1225,17 +1226,17 @@ func (s *Service) FetchAllScripts(ctx context.Context, progress func(done, total
 	npcs, _ := s.GetNPCs()
 
 	type job struct {
-		stype, key string
+		stype, key, name string
 	}
 	var jobs []job
 	for _, w := range weapons {
-		jobs = append(jobs, job{"weapon", w.Name})
+		jobs = append(jobs, job{"weapon", w.Name, w.Name})
 	}
 	for _, c := range classes {
-		jobs = append(jobs, job{"class", c.Name})
+		jobs = append(jobs, job{"class", c.Name, c.Name})
 	}
 	for _, n := range npcs {
-		jobs = append(jobs, job{"npc", strconv.Itoa(n.ID)})
+		jobs = append(jobs, job{"npc", strconv.Itoa(n.ID), n.Name})
 	}
 	total := len(jobs)
 
@@ -1258,6 +1259,12 @@ func (s *Service) FetchAllScripts(ctx context.Context, progress func(done, total
 			}
 			defer func() { <-sem }()
 			if r, err := s.OpenScript(j.stype, j.key); err == nil {
+				// Some NC callbacks return only the NPC id. Keep the display
+				// name from the cached NPC list so local sync never falls back
+				// to an ID-based filename.
+				if r.Type == "npc" && r.Name == "" {
+					r.Name = j.name
+				}
 				outMu.Lock()
 				out = append(out, r)
 				outMu.Unlock()
@@ -1335,6 +1342,8 @@ func (s *Service) CreateNPC(name string, id int, npcType, scripter, level, x, y 
 
 // SaveWeapon writes a weapon's script back to the server.
 func (s *Service) SaveWeapon(name, script string) error {
+	s.ncRequestMu.Lock()
+	defer s.ncRequestMu.Unlock()
 	h, err := s.requireNC()
 	if err != nil {
 		return err
@@ -1344,6 +1353,8 @@ func (s *Service) SaveWeapon(name, script string) error {
 
 // SaveClass writes a class's script back to the server.
 func (s *Service) SaveClass(name, script string) error {
+	s.ncRequestMu.Lock()
+	defer s.ncRequestMu.Unlock()
 	h, err := s.requireNC()
 	if err != nil {
 		return err
@@ -1353,6 +1364,8 @@ func (s *Service) SaveClass(name, script string) error {
 
 // SaveNPC writes an NPC's script back to the server.
 func (s *Service) SaveNPC(id int, script string) error {
+	s.ncRequestMu.Lock()
+	defer s.ncRequestMu.Unlock()
 	h, err := s.requireNC()
 	if err != nil {
 		return err
@@ -1363,6 +1376,8 @@ func (s *Service) SaveNPC(id int, script string) error {
 // OpenScript requests a script from the server and waits for the reply. For
 // weapon/class, key is the name; for npc, key is the stringified id.
 func (s *Service) OpenScript(scriptType, key string) (rclib.ScriptReply, error) {
+	s.ncRequestMu.Lock()
+	defer s.ncRequestMu.Unlock()
 	h, err := s.requireHandle()
 	if err != nil {
 		return rclib.ScriptReply{}, err

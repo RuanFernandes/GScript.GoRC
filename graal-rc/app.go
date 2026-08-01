@@ -50,7 +50,9 @@ type App struct {
 
 	// tray is the system-tray handle; its tooltip is branded with the connected
 	// server name + live player count by refreshServerChrome.
-	tray *application.SystemTray
+	tray            *application.SystemTray
+	pmMu            sync.RWMutex
+	pmConversations map[int]PMConversation
 
 	logMu      sync.Mutex
 	logEnabled bool
@@ -88,6 +90,9 @@ type App struct {
 
 	codingMu       sync.Mutex
 	codingSettings CodingSettings
+
+	languageMu sync.Mutex
+	language   string
 
 	fileBrowserCfgMu sync.Mutex
 	fileBrowserCfg   FileBrowserConfig
@@ -130,17 +135,18 @@ func NewApp() *App {
 		migrateLegacyCredentials(vault)
 	}
 	return &App{
-		sessions:      connection.NewService(),
-		vault:         vault,
-		editorWindows: map[string]*application.WebviewWindow{},
-		editorCache:   map[string]rclib.ScriptReply{},
-		editorDirty:   map[string]bool{},
-		textCache:     map[string][]byte{},
-		dbFiles:       map[string]string{},
-		dbHeaders:     map[string][]byte{},
-		textWindows:   map[string]*application.WebviewWindow{},
-		sqliteWindows: map[string]*application.WebviewWindow{},
-		playerWindows: map[string]*application.WebviewWindow{},
+		sessions:        connection.NewService(),
+		vault:           vault,
+		editorWindows:   map[string]*application.WebviewWindow{},
+		editorCache:     map[string]rclib.ScriptReply{},
+		editorDirty:     map[string]bool{},
+		textCache:       map[string][]byte{},
+		dbFiles:         map[string]string{},
+		dbHeaders:       map[string][]byte{},
+		textWindows:     map[string]*application.WebviewWindow{},
+		sqliteWindows:   map[string]*application.WebviewWindow{},
+		playerWindows:   map[string]*application.WebviewWindow{},
+		pmConversations: map[int]PMConversation{},
 	}
 }
 
@@ -158,6 +164,15 @@ func (a *App) attach(app *application.App) {
 	a.app = app
 	var seq uint64
 	a.sessions.SetEmitter(func(name string, data ...any) {
+		if name == "rc:pm" && len(data) >= 4 {
+			id, idOK := data[0].(int)
+			account, accountOK := data[1].(string)
+			nick, nickOK := data[2].(string)
+			message, messageOK := data[3].(string)
+			if idOK && accountOK && nickOK && messageOK {
+				a.recordIncomingPM(id, account, nick, message)
+			}
+		}
 		// Tap RC chat lines + *Changed push events into the sync engine so
 		// server-side script activity drives a targeted/debounced reconcile.
 		if eng := a.currentSyncEngine(); eng != nil {
@@ -165,13 +180,14 @@ func (a *App) attach(app *application.App) {
 			case "rc:message":
 				if len(data) > 0 {
 					if text, ok := data[0].(string); ok {
-						eng.HandleChatLine(text)
+						// The RC message callback runs on the main socket pump. Chat
+						// activity reconciliation performs a second request to fetch
+						// the changed script, so it must not run inline here or it can
+						// deadlock the pump and prevent the chat event from being
+						// delivered. HandleChatLine serializes concurrent work itself.
+						go eng.HandleChatLine(text)
 					}
 				}
-			case "rc:weaponsChanged", "rc:classesChanged", "rc:npcsChanged":
-				// Structured add/delete push — refreshes the live cache and
-				// signals the engine to re-reconcile (catches new scripts).
-				eng.HandleListChanged(name)
 			}
 		}
 		s := atomic.AddUint64(&seq, 1)
@@ -400,6 +416,7 @@ func (a *App) SetNewProtocol(enable bool) error { return a.sessions.SetNewProtoc
 func (a *App) Logout() {
 	a.stopSyncEngine()
 	a.sessions.Logout()
+	a.clearPMState()
 	a.refreshServerChrome()
 }
 
@@ -638,14 +655,32 @@ func (a *App) OpenScript(scriptType, key string) (rclib.ScriptReply, error) {
 
 // SaveWeapon writes a weapon's script back.
 func (a *App) SaveWeapon(name, script string) error {
-	return a.sessions.SaveWeapon(name, script)
+	return a.saveScriptWithSyncExpectation("weapon", name, script, func() error { return a.sessions.SaveWeapon(name, script) })
 }
 
 // SaveClass writes a class's script back.
-func (a *App) SaveClass(name, script string) error { return a.sessions.SaveClass(name, script) }
+func (a *App) SaveClass(name, script string) error {
+	return a.saveScriptWithSyncExpectation("class", name, script, func() error { return a.sessions.SaveClass(name, script) })
+}
 
 // SaveNPC writes an NPC's script back.
-func (a *App) SaveNPC(id int, script string) error { return a.sessions.SaveNPC(id, script) }
+func (a *App) SaveNPC(id int, script string) error {
+	return a.saveScriptWithSyncExpectation("npc", strconv.Itoa(id), script, func() error { return a.sessions.SaveNPC(id, script) })
+}
+
+func (a *App) saveScriptWithSyncExpectation(kind, key, script string, save func() error) error {
+	eng := a.currentSyncEngine()
+	if eng != nil {
+		eng.ExpectServerUpdate(kind, key, script)
+	}
+	if err := save(); err != nil {
+		if eng != nil {
+			eng.CancelExpectedServerUpdate(kind, key)
+		}
+		return err
+	}
+	return nil
+}
 
 // ResetNPC resets an NPC by id.
 func (a *App) ResetNPC(id int) error { return a.sessions.ResetNPC(id) }
@@ -1240,6 +1275,10 @@ func (a *App) refreshServerChrome() {
 	a.setWindowTitleLocked(&a.settingsMu, &a.settingsWindow, settingsTitle)
 	a.setWindowTitleLocked(&a.fileBrowserMu, &a.fileBrowserWindow, filesTitle)
 	if a.tray != nil {
+		a.updateTrayPMBadge()
+		if a.hasUnreadPM() {
+			tooltip += " · New PM"
+		}
 		a.tray.SetTooltip(tooltip)
 	}
 }
@@ -1366,6 +1405,18 @@ func (a *App) OpenPlayerList() {
 		a.playerListWindow = nil
 		a.playerListMu.Unlock()
 	})
+}
+
+// OpenPlayerListPM focuses the player list and asks it to open a conversation.
+// The event is emitted after the window exists, so it also works when the list
+// was previously closed.
+func (a *App) OpenPlayerListPM(playerID int) {
+	a.OpenPlayerList()
+	if a.app != nil {
+		// A newly-created webview needs a moment to mount its route before it can
+		// receive app events; the delayed emit also works for an existing window.
+		time.AfterFunc(250*time.Millisecond, func() { a.app.Event.Emit("rc:openPM", playerID) })
+	}
 }
 
 // OpenScriptManager opens (or focuses) the Script Manager window (Weapons /
@@ -1527,6 +1578,9 @@ func (a *App) OpenScriptEditor(scriptType, key string) error {
 	if err != nil {
 		return err
 	}
+	if (scriptType == "npc" || scriptType == "npcflags" || scriptType == "npcattr") && reply.Name == "" {
+		reply.Name = a.npcNameByID(key)
+	}
 
 	a.editorCacheMu.Lock()
 	a.editorCache[mapKey] = reply
@@ -1534,7 +1588,7 @@ func (a *App) OpenScriptEditor(scriptType, key string) error {
 
 	w := a.app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:             sanitizeWindowName(scriptType, key),
-		Title:            editorTitle(a.sessions.Status().ServerName, scriptType, key),
+		Title:            editorTitle(a.sessions.Status().ServerName, scriptType, displayScriptKey(scriptType, key, reply.Name)),
 		URL:              "/#editor?t=" + scriptType + "&k=" + url.QueryEscape(key),
 		Width:            820,
 		Height:           620,
@@ -1570,6 +1624,30 @@ func (a *App) OpenScriptEditor(scriptType, key string) error {
 	return nil
 }
 
+func (a *App) npcNameByID(key string) string {
+	id, err := strconv.Atoi(key)
+	if err != nil {
+		return ""
+	}
+	npcs, err := a.sessions.GetNPCs()
+	if err != nil {
+		return ""
+	}
+	for _, npc := range npcs {
+		if npc.ID == id {
+			return npc.Name
+		}
+	}
+	return ""
+}
+
+func displayScriptKey(scriptType, key, name string) string {
+	if (scriptType == "npc" || scriptType == "npcflags" || scriptType == "npcattr") && name != "" {
+		return name
+	}
+	return key
+}
+
 // SetEditorDirty tracks whether an open editor window has unsaved changes, so
 // the close-interception hook can decide whether to prompt.
 func (a *App) SetEditorDirty(scriptType, key string, dirty bool) {
@@ -1580,6 +1658,16 @@ func (a *App) SetEditorDirty(scriptType, key string, dirty bool) {
 		delete(a.editorDirty, scriptType+":"+key)
 	}
 	a.editorCacheMu.Unlock()
+}
+
+// editorWindowsSnapshot reports whether the script editor window is open. It
+// is kept separate from editorDirty because an open, clean editor still needs
+// server changes surfaced before they replace its in-memory contents.
+func (a *App) editorWindowsSnapshot(scriptType, key string) (*application.WebviewWindow, bool) {
+	a.editorMu.Lock()
+	defer a.editorMu.Unlock()
+	w, ok := a.editorWindows[scriptType+":"+key]
+	return w, ok
 }
 
 // CloseScriptEditor closes the editor window for (scriptType, key). Used after a
@@ -1637,6 +1725,73 @@ type CodingSettings struct {
 	Theme      string `json:"theme"`
 	FontFamily string `json:"fontFamily"`
 	FontSize   int    `json:"fontSize"`
+}
+
+// GetLanguage returns the UI language persisted for this Windows user.
+func (a *App) GetLanguage() string {
+	a.languageMu.Lock()
+	defer a.languageMu.Unlock()
+	if a.language == "" {
+		a.language = loadLanguage()
+	}
+	return a.language
+}
+
+// SetLanguage persists the UI language and broadcasts it to every Wails
+// window, so an already-open settings/editor window updates immediately.
+func (a *App) SetLanguage(language string) error {
+	if language != "pt-BR" && language != "en" && language != "es" {
+		return fmt.Errorf("unsupported language: %s", language)
+	}
+	a.languageMu.Lock()
+	a.language = language
+	a.languageMu.Unlock()
+	path, err := languagePath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	b, err := json.Marshal(struct {
+		Language string `json:"language"`
+	}{language})
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		return err
+	}
+	if a.app != nil {
+		a.app.Event.Emit("rc:language", language)
+	}
+	return nil
+}
+
+func languagePath() (string, error) {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "graal-rc", "language.json"), nil
+}
+
+func loadLanguage() string {
+	path, err := languagePath()
+	if err != nil {
+		return ""
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var cfg struct {
+		Language string `json:"language"`
+	}
+	if json.Unmarshal(b, &cfg) == nil && (cfg.Language == "pt-BR" || cfg.Language == "en" || cfg.Language == "es") {
+		return cfg.Language
+	}
+	return ""
 }
 
 // DefaultCodingSettings are the first-run defaults.
@@ -1802,6 +1957,14 @@ type RemoteTheme struct {
 	Definition string `json:"definition"`
 }
 
+// CustomTheme is a user-authored Monaco theme definition. The definition is
+// kept as JSON so all Monaco token rules and editor colors remain editable.
+type CustomTheme struct {
+	Key        string `json:"key"`
+	Name       string `json:"name"`
+	Definition string `json:"definition"`
+}
+
 // remoteThemePath returns the cached remote-theme file location.
 func remoteThemePath() (string, error) {
 	dir, err := os.UserConfigDir()
@@ -1850,4 +2013,106 @@ func (a *App) SaveRemoteTheme(name, definition string) error {
 		a.app.Event.Emit("rc:remoteTheme", string(b))
 	}
 	return nil
+}
+
+func customThemesPath() (string, error) {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "graal-rc", "custom-themes.json"), nil
+}
+
+func (a *App) GetCustomThemes() ([]CustomTheme, error) {
+	path, err := customThemesPath()
+	if err != nil {
+		return nil, err
+	}
+	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return []CustomTheme{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var themes []CustomTheme
+	if err := json.Unmarshal(b, &themes); err != nil {
+		return []CustomTheme{}, nil
+	}
+	return themes, nil
+}
+
+func (a *App) SaveCustomTheme(theme CustomTheme) error {
+	theme.Key = strings.TrimSpace(theme.Key)
+	theme.Name = strings.TrimSpace(theme.Name)
+	if theme.Key == "" || theme.Name == "" || theme.Definition == "" {
+		return errors.New("theme key, name and definition are required")
+	}
+	var definition map[string]any
+	if err := json.Unmarshal([]byte(theme.Definition), &definition); err != nil {
+		return fmt.Errorf("invalid theme JSON: %w", err)
+	}
+	if _, ok := definition["colors"]; !ok {
+		definition["colors"] = map[string]any{}
+	}
+	themes, err := a.GetCustomThemes()
+	if err != nil {
+		return err
+	}
+	found := false
+	for i := range themes {
+		if themes[i].Key == theme.Key {
+			themes[i] = theme
+			found = true
+			break
+		}
+	}
+	if !found {
+		themes = append(themes, theme)
+	}
+	path, err := customThemesPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	b, err := json.Marshal(themes)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		return err
+	}
+	if a.app != nil {
+		if payload, marshalErr := json.Marshal(theme); marshalErr == nil {
+			a.app.Event.Emit("rc:customTheme", string(payload))
+		}
+	}
+	return nil
+}
+
+func (a *App) DeleteCustomTheme(key string) error {
+	themes, err := a.GetCustomThemes()
+	if err != nil {
+		return err
+	}
+	filtered := themes[:0]
+	for _, theme := range themes {
+		if theme.Key != key {
+			filtered = append(filtered, theme)
+		}
+	}
+	path, err := customThemesPath()
+	if err != nil {
+		return err
+	}
+	b, err := json.Marshal(filtered)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, b, 0o644)
 }

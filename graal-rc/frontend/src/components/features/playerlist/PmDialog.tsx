@@ -7,6 +7,7 @@ import {Send} from "lucide-react"
 
 import {Modal} from "./Modal"
 import {Button} from "@/components/ui/button"
+import {useLanguage} from "@/hooks/useLanguage"
 
 export interface PmLine {
   dir: "in" | "out"
@@ -20,6 +21,12 @@ export interface PmTarget {
   nick: string
 }
 
+function displayPmText(text: string): string {
+  const clean = text.trim()
+  if (!/\s/.test(clean) || (clean.startsWith('"') && clean.endsWith('"'))) return text
+  return `"${text}"`
+}
+
 interface PmDialogProps {
   target: PmTarget | null
   lines: PmLine[]
@@ -28,6 +35,7 @@ interface PmDialogProps {
 }
 
 export function PmDialog({target, lines, onClose, onSend}: PmDialogProps) {
+  const {t} = useLanguage()
   const [text, setText] = useState("")
   const [sending, setSending] = useState(false)
   const viewportRef = useRef<HTMLDivElement | null>(null)
@@ -70,12 +78,12 @@ export function PmDialog({target, lines, onClose, onSend}: PmDialogProps) {
         <form id="pm-reply-form" onSubmit={submit} className="flex w-full items-center gap-2">
           <input
             className="bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:ring-ring h-9 flex-1 rounded-md border px-3 text-sm outline-none focus-visible:ring-2"
-            placeholder="Reply…"
+            placeholder="Responder…"
             value={text}
             onChange={(e) => setText(e.target.value)}
             autoFocus
           />
-          <Button type="submit" size="icon" disabled={sending || !text.trim()} aria-label="Send">
+          <Button type="submit" size="icon" disabled={sending || !text.trim()} aria-label={t("common.send")}>
             <Send className="size-4" />
           </Button>
         </form>
@@ -86,7 +94,7 @@ export function PmDialog({target, lines, onClose, onSend}: PmDialogProps) {
         className="bg-muted/30 h-72 w-full overflow-y-auto rounded-md border"
       >
         {lines.length === 0 ? (
-          <p className="text-muted-foreground p-4 text-center text-xs">No messages yet.</p>
+          <p className="text-muted-foreground p-4 text-center text-xs">{t("common.noMessages")}</p>
         ) : (
           <div className="flex flex-col p-3">
             {lines.map((l, i) => {
@@ -107,7 +115,7 @@ export function PmDialog({target, lines, onClose, onSend}: PmDialogProps) {
                         : "bg-background max-w-[80%] rounded-2xl rounded-bl-md border px-3 py-1.5 text-sm"
                     }
                   >
-                    {l.text}
+                    {displayPmText(l.text)}
                   </div>
                 </div>
               )

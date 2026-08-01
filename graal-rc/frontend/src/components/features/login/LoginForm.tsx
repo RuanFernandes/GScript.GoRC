@@ -7,6 +7,7 @@ import {Button} from "@/components/ui/button"
 import {Input} from "@/components/ui/input"
 import {Label} from "@/components/ui/label"
 import type {LoginRequest} from "@/types"
+import {useLanguage} from "@/hooks/useLanguage"
 
 interface LoginFormProps {
   busy?: boolean
@@ -15,6 +16,7 @@ interface LoginFormProps {
 }
 
 export function LoginForm({busy = false, defaultValues, onLogin}: LoginFormProps) {
+  const {t} = useLanguage()
   const [profileName, setProfileName] = useState(defaultValues?.profileName ?? "")
   const [account, setAccount] = useState(defaultValues?.account ?? "")
   const [password, setPassword] = useState(defaultValues?.password ?? "")
@@ -28,35 +30,34 @@ export function LoginForm({busy = false, defaultValues, onLogin}: LoginFormProps
   return (
     <form onSubmit={handleSubmit} className="grid gap-4">
       <div className="grid gap-2">
-        <Label htmlFor="profile-name">Profile name</Label>
+        <Label htmlFor="profile-name">{t("login.profileName")}</Label>
         <Input
           id="profile-name"
-          placeholder="Account profile name"
+          placeholder={t("login.profilePlaceholder")}
           value={profileName}
           autoComplete="organization"
           onChange={(e) => setProfileName(e.target.value)}
         />
         <p className="text-muted-foreground text-xs">
-          Used to choose the account profile/listserver. Leave empty for the default Graal listserver.
+          {t("login.profileHelp")}
         </p>
       </div>
       <div className="grid gap-2">
-        <Label htmlFor="account">Account</Label>
+        <Label htmlFor="account">{t("login.account")}</Label>
         <Input
           id="account"
-          placeholder="Account id (e.g. Graal5766947) — NOT the community name"
+          placeholder={t("login.accountPlaceholder")}
           required
           autoComplete="username"
           value={account}
           onChange={(e) => setAccount(e.target.value)}
         />
         <p className="text-muted-foreground text-xs">
-          Login identity. Player queries (rights/attrs/ban/comments) use this exact value, so it must be
-          the account id, not your community name. The session nickname is configured on the account selection screen.
+          {t("login.accountHelp")} {t("login.nicknameHelp")}
         </p>
       </div>
       <div className="grid gap-2">
-        <Label htmlFor="password">Password</Label>
+        <Label htmlFor="password">{t("login.password")}</Label>
         <div className="relative">
           <Input
             id="password"
@@ -70,8 +71,8 @@ export function LoginForm({busy = false, defaultValues, onLogin}: LoginFormProps
           />
           <button
             type="button"
-            aria-label={showPassword ? "Hide password" : "Show password"}
-            title={showPassword ? "Hide password" : "Show password"}
+            aria-label={showPassword ? t("login.hidePassword") : t("login.showPassword")}
+            title={showPassword ? t("login.hidePassword") : t("login.showPassword")}
             onClick={() => setShowPassword((visible) => !visible)}
             className="text-muted-foreground hover:text-foreground absolute inset-y-0 right-0 flex w-10 items-center justify-center transition-colors"
           >
@@ -81,7 +82,7 @@ export function LoginForm({busy = false, defaultValues, onLogin}: LoginFormProps
       </div>
       <Button type="submit" disabled={busy} className="w-full">
         {busy ? <Loader2 className="animate-spin" /> : <LogIn />}
-        Connect
+        {t("login.connect")}
       </Button>
     </form>
   )

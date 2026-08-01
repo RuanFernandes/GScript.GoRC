@@ -19,6 +19,7 @@ import {registerServerConfig} from "@/lib/monacoServerConfig"
 import {adaptMonacoTheme} from "@/lib/adaptTheme"
 import {rcService} from "@/services/rcService"
 import type {EditorKind} from "@/types"
+import {useLanguage} from "@/hooks/useLanguage"
 
 // Minimal monaco surface used for keybindings (kept loose; monaco-editor is a
 // transitive dep of @monaco-editor/react).
@@ -53,9 +54,11 @@ function parseEditorParams(): {kind: EditorKind; key: string} | null {
 }
 
 export function ScriptEditorWindowScreen() {
+  const {t} = useLanguage()
   const parsed = useRef(parseEditorParams())
   const {settings} = useCodingSettings()
   const [content, setContent] = useState<string>("")
+  const [scriptName, setScriptName] = useState("")
   const [original, setOriginal] = useState<string>("")
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -69,6 +72,7 @@ export function ScriptEditorWindowScreen() {
   const contentRef = useRef("")
   const [editorReady, setEditorReady] = useState(false)
   const [remoteDef, setRemoteDef] = useState<unknown>(null)
+  const [customDefs, setCustomDefs] = useState<Record<string, unknown>>({})
 
   const {kind, key} = parsed.current ?? {kind: "weapon" as EditorKind, key: ""}
   const readOnly = kind === "npcattr"
@@ -85,6 +89,7 @@ export function ScriptEditorWindowScreen() {
       .then((reply) => {
         if (cancelled) return
         const text = reply?.script ?? ""
+        setScriptName(reply?.name ?? "")
         setContent(text)
         contentRef.current = text
         setOriginal(text)
@@ -147,13 +152,13 @@ export function ScriptEditorWindowScreen() {
       }
       setOriginal(text)
       setDirty(false)
-      toast.success("Saved")
+      toast.success(t("editor.saved"))
     } catch (err) {
-      toast.error("Save failed", {description: String(err)})
+      toast.error(t("editor.saveFailed"), {description: String(err)})
     } finally {
       setSaving(false)
     }
-  }, [kind, key, readOnly])
+  }, [kind, key, readOnly, t])
 
   const handleBeforeMount: BeforeMount = useCallback(
     (monaco) => {
@@ -211,6 +216,23 @@ export function ScriptEditorWindowScreen() {
     }
   }, [])
 
+  useEffect(() => {
+    rcService.getCustomThemes().then((themes) => {
+      const next: Record<string, unknown> = {}
+      for (const theme of themes ?? []) {
+        try { next[theme.key] = JSON.parse(theme.definition) } catch { /* ignore invalid saved theme */ }
+      }
+      setCustomDefs(next)
+    }).catch(() => {})
+    const off = Events.On("rc:customTheme", (e: {data: string}) => {
+      try {
+        const theme = JSON.parse(e.data) as {key: string; definition: string}
+        setCustomDefs((current) => ({...current, [theme.key]: JSON.parse(theme.definition)}))
+      } catch { /* ignore malformed custom theme */ }
+    })
+    return () => off()
+  }, [])
+
   // Apply theme on change: custom (monokai/darcula) and remote themes must be
   // defineTheme'd on the live monaco instance before setTheme, otherwise Monaco
   // silently ignores the unknown name. editorReady is in deps so the apply runs
@@ -220,7 +242,13 @@ export function ScriptEditorWindowScreen() {
   useEffect(() => {
     const m = monacoRef.current
     if (!m || !editorReady) return
-    if (settings.theme === "remoteTheme") {
+    const customDef = customDefs[settings.theme]
+    if (customDef) {
+      try {
+        m.editor.defineTheme(settings.theme, adaptMonacoTheme(customDef as never))
+        m.editor.setTheme(settings.theme)
+      } catch { m.editor.setTheme("vs-dark") }
+    } else if (settings.theme === "remoteTheme") {
       if (remoteDef) {
         try {
           m.editor.defineTheme("remoteTheme", adaptMonacoTheme(remoteDef as never))
@@ -235,7 +263,7 @@ export function ScriptEditorWindowScreen() {
       ensureTheme(m, settings.theme)
       m.editor.setTheme(settings.theme)
     }
-  }, [settings.theme, remoteDef, editorReady])
+  }, [settings.theme, remoteDef, customDefs, editorReady])
 
   // Save then close: the closingAfterSave effect waits for dirty=false (set by
   // doSave on success) before asking the backend to close, so the hook won't
@@ -257,7 +285,7 @@ export function ScriptEditorWindowScreen() {
     <div className="bg-background flex h-svh flex-col">
       <header className="flex items-center gap-2 border-b px-4 py-2">
         <h1 className="text-sm font-semibold">
-          {kind}: {key}
+          {kind}: {(kind === "npc" || kind === "npcflags" || kind === "npcattr") ? (scriptName || key) : key}
         </h1>
         {readOnly && <span className="text-muted-foreground text-xs">(read-only)</span>}
         {dirty && !readOnly && <span className="text-amber-500 text-xs">• unsaved</span>}
@@ -270,9 +298,9 @@ export function ScriptEditorWindowScreen() {
           </div>
         ) : loadError ? (
           <div className="text-muted-foreground flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-sm">
-            <p className="text-destructive font-medium">Couldn&apos;t open {kind}</p>
+            <p className="text-destructive font-medium">{t("editor.couldNotOpen")} {kind}</p>
             <p className="max-w-md">{loadError}</p>
-            <p className="text-xs">You can close this window.</p>
+            <p className="text-xs">{t("editor.canClose")}</p>
           </div>
         ) : (
           <Editor
@@ -308,19 +336,19 @@ export function ScriptEditorWindowScreen() {
       <AlertDialog open={confirmClose} onOpenChange={(v) => !v && setConfirmClose(false)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Save before closing?</AlertDialogTitle>
+            <AlertDialogTitle>{t("editor.saveBeforeClosing")}</AlertDialogTitle>
             <AlertDialogDescription>
               This script has unsaved changes. Save them before the window closes, or discard them.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setConfirmClose(false)}>
-              Cancel
+              {t("common.cancel")}
             </Button>
             <Button variant="destructive" onClick={discardAndClose}>
-              Discard
+              {t("editor.closeWithoutSaving")}
             </Button>
-            <Button onClick={saveAndClose}>Save</Button>
+            <Button onClick={saveAndClose}>{t("common.save")}</Button>
           </div>
         </AlertDialogContent>
       </AlertDialog>

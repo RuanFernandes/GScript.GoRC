@@ -1,7 +1,12 @@
 package main
 
 import (
+	"bytes"
 	_ "embed"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -15,6 +20,60 @@ import (
 //go:embed assets/rc_icon.png
 var trayIcon []byte
 
+func trayBadgeIcon(active bool) []byte {
+	if !active {
+		return trayIcon
+	}
+	src, err := png.Decode(bytes.NewReader(trayIcon))
+	if err != nil {
+		return trayIcon
+	}
+	img := image.NewRGBA(src.Bounds())
+	draw.Draw(img, img.Bounds(), src, image.Point{}, draw.Src)
+	// The source artwork is large but Windows scales it down to a 16px tray
+	// icon. Size the badge in source pixels, otherwise a fixed 5px dot becomes
+	// sub-pixel and disappears after the native conversion.
+	size := img.Bounds().Dx()
+	// A 16px tray icon needs a badge around 7–8px in diameter to remain
+	// visible in both the Windows overflow tray and Linux panel.
+	radius := size / 4
+	if radius < 12 {
+		radius = 12
+	}
+	cx, cy := img.Bounds().Max.X-radius-2, img.Bounds().Max.Y-radius-2
+	for y := cy - radius; y <= cy+radius; y++ {
+		for x := cx - radius; x <= cx+radius; x++ {
+			dx, dy := x-cx, y-cy
+			if dx*dx+dy*dy <= radius*radius {
+				img.Set(x, y, color.White)
+			}
+			inner := radius - maxInt(2, radius/5)
+			if dx*dx+dy*dy <= inner*inner {
+				img.Set(x, y, color.RGBA{R: 235, G: 55, B: 70, A: 255})
+			}
+		}
+	}
+	var out bytes.Buffer
+	if err := png.Encode(&out, img); err != nil {
+		return trayIcon
+	}
+	return out.Bytes()
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func (a *App) updateTrayPMBadge() {
+	if a.tray == nil {
+		return
+	}
+	a.tray.SetIcon(trayBadgeIcon(a.hasUnreadPM()))
+}
+
 // setupTray creates the system-tray icon (Open / Close menu) and installs the
 // main-window close hook that hides-to-tray instead of quitting while a server
 // session is active. Must run on the main thread after the window exists.
@@ -23,7 +82,7 @@ func (a *App) setupTray(main *application.WebviewWindow) {
 
 	tray := a.app.SystemTray.New()
 	a.tray = tray
-	tray.SetIcon(trayIcon)
+	tray.SetIcon(trayBadgeIcon(false))
 	tray.SetTooltip("Graal Remote Control")
 
 	menu := application.NewMenu()
@@ -38,6 +97,7 @@ func (a *App) setupTray(main *application.WebviewWindow) {
 		a.showMainWindow()
 	})
 	tray.Run()
+	a.updateTrayPMBadge()
 
 	// Close → hide-to-tray while logged into a server; otherwise let the close
 	// proceed (real quit). quitting is set only by the tray Close entry so that

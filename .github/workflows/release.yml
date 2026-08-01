@@ -261,8 +261,11 @@ jobs:
 
             Targets:
             - Windows x64 (NSIS installer)
-            - Linux x64 (AppImage)
-            - macOS x64 (tarball: binary + grclib.dylib)
+            - Linux x64 (AppImage; choose language in Settings on first launch)
+            - macOS x64 (tarball: binary + grclib.dylib; choose language in Settings on first launch)
+
+            GoRC stores the selected language in the platform user config directory,
+            so the preference survives updates and is shared by all app windows.
 
             Native grclib libs are bundled per platform.
           files: release/*

@@ -92,6 +92,12 @@ func normalizeSyncCfg(c sync.SyncConfig) sync.SyncConfig {
 	if c.PollingMinutes < 1 {
 		c.PollingMinutes = 5
 	}
+	// Sync is intentionally always bidirectional. Keeping these enabled avoids
+	// a stale local copy after an upload or a stale server copy after a local
+	// edit; the UI exposes one coherent sync mode instead of two conflicting
+	// switches.
+	c.AutoPushLocal = true
+	c.AutoPullServer = true
 	return c
 }
 
@@ -196,8 +202,23 @@ func (a *App) startSyncEngine() {
 	}
 
 	cfg := a.GetSyncConfig()
+	// Keep a disabled server from retaining an inert engine. Apart from making
+	// status truthful, this lets the Enable Sync toggle start a fresh engine
+	// when the user enables it later in the session.
+	if !cfg.Enabled || cfg.OutputDir == "" {
+		if a.app != nil {
+			b, _ := json.Marshal(cfg)
+			a.app.Event.Emit("rc:syncConfig", string(b))
+		}
+		return
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	eng := sync.NewEngine(a.sessions, srv, a.syncEmitter())
+	eng.SetEditorChecker(func(kind, key string) bool {
+		_, open := a.editorWindowsSnapshot(kind, key)
+		return open
+	})
+	eng.SetLocalActor(func() string { return a.sessions.Status().Nickname })
 
 	a.syncEngineMu.Lock()
 	// Another start may have raced ahead; prefer the latest.
@@ -211,6 +232,10 @@ func (a *App) startSyncEngine() {
 
 	eng.ApplyConfig(cfg)
 	eng.Start(ctx)
+	if a.app != nil {
+		b, _ := json.Marshal(cfg)
+		a.app.Event.Emit("rc:syncConfig", string(b))
+	}
 }
 
 // stopSyncEngine tears the engine down.
@@ -265,6 +290,7 @@ func (a *App) GetSyncStatus() sync.SyncStatus {
 	}
 	c := a.GetSyncConfig()
 	return sync.SyncStatus{
+		Enabled:          c.Enabled,
 		Server:           a.currentSyncServer(),
 		OutputDir:        c.OutputDir,
 		OutputDirMissing: c.OutputDir == "",
@@ -280,9 +306,9 @@ func (a *App) GetSyncScriptPair(kind, key string) (sync.ScriptPair, error) {
 }
 
 // ResolveConflict applies the user's choice ("local"|"server") for a review item.
-func (a *App) ResolveConflict(kind, key, choice string) error {
+func (a *App) ResolveConflict(kind, key, choice, mergeContent string) error {
 	if eng := a.currentSyncEngine(); eng != nil {
-		return eng.ResolveConflict(kind, key, choice)
+		return eng.ResolveConflict(kind, key, choice, mergeContent)
 	}
 	return nil
 }

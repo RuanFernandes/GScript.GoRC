@@ -8,6 +8,7 @@ import {Table, TableBody, TableCell, TableHead, TableHeader, TableRow} from "@/c
 import {cn} from "@/lib/utils"
 import {serverDisplay, tierBadge} from "@/lib/server"
 import type {Server} from "@/types"
+import {useLanguage} from "@/hooks/useLanguage"
 
 interface ServerTableProps {
   servers: Server[]
@@ -18,15 +19,16 @@ interface ServerTableProps {
 }
 
 export function ServerTable({servers, selectedIndex, busy, onSelect, onConnect}: ServerTableProps) {
+  const {t} = useLanguage()
   return (
     <ScrollArea className="h-full rounded-lg border">
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>Server</TableHead>
-            <TableHead className="w-[90px]">Language</TableHead>
-            <TableHead className="w-[70px]">Version</TableHead>
-            <TableHead className="w-[90px] text-right">Players</TableHead>
+            <TableHead>{t("server.server")}</TableHead>
+            <TableHead className="w-[90px]">{t("server.language")}</TableHead>
+            <TableHead className="w-[70px]">{t("server.version")}</TableHead>
+            <TableHead className="w-[90px] text-right">{t("server.players")}</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>

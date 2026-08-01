@@ -5,6 +5,7 @@
 // opens that script in its own editor window.
 import {useEffect, useMemo, useState} from "react"
 import {toast} from "sonner"
+import {Flag, LocateFixed, RotateCcw, UserRound} from "lucide-react"
 
 import {Button} from "@/components/ui/button"
 import {Input} from "@/components/ui/input"
@@ -12,6 +13,7 @@ import {ScrollArea} from "@/components/ui/scroll-area"
 import {Tabs, TabsContent, TabsList, TabsTrigger} from "@/components/ui/tabs"
 import {
   AlertDialog,
+  AlertDialogCancel,
   AlertDialogContent,
   AlertDialogDescription,
   AlertDialogHeader,
@@ -23,6 +25,7 @@ import {useScriptLists} from "@/hooks/useScriptLists"
 import {scriptCompare} from "@/lib/scriptSort"
 import {rcService} from "@/services/rcService"
 import type {NPC} from "@/types"
+import {useLanguage} from "@/hooks/useLanguage"
 
 // openScriptEditorOrFail opens the editor; OpenScriptEditor fetches the script
 // server-side first and only opens a window on success. A failure (e.g. the
@@ -42,19 +45,20 @@ async function openScriptEditorOrFail(scriptType: string, key: string) {
 }
 
 export function ScriptManagerWindowScreen() {
+  const {t} = useLanguage()
   const lists = useScriptLists(rcService)
   const [tab, setTab] = useState<"weapons" | "classes" | "npcs">("weapons")
 
   return (
     <div className="bg-background flex h-svh flex-col">
       <header className="flex items-center gap-2 border-b px-4 py-2.5">
-        <h1 className="text-base font-semibold">Script Manager</h1>
+        <h1 className="text-base font-semibold">{t("scripts.title")}</h1>
       </header>
       <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)} className="flex min-h-0 flex-1 flex-col p-3">
         <TabsList>
-          <TabsTrigger value="weapons">Weapons ({lists.weapons.length})</TabsTrigger>
-          <TabsTrigger value="classes">Classes ({lists.classes.length})</TabsTrigger>
-          <TabsTrigger value="npcs">NPCs ({lists.npcs.length})</TabsTrigger>
+          <TabsTrigger value="weapons">{t("scripts.weapons")} ({lists.weapons.length})</TabsTrigger>
+          <TabsTrigger value="classes">{t("scripts.classes")} ({lists.classes.length})</TabsTrigger>
+          <TabsTrigger value="npcs">{t("scripts.npcs")} ({lists.npcs.length})</TabsTrigger>
         </TabsList>
         <TabsContent value="weapons" className="mt-3 min-h-0 flex-1">
           <WeaponClassTab
@@ -65,9 +69,9 @@ export function ScriptManagerWindowScreen() {
               try {
                 await rcService.refreshWeapons()
                 await lists.refresh()
-                toast.success("Weapon list refreshed")
+                toast.success(t("scripts.refresh"))
               } catch (err) {
-                toast.error("Refresh failed", {description: String(err)})
+                toast.error(t("scripts.refreshFailed"), {description: String(err)})
               }
             }}
           />
@@ -106,9 +110,11 @@ function WeaponClassTab({
   loading: boolean
   onRefresh: () => Promise<void> | void
 }) {
+  const {t} = useLanguage()
   const [selected, setSelected] = useState<string | null>(null)
   const [filter, setFilter] = useState("")
   const [adding, setAdding] = useState(false)
+  const [deleteOpen, setDeleteOpen] = useState(false)
   const [name, setName] = useState("")
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc")
 
@@ -132,7 +138,7 @@ function WeaponClassTab({
       setAdding(false)
       await onRefresh()
     } catch (err) {
-      toast.error("Add failed", {description: String(err)})
+      toast.error(t("scripts.addFailed"), {description: String(err)})
     }
   }
 
@@ -145,7 +151,7 @@ function WeaponClassTab({
       setSelected(null)
       await onRefresh()
     } catch (err) {
-      toast.error("Delete failed", {description: String(err)})
+      toast.error(t("scripts.deleteFailed"), {description: String(err)})
     }
   }
 
@@ -153,25 +159,25 @@ function WeaponClassTab({
     <div className="flex h-full min-h-0 flex-col gap-2">
       <div className="flex items-center gap-2">
         <Input
-          placeholder="Filter…"
+          placeholder={t("scripts.filter")}
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           className="max-w-56"
         />
         <div className="ml-auto flex gap-2">
           <Button variant="outline" size="sm" onClick={() => onRefresh()}>
-            Refresh
+            {t("scripts.refresh")}
           </Button>
           <Button size="sm" onClick={() => setAdding(true)}>
-            Add {kind === "weapon" ? "Weapon" : "Class"}
+            {kind === "weapon" ? t("scripts.addWeapon") : t("scripts.addClass")}
           </Button>
           <Button
             variant="destructive"
             size="sm"
             disabled={!selected}
-            onClick={doDelete}
+            onClick={() => setDeleteOpen(true)}
           >
-            Delete
+            {t("scripts.delete")}
           </Button>
         </div>
       </div>
@@ -185,7 +191,7 @@ function WeaponClassTab({
                   className="inline-flex items-center gap-1 hover:text-foreground"
                   onClick={() => setSortDir((d) => (d === "asc" ? "desc" : "asc"))}
                 >
-                  Name {sortDir === "asc" ? "▲" : "▼"}
+                  {t("scripts.name")} {sortDir === "asc" ? "▲" : "▼"}
                 </button>
               </th>
             </tr>
@@ -193,7 +199,7 @@ function WeaponClassTab({
           <tbody>
             {filtered.length === 0 && !loading && (
               <tr>
-                <td className="text-muted-foreground px-3 py-4">No entries.</td>
+                <td className="text-muted-foreground px-3 py-4">{t("scripts.noEntries")}</td>
               </tr>
             )}
             {loading && filtered.length === 0 &&
@@ -227,13 +233,13 @@ function WeaponClassTab({
       <AlertDialog open={adding} onOpenChange={(v) => setAdding(v)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Add {kind === "weapon" ? "Weapon" : "Class"}</AlertDialogTitle>
+            <AlertDialogTitle>{kind === "weapon" ? t("scripts.addWeapon") : t("scripts.addClass")}</AlertDialogTitle>
             <AlertDialogDescription>
               Enter a name. The script can be edited after creation.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="grid gap-2">
-            <Label htmlFor="add-name">Name</Label>
+            <Label htmlFor="add-name">{t("scripts.name")}</Label>
             <Input
               id="add-name"
               value={name}
@@ -246,11 +252,23 @@ function WeaponClassTab({
           </div>
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setAdding(false)}>
-              Cancel
+              {t("common.cancel")}
             </Button>
             <Button onClick={doAdd} disabled={!name.trim()}>
-              Add
+              {t("scripts.add")}
             </Button>
+          </div>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("scripts.confirmDelete")}</AlertDialogTitle>
+            <AlertDialogDescription>{t("scripts.confirmDeleteDescription", {name: selected ?? ""})}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="flex justify-end gap-2">
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <Button variant="destructive" onClick={() => { setDeleteOpen(false); void doDelete() }}>{t("scripts.delete")}</Button>
           </div>
         </AlertDialogContent>
       </AlertDialog>
@@ -270,10 +288,13 @@ function NPCTab({
   loading: boolean
   onRefresh: () => Promise<void> | void
 }) {
+  const {t} = useLanguage()
   const [selected, setSelected] = useState<number | null>(null)
   const [filter, setFilter] = useState("")
   const [adding, setAdding] = useState(false)
+  const [deleteOpen, setDeleteOpen] = useState(false)
   const [warping, setWarping] = useState(false)
+  const [npcMenu, setNpcMenu] = useState<{npc: NPC; left: number; top: number} | null>(null)
   const [sortKey, setSortKey] = useState<"id" | "name" | "type" | "level">("name")
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc")
 
@@ -312,6 +333,18 @@ function NPCTab({
 
   const selectedNPC = npcs.find((n) => n.id === selected) ?? null
 
+  useEffect(() => {
+    if (!npcMenu) return
+    const close = () => setNpcMenu(null)
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") close() }
+    document.addEventListener("mousedown", close)
+    document.addEventListener("keydown", escape)
+    return () => {
+      document.removeEventListener("mousedown", close)
+      document.removeEventListener("keydown", escape)
+    }
+  }, [npcMenu])
+
   const doDelete = async () => {
     if (selected == null) return
     try {
@@ -320,17 +353,17 @@ function NPCTab({
       setSelected(null)
       await onRefresh()
     } catch (err) {
-      toast.error("Delete failed", {description: String(err)})
+      toast.error(t("scripts.deleteFailed"), {description: String(err)})
     }
   }
 
-  const doReset = async () => {
-    if (selected == null) return
+  const doReset = async (npcID = selected) => {
+    if (npcID == null) return
     try {
-      await rcService.resetNPC(selected)
-      toast.success(`Reset NPC ${selected}`)
+      await rcService.resetNPC(npcID)
+      toast.success(`Reset NPC ${npcID}`)
     } catch (err) {
-      toast.error("Reset failed", {description: String(err)})
+      toast.error(t("scripts.resetFailed"), {description: String(err)})
     }
   }
 
@@ -338,42 +371,20 @@ function NPCTab({
     <div className="flex h-full min-h-0 flex-col gap-2">
       <div className="flex items-center gap-2">
         <Input
-          placeholder="Filter…"
+          placeholder={t("scripts.filter")}
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           className="max-w-56"
         />
         <div className="ml-auto flex gap-2">
           <Button variant="outline" size="sm" onClick={() => onRefresh()}>
-            Refresh
+            {t("scripts.refresh")}
           </Button>
           <Button size="sm" onClick={() => setAdding(true)}>
-            Add NPC
+            {t("scripts.addNpc")}
           </Button>
-          <Button variant="outline" size="sm" disabled={!selectedNPC} onClick={doReset}>
-            Reset
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={!selectedNPC}
-            onClick={() => selectedNPC && openScriptEditorOrFail("npcflags", String(selectedNPC.id))}
-          >
-            Edit Flags
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={!selectedNPC}
-            onClick={() => selectedNPC && openScriptEditorOrFail("npcattr", String(selectedNPC.id))}
-          >
-            View Attributes
-          </Button>
-          <Button variant="outline" size="sm" disabled={!selectedNPC} onClick={() => setWarping(true)}>
-            Warp
-          </Button>
-          <Button variant="destructive" size="sm" disabled={!selectedNPC} onClick={doDelete}>
-            Delete
+          <Button variant="destructive" size="sm" disabled={!selectedNPC} onClick={() => setDeleteOpen(true)}>
+            {t("scripts.delete")}
           </Button>
         </div>
       </div>
@@ -397,7 +408,7 @@ function NPCTab({
           <tbody>
             {filtered.length === 0 && !loading && (
               <tr>
-                <td className="text-muted-foreground px-3 py-4">No NPCs.</td>
+              <td className="text-muted-foreground px-3 py-4">{t("scripts.noNpcs")}</td>
               </tr>
             )}
             {loading && filtered.length === 0 &&
@@ -422,6 +433,11 @@ function NPCTab({
                 key={n.id}
                 onClick={() => setSelected(n.id)}
                 onDoubleClick={() => openScriptEditorOrFail("npc", String(n.id))}
+                onContextMenu={(event) => {
+                  event.preventDefault()
+                  setSelected(n.id)
+                  setNpcMenu({npc: n, left: Math.min(event.clientX, window.innerWidth - 220), top: Math.min(event.clientY, window.innerHeight - 220)})
+                }}
                 className={`cursor-pointer border-b ${
                   selected === n.id ? "bg-accent" : "hover:bg-accent/50"
                 }`}
@@ -435,6 +451,43 @@ function NPCTab({
           </tbody>
         </table>
       </ScrollArea>
+
+      {npcMenu && (
+        <div
+          className="bg-popover text-popover-foreground fixed z-50 min-w-52 overflow-hidden rounded-md border py-1 text-sm shadow-xl"
+          style={{left: npcMenu.left, top: npcMenu.top}}
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          <div className="text-muted-foreground border-b px-3 py-2 text-xs">
+            {npcMenu.npc.name} <span className="font-mono">#{npcMenu.npc.id}</span>
+          </div>
+          <button type="button" className="hover:bg-accent flex w-full items-center gap-2 px-3 py-2 text-left" onClick={() => { void doReset(npcMenu.npc.id); setNpcMenu(null) }}>
+            <RotateCcw className="size-4" />{t("scripts.reset")}
+          </button>
+          <button type="button" className="hover:bg-accent flex w-full items-center gap-2 px-3 py-2 text-left" onClick={() => { setNpcMenu(null); void openScriptEditorOrFail("npcflags", String(npcMenu.npc.id)) }}>
+            <Flag className="size-4" />{t("scripts.editFlags")}
+          </button>
+          <button type="button" className="hover:bg-accent flex w-full items-center gap-2 px-3 py-2 text-left" onClick={() => { setNpcMenu(null); void openScriptEditorOrFail("npcattr", String(npcMenu.npc.id)) }}>
+            <UserRound className="size-4" />{t("scripts.viewAttributes")}
+          </button>
+          <button type="button" className="hover:bg-accent flex w-full items-center gap-2 px-3 py-2 text-left" onClick={() => { setNpcMenu(null); setSelected(npcMenu.npc.id); setWarping(true) }}>
+            <LocateFixed className="size-4" />{t("scripts.warp")}
+          </button>
+        </div>
+      )}
+
+      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("scripts.confirmDelete")}</AlertDialogTitle>
+            <AlertDialogDescription>{t("scripts.confirmDeleteNpcDescription", {name: selectedNPC ? `${selectedNPC.name} (#${selectedNPC.id})` : ""})}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="flex justify-end gap-2">
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <Button variant="destructive" onClick={() => { setDeleteOpen(false); void doDelete() }}>{t("scripts.delete")}</Button>
+          </div>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AddNPCDialog
         open={adding}
@@ -466,6 +519,7 @@ function WarpDialog({
   npcId: number | null
   onClose: () => void
 }) {
+  const {t} = useLanguage()
   const [level, setLevel] = useState("")
   const [x, setX] = useState("0")
   const [y, setY] = useState("0")
@@ -485,7 +539,7 @@ function WarpDialog({
       toast.success(`Warped NPC ${npcId}`)
       onClose()
     } catch (err) {
-      toast.error("Warp failed", {description: String(err)})
+      toast.error(t("scripts.warpFailed"), {description: String(err)})
     }
   }
 
@@ -507,7 +561,7 @@ function WarpDialog({
     <AlertDialog open={open} onOpenChange={(v) => !v && onClose()}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Warp NPC {npcId ?? ""}</AlertDialogTitle>
+          <AlertDialogTitle>{t("scripts.warp")} NPC {npcId ?? ""}</AlertDialogTitle>
           <AlertDialogDescription>Move the NPC to a level and position.</AlertDialogDescription>
         </AlertDialogHeader>
         <div className="grid gap-2">
@@ -517,9 +571,9 @@ function WarpDialog({
         </div>
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>
-            Cancel
+            {t("common.cancel")}
           </Button>
-          <Button onClick={submit}>Warp</Button>
+          <Button onClick={submit}>{t("scripts.warp")}</Button>
         </div>
       </AlertDialogContent>
     </AlertDialog>
@@ -540,6 +594,7 @@ function AddNPCDialog({
   npcs: NPC[]
   onCreated: () => void | Promise<void>
 }) {
+  const {t} = useLanguage()
   const firstFreeId = useMemo(() => {
     const ids = new Set(npcs.map((n) => n.id))
     let id = 1000
@@ -562,7 +617,7 @@ function AddNPCDialog({
 
   const submit = async () => {
     if (!name.trim()) {
-      toast.error("Name is required")
+      toast.error(t("scripts.nameRequired"))
       return
     }
     try {
@@ -574,7 +629,7 @@ function AddNPCDialog({
       setLevel("")
       await onCreated()
     } catch (err) {
-      toast.error("Create NPC failed", {description: String(err)})
+      toast.error(t("scripts.createFailed"), {description: String(err)})
     }
   }
 
@@ -601,7 +656,7 @@ function AddNPCDialog({
     <AlertDialog open={open} onOpenChange={(v) => !v && onClose()}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Add NPC</AlertDialogTitle>
+          <AlertDialogTitle>{t("scripts.addNpc")}</AlertDialogTitle>
           <AlertDialogDescription>Create a new DB NPC on the server.</AlertDialogDescription>
         </AlertDialogHeader>
         <div className="grid gap-2">
@@ -615,10 +670,10 @@ function AddNPCDialog({
         </div>
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>
-            Cancel
+            {t("common.cancel")}
           </Button>
           <Button onClick={submit} disabled={!name.trim()}>
-            Create
+            {t("scripts.create")}
           </Button>
         </div>
       </AlertDialogContent>

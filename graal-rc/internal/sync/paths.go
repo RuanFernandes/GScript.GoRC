@@ -1,8 +1,10 @@
 package sync
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -22,54 +24,69 @@ func kindSubdir(kind string) string {
 // scriptExt is the file extension for synced scripts.
 const scriptExt = ".gs2"
 
+func kindFromDir(dir string) string {
+	switch filepath.Base(dir) {
+	case "weapons":
+		return "weapon"
+	case "classes":
+		return "class"
+	case "npcs":
+		return "npc"
+	default:
+		return ""
+	}
+}
+
 // sanitizeFileName replaces filesystem-unsafe characters. Script names may
 // contain "/", ":", etc. (e.g. "heheh/denvnob"); the true name is kept in the
 // manifest Entry.Name so the round-trip to the server uses the original.
-func sanitizeFileName(name string) string {
+func encodeName(name string) string {
 	if name == "" {
 		return "_"
 	}
-	r := strings.NewReplacer(
-		string(os.PathSeparator), "_",
-		"/", "_",
-		"\\", "_",
-		":", "_",
-		"*", "_",
-		"?", "_",
-		`"`, "_",
-		"<", "_",
-		">", "_",
-		"|", "_",
-	)
-	s := r.Replace(name)
-	// collapse runs of underscores / spaces
-	s = strings.ReplaceAll(s, " ", "_")
-	for strings.Contains(s, "__") {
-		s = strings.ReplaceAll(s, "__", "_")
+	var b strings.Builder
+	for _, r := range name {
+		switch r {
+		case '/', '\\', ':', '*', '?', '"', '<', '>', '|', '%':
+			b.WriteByte('%')
+			b.WriteString(fmt.Sprintf("%03d", r))
+		default:
+			b.WriteRune(r)
+		}
 	}
-	s = strings.Trim(s, "_.")
-	if s == "" {
-		s = "_"
-	}
-	return s
+	return b.String()
 }
 
-// fileNameFor returns the sanitized filename (no extension) for an entry.
-// NPCs key by id (stable across renames); weapons/classes by sanitized name.
+func decodeName(name string) string {
+	var b strings.Builder
+	for i := 0; i < len(name); i++ {
+		if name[i] == '%' && i+3 < len(name) {
+			if n, err := strconv.Atoi(name[i+1 : i+4]); err == nil {
+				b.WriteRune(rune(n))
+				i += 3
+				continue
+			}
+		}
+		b.WriteByte(name[i])
+	}
+	return b.String()
+}
+
+// fileNameFor returns the encoded server name (without extension). The ref
+// kept in memory supplies the stable NPC id when the file is uploaded.
 func fileNameFor(kind, key, name string) string {
-	if kind == "npc" {
-		return sanitizeFileName(key)
-	}
 	if name != "" {
-		return sanitizeFileName(name)
+		return encodeName(name)
 	}
-	return sanitizeFileName(key)
+	return encodeName(key)
 }
 
 // fullPath returns the on-disk path for an entry.
 func fullPath(outputDir, kind, fileName string) string {
 	return filepath.Join(outputDir, kindSubdir(kind), fileName+scriptExt)
 }
+
+func entryKey(kind, key string) string { return kind + ":" + key }
 
 // writeFileAtomic writes data via a temp file + rename so a crash mid-write or
 // a watcher observing a half-written file cannot corrupt state. The ".tmp"

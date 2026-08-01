@@ -3,11 +3,12 @@
 // Pure CSS animation (width + opacity) — no JS animation lib, light and fast.
 // Labels fade in when the rail expands; the rail stays overflow-visible so
 // anchored popovers are not clipped.
-import type {ComponentType} from "react"
-import {Code2, Flag, FolderOpen, FolderTree, SlidersHorizontal, Users} from "lucide-react"
+import {useState, type ComponentType} from "react"
+import {Code2, Flag, FolderOpen, FolderTree, Pin, PinOff, SlidersHorizontal, Users} from "lucide-react"
 
 import {SyncPopover} from "@/components/features/sync/SyncPopover"
 import {rcService} from "@/services/rcService"
+import {useLanguage} from "@/hooks/useLanguage"
 
 export interface RailItemProps {
   icon: ComponentType<{className?: string}>
@@ -41,8 +42,22 @@ export interface RcSidebarProps {
 }
 
 export function RcSidebar({ncLabel: nc, ncConnected, openServerText}: RcSidebarProps) {
+  const {t} = useLanguage()
+  const [pinned, setPinned] = useState(() => {
+    if (typeof window === "undefined") return false
+    return window.localStorage.getItem("graal-rc:sidebarPinned") === "true"
+  })
+
+  const togglePinned = () => {
+    setPinned((current) => {
+      const next = !current
+      window.localStorage.setItem("graal-rc:sidebarPinned", String(next))
+      return next
+    })
+  }
+
   return (
-    <aside className="group flex w-12 shrink-0 flex-col overflow-visible border-r transition-[width] duration-150 ease-out hover:w-56">
+    <aside className={`group flex shrink-0 flex-col overflow-visible border-r transition-[width] duration-150 ease-out ${pinned ? "sidebar-pinned w-56" : "w-12 hover:w-56"}`}>
       {/* NC status chip at the top */}
       <div className="flex h-11 items-center gap-3 px-3">
         <span
@@ -59,30 +74,43 @@ export function RcSidebar({ncLabel: nc, ncConnected, openServerText}: RcSidebarP
       <div className="h-px bg-border" />
 
       <nav className="flex flex-col py-1">
-        <RailItem icon={Code2} label="Scripts" onClick={() => rcService.openScriptManager()} />
+        <RailItem icon={Code2} label={t("sidebar.scripts")} onClick={() => rcService.openScriptManager()} />
         <SyncPopover rail />
-        <RailItem icon={FolderOpen} label="Files" onClick={() => rcService.openFileBrowser()} />
-        <RailItem icon={Users} label="Players" onClick={() => rcService.openPlayerList()} />
+        <RailItem icon={FolderOpen} label={t("sidebar.files")} onClick={() => rcService.openFileBrowser()} />
+        <RailItem icon={Users} label={t("sidebar.players")} onClick={() => rcService.openPlayerList()} />
       </nav>
       <div className="h-px bg-border" />
 
       <nav className="flex flex-col py-1">
         <RailItem
           icon={SlidersHorizontal}
-          label="Server Options"
-          onClick={() => openServerText("options", "Server Options")}
+          label={t("sidebar.serverOptions")}
+          onClick={() => openServerText("options", t("sidebar.serverOptions"))}
         />
         <RailItem
           icon={FolderTree}
-          label="Folder Config"
-          onClick={() => openServerText("folder_config", "Folder Config")}
+          label={t("sidebar.folderConfig")}
+          onClick={() => openServerText("folder_config", t("sidebar.folderConfig"))}
         />
         <RailItem
           icon={Flag}
-          label="Server Flags"
-          onClick={() => openServerText("flags", "Server Flags")}
+          label={t("sidebar.serverFlags")}
+          onClick={() => openServerText("flags", t("sidebar.serverFlags"))}
         />
       </nav>
+      <div className="mt-auto border-t border-border pt-1">
+        <button
+          type="button"
+          onClick={togglePinned}
+          aria-pressed={pinned}
+          title={pinned ? t("sidebar.unpin") : t("sidebar.pin")}
+          aria-label={pinned ? t("sidebar.unpin") : t("sidebar.pin")}
+          className="flex h-11 w-full items-center gap-3 px-3 text-sm font-medium transition-colors hover:bg-accent focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring active:bg-accent"
+        >
+          {pinned ? <PinOff className="size-4 shrink-0" /> : <Pin className="size-4 shrink-0" />}
+          <span className="sidebar-label flex-1 whitespace-nowrap text-left">{pinned ? t("sidebar.unpin") : t("sidebar.pin")}</span>
+        </button>
+      </div>
     </aside>
   )
 }

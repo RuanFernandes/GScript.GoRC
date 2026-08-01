@@ -4,7 +4,7 @@
 // panel, and a chat-color settings dialog. Mirrors the reference client's
 // TRemoteFrame.
 import {useEffect, useRef, useState} from "react"
-import {LogOut, Settings, UserRound} from "lucide-react"
+import {Bell, LogOut, Send, Settings, UserRound} from "lucide-react"
 import {toast} from "sonner"
 
 import {Button} from "@/components/ui/button"
@@ -22,6 +22,8 @@ import {serverDisplay} from "@/lib/server"
 import {formatLogLine} from "@/lib/chatLine"
 import {rcService} from "@/services/rcService"
 import type {AccountSummary, ChatMessage, ChatSettings, NCStatus, Player} from "@/types"
+import {useLanguage} from "@/hooks/useLanguage"
+import {usePrivateMessages} from "@/hooks/usePrivateMessages"
 
 interface RcScreenProps {
   serverName: string
@@ -29,13 +31,13 @@ interface RcScreenProps {
   onDisconnect: () => void
 }
 
-function ncLabel(s: NCStatus, playerCount: number): string {
-  if (!s.hasNc) return "No NC server"
+function ncLabel(s: NCStatus, playerCount: number, t: (key: string, vars?: Record<string, string | number>) => string): string {
+  if (!s.hasNc) return t("rc.noNcServer")
   if (s.authenticated) {
-    return `Connected · ${playerCount} player${playerCount === 1 ? "" : "s"}`
+    return t("rc.connected", {count: playerCount, suffix: playerCount === 1 ? "" : "s"})
   }
-  if (s.connected) return "Connecting"
-  return "NC off"
+  if (s.connected) return t("rc.connecting")
+  return t("rc.ncOff")
 }
 
 // ChatPane is one tab's message log + input. Uses a plain overflow-auto div
@@ -57,6 +59,7 @@ function ChatPane({
   history: ReturnType<typeof useChatInputHistory>
   players: Player[]
 }) {
+  const {t} = useLanguage()
   const [text, setText] = useState("")
   const [ghostOff, setGhostOff] = useState(false)
   const autocomplete = useChatAutocomplete(players)
@@ -101,7 +104,7 @@ function ChatPane({
       <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto rounded-md border p-3">
         <div className="grid gap-1 font-mono text-sm">
           {messages.length === 0 ? (
-            <p className="text-muted-foreground">No messages yet.</p>
+            <p className="text-muted-foreground">{t("rc.noMessages")}</p>
           ) : (
             messages.map((m) => (
               <div key={m.id}>
@@ -130,12 +133,12 @@ function ChatPane({
             return (
               <div
                 role="listbox"
-                aria-label={accountPhase ? "Player suggestions" : "Command suggestions"}
+                aria-label={accountPhase ? t("rc.playerSuggestions") : t("rc.commandSuggestions")}
                 className="bg-popover text-popover-foreground absolute right-0 bottom-full left-0 z-30 mb-2 max-h-64 overflow-y-auto rounded-md border p-1 shadow-lg"
               >
                 <div className="text-muted-foreground flex items-center justify-between px-2 py-1 text-[11px]">
-                  <span>{accountPhase ? "Players" : "Commands"}</span>
-                  <span>Tab to complete</span>
+                  <span>{accountPhase ? t("rc.players") : t("rc.commands")}</span>
+                  <span>{t("rc.tabToComplete")}</span>
                 </div>
                 {options.map((option) => (
                   <button
@@ -152,7 +155,7 @@ function ChatPane({
                     <span>{accountPhase ? option : `/${option}`}</span>
                     {!accountPhase && (
                       <span className="text-muted-foreground ml-3 font-sans text-[10px]">
-                        {option === "open" || option === "openrights" || option === "opencomments" || option === "openaccess" || option === "openacc" || option === "openprofile" || option === "playerinfo" || option === "disconnect" || option === "reset" || option === "staffactivity" ? "player" : "command"}
+                        {option === "open" || option === "openrights" || option === "opencomments" || option === "openaccess" || option === "openacc" || option === "openprofile" || option === "playerinfo" || option === "disconnect" || option === "reset" || option === "staffactivity" ? t("rc.playerType") : t("rc.commandType")}
                       </span>
                     )}
                   </button>
@@ -206,23 +209,25 @@ function ChatPane({
               }
               history.handleKeyDown(e, text, setText)
             }}
-            placeholder="Message or /command · Tab to complete"
+            placeholder={t("rc.messagePlaceholder")}
             autoComplete="off"
           />
         </div>
-        <Button type="submit">Send</Button>
+        <Button type="submit" size="icon" aria-label={t("common.send")} title={t("common.send")}><Send className="size-4" /></Button>
       </form>
     </div>
   )
 }
 
 export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps) {
+  const {t} = useLanguage()
   const {tabs, activeChannel, setActiveChannel, send, reorderTabs} = useChat(rcService)
   const inputHistory = useChatInputHistory()
   const {settings} = useChatSettings()
   const [nc, setNc] = useState<NCStatus>({hasNc: false, connected: false, authenticated: false})
   const [profile, setProfile] = useState<AccountSummary | null>(null)
   const {players} = usePlayers(rcService, true)
+  const {state: pmState} = usePrivateMessages()
   const dragIndex = useRef<number>(-1)
 
   useEffect(() => {
@@ -261,6 +266,24 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
 
   const {label: displayServer} = serverDisplay(serverName)
   const apelido = profile?.displayName || accountName
+  const latestUnread = pmState.conversations.find((conversation) => conversation.unread > 0)
+  const previousUnread = useRef(0)
+  const pmSound = useRef<HTMLAudioElement | null>(null)
+
+  useEffect(() => {
+    if (pmState.unreadTotal > previousUnread.current) {
+      try {
+        const sound = pmSound.current ?? new Audio("/sounds/itemget.wav")
+        pmSound.current = sound
+        sound.volume = 0.75
+        sound.currentTime = 0
+        sound.play().catch(() => {})
+      } catch {
+        // Audio can be unavailable when the app is running without an audio device.
+      }
+    }
+    previousUnread.current = pmState.unreadTotal
+  }, [pmState.unreadTotal])
 
   // Open a server-side text config editor (options/folder_config/flags). These
   // travel on the main socket, not NC, so they're available without script
@@ -301,24 +324,39 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
           <span className="text-sm font-semibold">{apelido}</span>
           <span className="text-muted-foreground text-xs">
             <span className="text-muted-foreground/70">{displayServer ? `${displayServer} · ` : ""}</span>
-            {players.length} player{players.length === 1 ? "" : "s"} online
+            {t("rc.playersOnline", {count: players.length, suffix: players.length === 1 ? "" : "s"})}
           </span>
         </div>
         <div className="ml-auto flex items-center gap-2">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="relative"
+            title={pmState.unreadTotal > 0 ? `${pmState.unreadTotal} unread private message${pmState.unreadTotal === 1 ? "" : "s"}` : "Private messages"}
+            aria-label="Private messages"
+            onClick={() => latestUnread && rcService.openPlayerListPM(latestUnread.playerId)}
+          >
+            <Bell className="size-4" />
+            {pmState.unreadTotal > 0 && (
+              <span className="bg-destructive text-destructive-foreground absolute -top-0.5 -right-0.5 min-w-4 rounded-full px-1 text-[10px] leading-4">
+                {pmState.unreadTotal > 99 ? "99+" : pmState.unreadTotal}
+              </span>
+            )}
+          </Button>
           <Button variant="ghost" size="sm" onClick={() => rcService.openSettings()}>
             <Settings />
-            Settings
+            {t("rc.settings")}
           </Button>
           <Button variant="ghost" size="sm" onClick={onDisconnect}>
             <LogOut />
-            Disconnect
+            {t("rc.disconnect")}
           </Button>
         </div>
       </header>
 
       <div className="flex min-h-0 flex-1">
         <RcSidebar
-          ncLabel={ncLabel(nc, players.length)}
+          ncLabel={ncLabel(nc, players.length, t)}
           ncConnected={nc.connected && nc.authenticated}
           openServerText={openServerText}
         />

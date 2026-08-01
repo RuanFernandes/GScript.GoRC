@@ -18,6 +18,7 @@ import {Input} from "@/components/ui/input"
 import {Label} from "@/components/ui/label"
 import {ScrollArea} from "@/components/ui/scroll-area"
 import type {AccountSummary} from "@/types"
+import {useLanguage} from "@/hooks/useLanguage"
 
 interface AccountSelectScreenProps {
   accounts: AccountSummary[]
@@ -65,6 +66,7 @@ export function AccountSelectScreen({
   nickname,
   onNicknameChange,
 }: AccountSelectScreenProps) {
+  const {t} = useLanguage()
   const [renaming, setRenaming] = useState<string | null>(null)
   const [display, setDisplay] = useState("")
   const fileRef = useRef<HTMLInputElement>(null)
@@ -107,16 +109,16 @@ export function AccountSelectScreen({
       <Card className="w-full max-w-sm">
         <CardHeader>
           <CardTitle className="text-xl">Graal Remote Control</CardTitle>
-          <CardDescription>Select an account to sign in.</CardDescription>
+          <CardDescription>{t("login.selectAccount")}</CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4">
           <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={onFile} />
 
           <div className="grid gap-2">
-            <Label htmlFor="session-nickname">Session nickname</Label>
+            <Label htmlFor="session-nickname">{t("login.sessionNickname")}</Label>
             <Input
               id="session-nickname"
-              placeholder="The nickname used in-game"
+              placeholder={t("login.nicknamePlaceholder")}
               required
               autoComplete="nickname"
               value={nickname}
@@ -124,7 +126,7 @@ export function AccountSelectScreen({
             />
             <div className="text-muted-foreground flex items-start gap-2 text-xs">
               <Info className="mt-0.5 size-3.5 shrink-0" />
-              <span>This nickname is used for every account you log in with during this session.</span>
+              <span>{t("login.nicknameHelp")}</span>
             </div>
           </div>
 
@@ -135,7 +137,7 @@ export function AccountSelectScreen({
           ) : accounts.length === 0 ? (
             <div className="flex flex-col items-center gap-3 py-6 text-center">
               <UserRound className="text-muted-foreground" />
-              <p className="text-sm text-muted-foreground">No saved accounts.</p>
+              <p className="text-sm text-muted-foreground">{t("login.noAccounts")}</p>
             </div>
           ) : (
             <ScrollArea className="max-h-72">
@@ -164,7 +166,7 @@ export function AccountSelectScreen({
                       size="icon"
                       className="h-8 w-8 text-muted-foreground"
                       disabled={busy}
-                      aria-label={`Photo for ${account.account}`}
+                      aria-label={t("login.photoFor", {name: account.account})}
                       onClick={() => pickPhoto(account)}
                     >
                       <ImagePlus />
@@ -174,7 +176,7 @@ export function AccountSelectScreen({
                       size="icon"
                       className="h-8 w-8 text-muted-foreground"
                       disabled={busy}
-                      aria-label={`Rename ${account.account}`}
+                      aria-label={t("login.renameFor", {name: account.account})}
                       onClick={() => startRename(account)}
                     >
                       <Pencil />
@@ -184,7 +186,7 @@ export function AccountSelectScreen({
                       size="icon"
                       className="h-8 w-8 text-muted-foreground"
                       disabled={busy}
-                      aria-label={`Remove ${account.account}`}
+                      aria-label={t("login.removeFor", {name: account.account})}
                       onClick={() => onRemove(account.account)}
                     >
                       <Trash2 />
@@ -197,7 +199,7 @@ export function AccountSelectScreen({
 
           <Button type="button" className="w-full" onClick={onAdd} disabled={busy}>
             <Plus />
-            Add Account
+            {t("login.add")}
           </Button>
         </CardContent>
       </Card>
@@ -205,14 +207,13 @@ export function AccountSelectScreen({
       <AlertDialog open={renaming !== null} onOpenChange={(v) => !v && setRenaming(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Rename account</AlertDialogTitle>
+            <AlertDialogTitle>{t("login.rename")}</AlertDialogTitle>
             <AlertDialogDescription>
-              A client-only label shown in the account list and RC header. It does not change your
-              the account nickname or username.
+              {t("login.renameDescription")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="grid gap-2">
-            <Label htmlFor="display-name">Display name</Label>
+            <Label htmlFor="display-name">{t("login.displayName")}</Label>
             <Input
               id="display-name"
               value={display}
@@ -226,9 +227,9 @@ export function AccountSelectScreen({
 
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setRenaming(null)}>
-              Cancel
+              {t("common.cancel")}
             </Button>
-            <Button onClick={confirmRename}>Save</Button>
+            <Button onClick={confirmRename}>{t("common.save")}</Button>
           </div>
         </AlertDialogContent>
       </AlertDialog>

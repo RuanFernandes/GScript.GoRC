@@ -14,6 +14,7 @@ import {Button} from "@/components/ui/button"
 import {useCodingSettings} from "@/hooks/useCodingSettings"
 import {ensureTheme} from "@/lib/monacoThemes"
 import {rcService} from "@/services/rcService"
+import {useLanguage} from "@/hooks/useLanguage"
 
 interface MonacoInstance {
   KeyMod: {CtrlCmd: number}
@@ -36,6 +37,7 @@ function parsePath(): string {
 const KIND = "textfile"
 
 export function TextEditorWindowScreen() {
+  const {t} = useLanguage()
   const remotePath = useRef(parsePath()).current
   const {settings} = useCodingSettings()
   const [content, setContent] = useState("")
@@ -102,13 +104,13 @@ export function TextEditorWindowScreen() {
       await rcService.saveTextFile(remotePath, text)
       setOriginal(text)
       setDirty(false)
-      toast.success("Saved")
+      toast.success(t("editor.saved"))
     } catch (err) {
-      toast.error("Save failed", {description: String(err)})
+      toast.error(t("editor.saveFailed"), {description: String(err)})
     } finally {
       setSaving(false)
     }
-  }, [remotePath])
+  }, [remotePath, t])
 
   const handleMount: OnMount = useCallback(
     (editor, monaco) => {
@@ -149,12 +151,12 @@ export function TextEditorWindowScreen() {
   return (
     <div className="bg-background flex h-svh flex-col">
       <header className="flex items-center gap-2 border-b px-4 py-2">
-        <h1 className="text-sm font-semibold">{baseName || "Text file"}</h1>
+        <h1 className="text-sm font-semibold">{baseName || t("editor.textFile")}</h1>
         {dirty && <span className="text-xs text-amber-500">• unsaved</span>}
         {saving && <Loader2 className="size-3.5 animate-spin text-muted-foreground" />}
         <div className="ml-auto">
           <Button size="sm" onClick={doSave} disabled={!dirty || saving}>
-            Save
+            {t("common.save")}
           </Button>
         </div>
       </header>
@@ -165,7 +167,7 @@ export function TextEditorWindowScreen() {
           </div>
         ) : loadError ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-muted-foreground">
-            <p className="font-medium text-destructive">Couldn&apos;t open file</p>
+            <p className="font-medium text-destructive">{t("editor.couldNotOpen")}</p>
             <p className="max-w-md">{loadError}</p>
           </div>
         ) : (
@@ -194,19 +196,19 @@ export function TextEditorWindowScreen() {
       <AlertDialog open={confirmClose} onOpenChange={(v) => !v && setConfirmClose(false)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Save before closing?</AlertDialogTitle>
+            <AlertDialogTitle>{t("editor.saveBeforeClosing")}</AlertDialogTitle>
             <AlertDialogDescription>
               This file has unsaved changes. Save them before the window closes, or discard them.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setConfirmClose(false)}>
-              Cancel
+              {t("common.cancel")}
             </Button>
             <Button variant="destructive" onClick={discardAndClose}>
-              Discard
+              {t("editor.closeWithoutSaving")}
             </Button>
-            <Button onClick={saveAndClose}>Save</Button>
+            <Button onClick={saveAndClose}>{t("common.save")}</Button>
           </div>
         </AlertDialogContent>
       </AlertDialog>

@@ -1,7 +1,7 @@
 package sync
 
 import (
-	"crypto/sha256"
+	"crypto/md5"
 	"encoding/hex"
 	"strings"
 )
@@ -10,9 +10,8 @@ import (
 // CRLF while editors save LF; without normalization the two read as different
 // and trigger phantom conflicts.
 func normalizeEOL(s string) string {
-	if !strings.ContainsRune(s, '\r') {
-		return s
-	}
+	// § is the wire representation used by the NC protocol for line breaks.
+	s = strings.ReplaceAll(s, "\xA7", "\n")
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	s = strings.ReplaceAll(s, "\r", "\n")
 	return s
@@ -22,6 +21,6 @@ func normalizeEOL(s string) string {
 // Short (16 chars) is plenty — this only needs to detect changes, not resist
 // collision attacks, and a short digest keeps the manifest compact.
 func HashScript(content string) string {
-	sum := sha256.Sum256([]byte(normalizeEOL(content)))
-	return hex.EncodeToString(sum[:])[:16]
+	sum := md5.Sum([]byte(normalizeEOL(content)))
+	return hex.EncodeToString(sum[:])
 }

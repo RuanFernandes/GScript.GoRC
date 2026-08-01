@@ -7,6 +7,7 @@ import {Card, CardContent, CardHeader, CardTitle} from "@/components/ui/card"
 import {Separator} from "@/components/ui/separator"
 import {serverDisplay, tierBadge} from "@/lib/server"
 import type {Server} from "@/types"
+import {useLanguage} from "@/hooks/useLanguage"
 
 interface ServerDetailsProps {
   server: Server | null
@@ -16,11 +17,12 @@ interface ServerDetailsProps {
 }
 
 export function ServerDetails({server, busy, onConnect, onOpenHomepage}: ServerDetailsProps) {
+  const {t} = useLanguage()
   if (!server) {
     return (
       <Card className="h-full">
         <CardContent className="text-muted-foreground flex h-full items-center justify-center py-10 text-sm">
-          Select a server to see its details.
+          {t("server.selectDetails")}
         </CardContent>
       </Card>
     )
@@ -39,13 +41,13 @@ export function ServerDetails({server, busy, onConnect, onOpenHomepage}: ServerD
       </CardHeader>
       <CardContent className="grid gap-4 text-sm">
         <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2">
-          <dt className="text-muted-foreground">Language</dt>
+          <dt className="text-muted-foreground">{t("server.language")}</dt>
           <dd>{server.language || "—"}</dd>
-          <dt className="text-muted-foreground">Version</dt>
+          <dt className="text-muted-foreground">{t("server.version")}</dt>
           <dd>{server.version || "—"}</dd>
-          <dt className="text-muted-foreground">Players</dt>
+          <dt className="text-muted-foreground">{t("server.players")}</dt>
           <dd className="tabular-nums">{server.players}</dd>
-          <dt className="text-muted-foreground">Homepage</dt>
+          <dt className="text-muted-foreground">{t("server.homepage")}</dt>
           <dd className="flex items-center gap-2">
             <span className="truncate">{server.homepage || "—"}</span>
             {server.homepage && (
@@ -57,11 +59,11 @@ export function ServerDetails({server, busy, onConnect, onOpenHomepage}: ServerD
         </dl>
         <Separator />
         <div>
-          <p className="text-muted-foreground mb-1">Description</p>
-          <p className="whitespace-pre-wrap break-words">{server.description || "No description provided."}</p>
+          <p className="text-muted-foreground mb-1">{t("server.description")}</p>
+          <p className="whitespace-pre-wrap break-words">{server.description || t("common.noDescription")}</p>
         </div>
         <Button onClick={onConnect} disabled={busy}>
-          Connect
+          {t("server.connect")}
         </Button>
       </CardContent>
     </Card>

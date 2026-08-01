@@ -28,6 +28,8 @@ import type {
   SyncConfig,
   SyncStatus,
   SyncScriptPair,
+  PMState,
+  CustomTheme,
 } from "@/types"
 
 // The v3 bindings resolve to null on the "no result" path and reject on error;
@@ -54,6 +56,9 @@ export interface RcService {
   getPlayers(): Promise<Player[] | null>
   // Private + admin messaging (main server socket).
   sendPrivateMessage(playerID: number, message: string): Promise<void>
+  getPMState(): Promise<PMState>
+  markPMRead(playerID: number): Promise<void>
+  recordOutgoingPM(playerID: number, account: string, nick: string, message: string): Promise<void>
   sendMassPM(playerIDs: number[], message: string): Promise<void>
   sendAdminMessage(playerID: number, message: string): Promise<void>
   sendAdminMessageAll(message: string): Promise<void>
@@ -82,6 +87,7 @@ export interface RcService {
   appendPmLog(otherAccount: string, line: string): Promise<void>
   chooseDirectory(): Promise<string>
   openPlayerList(): Promise<void>
+  openPlayerListPM(playerID: number): Promise<void>
   // Script management (NC server).
   getWeapons(): Promise<Weapon[] | null>
   getClasses(): Promise<Class[] | null>
@@ -112,6 +118,11 @@ export interface RcService {
   listFonts(): Promise<string[] | null>
   getCodingSettings(): Promise<CodingSettings>
   setCodingSettings(theme: string, fontFamily: string, fontSize: number): Promise<void>
+  getCustomThemes(): Promise<CustomTheme[] | null>
+  saveCustomTheme(theme: CustomTheme): Promise<void>
+  deleteCustomTheme(key: string): Promise<void>
+  getLanguage(): Promise<string>
+  setLanguage(language: string): Promise<void>
   getRemoteTheme(): Promise<RemoteTheme | null>
   saveRemoteTheme(name: string, definition: string): Promise<void>
   openSettings(): Promise<void>
@@ -153,7 +164,7 @@ export interface RcService {
   syncNow(): Promise<void>
   getSyncStatus(): Promise<SyncStatus>
   getSyncScriptPair(kind: string, key: string): Promise<SyncScriptPair>
-  resolveConflict(kind: string, key: string, choice: "local" | "server"): Promise<void>
+  resolveConflict(kind: string, key: string, choice: "local" | "server" | "merge", mergeContent?: string): Promise<void>
   pauseSync(): Promise<void>
   resumeSync(): Promise<void>
   openSyncReview(): Promise<void>
@@ -182,6 +193,25 @@ export const rcService: RcService = {
   getPlayers: () => App.GetPlayers(),
   // Private + admin messaging (main server socket).
   sendPrivateMessage: (playerID, message) => App.SendPrivateMessage(playerID, message),
+  getPMState: async () => {
+    const state = await App.GetPMState()
+    return {
+      conversations: (state?.conversations ?? []).map((conversation) => ({
+        playerId: conversation.playerId,
+        account: conversation.account,
+        nick: conversation.nick,
+        unread: conversation.unread,
+        lines: (conversation.lines ?? []).map((line) => ({
+          direction: line.direction as "in" | "out",
+          text: line.text,
+          timestamp: line.timestamp,
+        })),
+      })),
+      unreadTotal: state?.unreadTotal ?? 0,
+    }
+  },
+  markPMRead: (playerID) => App.MarkPMRead(playerID),
+  recordOutgoingPM: (playerID, account, nick, message) => App.RecordOutgoingPM(playerID, account, nick, message),
   sendMassPM: (playerIDs, message) => App.SendMassPM(playerIDs, message),
   sendAdminMessage: (playerID, message) => App.SendAdminMessage(playerID, message),
   sendAdminMessageAll: (message) => App.SendAdminMessageAll(message),
@@ -211,6 +241,7 @@ export const rcService: RcService = {
   appendPmLog: (otherAccount, line) => App.AppendPmLog(otherAccount, line),
   chooseDirectory: () => App.ChooseDirectory(),
   openPlayerList: () => App.OpenPlayerList(),
+  openPlayerListPM: (playerID) => App.OpenPlayerListPM(playerID),
   // Script management (NC server).
   getWeapons: () => App.GetWeapons(),
   getClasses: () => App.GetClasses(),
@@ -241,6 +272,11 @@ export const rcService: RcService = {
   listFonts: () => App.ListFonts(),
   getCodingSettings: () => App.GetCodingSettings(),
   setCodingSettings: (theme, fontFamily, fontSize) => App.SetCodingSettings(theme, fontFamily, fontSize),
+  getCustomThemes: () => App.GetCustomThemes(),
+  saveCustomTheme: (theme) => App.SaveCustomTheme(theme),
+  deleteCustomTheme: (key) => App.DeleteCustomTheme(key),
+  getLanguage: () => App.GetLanguage(),
+  setLanguage: (language) => App.SetLanguage(language),
   getRemoteTheme: () => App.GetRemoteTheme(),
   saveRemoteTheme: (name, definition) => App.SaveRemoteTheme(name, definition),
   openSettings: () => App.OpenSettings(),
@@ -277,7 +313,7 @@ export const rcService: RcService = {
   syncNow: () => App.SyncNow(),
   getSyncStatus: () => App.GetSyncStatus(),
   getSyncScriptPair: (kind, key) => App.GetSyncScriptPair(kind, key),
-  resolveConflict: (kind, key, choice) => App.ResolveConflict(kind, key, choice),
+  resolveConflict: (kind, key, choice, mergeContent = "") => App.ResolveConflict(kind, key, choice, mergeContent),
   pauseSync: () => App.PauseSync(),
   resumeSync: () => App.ResumeSync(),
   openSyncReview: () => App.OpenSyncReview(),

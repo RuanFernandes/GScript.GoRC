@@ -20,6 +20,8 @@ const EMPTY_STATUS: SyncStatus = {
   lastSyncAt: 0,
   reviewCount: 0,
   items: [],
+  progress: {active: false, phase: "", current: "", completed: 0, total: 0},
+  nextSyncAt: 0,
 }
 
 const DEFAULT_CONFIG: SyncConfig = {
@@ -37,7 +39,7 @@ export interface UseSyncResult {
   loaded: boolean
   saveConfig: (patch: Partial<SyncConfig>) => void
   syncNow: () => Promise<void>
-  resolveConflict: (kind: string, key: string, choice: "local" | "server") => Promise<void>
+  resolveConflict: (kind: string, key: string, choice: "local" | "server" | "merge", mergeContent?: string) => Promise<void>
   pause: () => Promise<void>
   resume: () => Promise<void>
 }
@@ -87,7 +89,9 @@ export function useSync(): UseSyncResult {
       }
       if (item) {
         toast.info(`Sync conflict: ${item.name}`, {
-          description: `Both sides changed — review needed.`,
+          description: item.actor
+            ? `${item.actor} changed this script while it was open here. Merge required.`
+            : `The server changed this script while it was open here. Merge required.`,
           action: {
             label: "Review",
             onClick: () => rcService.openSyncReview(),
@@ -146,9 +150,9 @@ export function useSync(): UseSyncResult {
   }, [])
 
   const resolveConflict = useCallback(
-    async (kind: string, key: string, choice: "local" | "server") => {
+    async (kind: string, key: string, choice: "local" | "server" | "merge", mergeContent?: string) => {
       try {
-        await rcService.resolveConflict(kind, key, choice)
+        await rcService.resolveConflict(kind, key, choice, mergeContent)
         toast.success("Resolved")
       } catch (err) {
         toast.error("Resolve failed: " + String(err))

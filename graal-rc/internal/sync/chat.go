@@ -1,6 +1,9 @@
 package sync
 
-import "regexp"
+import (
+	"regexp"
+	"strings"
+)
 
 // Activity is a parsed server-side script event from an RC chat line.
 type Activity struct {
@@ -21,7 +24,7 @@ type Activity struct {
 //	"NPC DenNob has been added by Repinho"
 //	"Script hehedenvnob deleted by Repinho"
 var (
-	reWeapon    = regexp.MustCompile(`(?i)^Weapon/GUI-script\s+(.+?)\s+(added|updated)\s+by\s+(.+)$`)
+	reWeapon    = regexp.MustCompile(`(?i)^Weapon/GUI-script\s+(.+?)\s+(added/updated|added|updated)\s+by\s+(.+)$`)
 	reClass     = regexp.MustCompile(`(?i)^Script\s+(.+?)\s+updated\s+by\s+(.+)$`)
 	reNPCUpdate = regexp.MustCompile(`(?i)^The script of NPC\s+(.+?)\s+has been updated\s+by\s+(.+)$`)
 	reNPCAdd    = regexp.MustCompile(`(?i)^NPC\s+(.+?)\s+has been added\s+by\s+(.+)$`)
@@ -31,8 +34,15 @@ var (
 // ParseChatLine extracts a script Activity from an RC chat line. ok is false if
 // the line is not a recognized script-activity message.
 func ParseChatLine(line string) (Activity, bool) {
+	line = strings.TrimSpace(line)
+	if marker := strings.Index(line, "[RC]"); marker >= 0 {
+		line = strings.TrimSpace(line[marker+len("[RC]"):])
+	}
 	if m := reWeapon.FindStringSubmatch(line); m != nil {
 		name, action, actor := m[1], m[2], m[3]
+		if strings.Contains(action, "/") {
+			action = "updated"
+		}
 		return Activity{Kind: "weapon", Key: name, Name: name, Actor: actor, Action: action}, true
 	}
 	if m := reNPCUpdate.FindStringSubmatch(line); m != nil {
