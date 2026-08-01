@@ -36,6 +36,7 @@ func main() {
 		Title:            "Graal Remote Control",
 		Width:            1024,
 		Height:           768,
+		Frameless:        true,
 		BackgroundColour: application.NewRGB(15, 17, 21),
 		URL:              "/",
 	})

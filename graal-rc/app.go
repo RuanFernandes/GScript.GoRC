@@ -545,6 +545,7 @@ func (a *App) openPlayerWindow(kind, label, account string, width, height int) e
 		URL:              "/#" + kind + "?a=" + url.QueryEscape(account),
 		Width:            width,
 		Height:           height,
+		Frameless:        true,
 		BackgroundColour: application.NewRGB(15, 17, 21),
 	})
 	a.playerWindowMu.Lock()
@@ -960,6 +961,7 @@ func (a *App) openTextWindow(remotePath string) error {
 		URL:              "/#textfile?p=" + url.QueryEscape(remotePath),
 		Width:            820,
 		Height:           620,
+		Frameless:        true,
 		BackgroundColour: application.NewRGB(15, 17, 21),
 	})
 	a.editorMu.Lock()
@@ -1161,6 +1163,7 @@ func (a *App) openSqliteWindow(remotePath string) error {
 		URL:              "/#sqlite?p=" + url.QueryEscape(remotePath),
 		Width:            960,
 		Height:           640,
+		Frameless:        true,
 		BackgroundColour: application.NewRGB(15, 17, 21),
 	})
 	a.openMu.Lock()
@@ -1352,6 +1355,7 @@ func (a *App) OpenPlayerList() {
 		URL:              "/#players",
 		Width:            560,
 		Height:           520,
+		Frameless:        true,
 		BackgroundColour: application.NewRGB(15, 17, 21),
 	})
 	a.playerListWindow = w
@@ -1380,6 +1384,7 @@ func (a *App) OpenScriptManager() {
 		URL:              "/#scripts",
 		Width:            720,
 		Height:           560,
+		Frameless:        true,
 		BackgroundColour: application.NewRGB(15, 17, 21),
 	})
 	a.scriptMgrWindow = w
@@ -1437,6 +1442,7 @@ func (a *App) OpenFileBrowser() {
 		URL:              "/#files",
 		Width:            920,
 		Height:           600,
+		Frameless:        true,
 		BackgroundColour: application.NewRGB(15, 17, 21),
 	})
 	a.fileBrowserWindow = w
@@ -1532,6 +1538,7 @@ func (a *App) OpenScriptEditor(scriptType, key string) error {
 		URL:              "/#editor?t=" + scriptType + "&k=" + url.QueryEscape(key),
 		Width:            820,
 		Height:           620,
+		Frameless:        true,
 		BackgroundColour: application.NewRGB(15, 17, 21),
 	})
 	a.editorMu.Lock()

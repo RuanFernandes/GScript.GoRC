@@ -7,6 +7,7 @@ import {toast} from "sonner"
 import {Events} from "@wailsio/runtime"
 
 import {ConfirmDialog} from "@/components/ConfirmDialog"
+import {AppWindowFrame} from "@/components/AppWindowFrame"
 import {rcService} from "@/services/rcService"
 import {useAccounts} from "@/hooks/useAccounts"
 import {useSession} from "@/hooks/useSession"
@@ -34,6 +35,8 @@ type PendingConfirm =
   | {kind: "delete"; account: string}
   | null
 
+const NICKNAME_STORAGE_KEY = "graal-rc:sessionNickname"
+
 // Shell is the main window's orchestrator (select/add/serverlist/rc). The
 // external player-list window renders its own screen via the App router below.
 function Shell() {
@@ -42,7 +45,14 @@ function Shell() {
   const [view, setView] = useState<AppView>("select")
   const [pending, setPending] = useState<PendingConfirm>(null)
   const [confirmBusy, setConfirmBusy] = useState(false)
-  const [sessionNickname, setSessionNickname] = useState("")
+  const [sessionNickname, setSessionNickname] = useState(() => {
+    if (typeof window === "undefined") return ""
+    return window.localStorage.getItem(NICKNAME_STORAGE_KEY) ?? ""
+  })
+
+  useEffect(() => {
+    window.localStorage.setItem(NICKNAME_STORAGE_KEY, sessionNickname)
+  }, [sessionNickname])
   const returningToLogin = useRef(false)
 
   const handleAddAccount = async (req: LoginRequest): Promise<boolean> => {
@@ -255,21 +265,34 @@ function Shell() {
 function App() {
   if (typeof window === "undefined") return <Shell />
   const hash = window.location.hash
-  if (hash.startsWith("#players")) return <PlayerListWindowScreen />
-  if (hash.startsWith("#rights")) return <RightsWindowScreen />
-  if (hash.startsWith("#attrs")) return <AttrsWindowScreen />
-  if (hash.startsWith("#banhistory")) return <PlayerTextRecordWindowScreen />
-  if (hash.startsWith("#staffactivity")) return <PlayerTextRecordWindowScreen />
-  if (hash.startsWith("#ban")) return <BanWindowScreen />
-  if (hash.startsWith("#comments")) return <CommentsWindowScreen />
-  if (hash.startsWith("#files")) return <FileBrowserWindowScreen />
-  if (hash.startsWith("#scripts")) return <ScriptManagerWindowScreen />
-  if (hash.startsWith("#settings")) return <SettingsWindowScreen />
-  if (hash.startsWith("#sync")) return <SyncReviewWindowScreen />
-  if (hash.startsWith("#editor")) return <ScriptEditorWindowScreen />
-  if (hash.startsWith("#textfile")) return <TextEditorWindowScreen />
-  if (hash.startsWith("#sqlite")) return <SqliteExplorerWindowScreen />
-  return <Shell />
+  const route = hash.startsWith("#players")
+    ? {title: "Player List", content: <PlayerListWindowScreen />}
+    : hash.startsWith("#rights")
+      ? {title: "Rights", content: <RightsWindowScreen />}
+      : hash.startsWith("#attrs")
+        ? {title: "Attributes", content: <AttrsWindowScreen />}
+        : hash.startsWith("#banhistory") || hash.startsWith("#staffactivity")
+          ? {title: "Player Records", content: <PlayerTextRecordWindowScreen />}
+          : hash.startsWith("#ban")
+            ? {title: "Access", content: <BanWindowScreen />}
+            : hash.startsWith("#comments")
+              ? {title: "Comments", content: <CommentsWindowScreen />}
+              : hash.startsWith("#files")
+                ? {title: "File Browser", content: <FileBrowserWindowScreen />}
+                : hash.startsWith("#scripts")
+                  ? {title: "Script Manager", content: <ScriptManagerWindowScreen />}
+                  : hash.startsWith("#settings")
+                    ? {title: "Settings", content: <SettingsWindowScreen />}
+                    : hash.startsWith("#sync")
+                      ? {title: "Sync Review", content: <SyncReviewWindowScreen />}
+                      : hash.startsWith("#editor")
+                        ? {title: "Script Editor", content: <ScriptEditorWindowScreen />}
+                        : hash.startsWith("#textfile")
+                          ? {title: "Text Editor", content: <TextEditorWindowScreen />}
+                          : hash.startsWith("#sqlite")
+                            ? {title: "SQLite Explorer", content: <SqliteExplorerWindowScreen />}
+                            : {title: "Graal Remote Control", content: <Shell />}
+  return <AppWindowFrame title={route.title}>{route.content}</AppWindowFrame>
 }
 
 export default App

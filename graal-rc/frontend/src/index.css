@@ -156,6 +156,12 @@
   background: transparent;
 }
 
+/* The custom Wails frame owns the top 3rem of every application window. */
+.app-window-content > * {
+  height: 100% !important;
+  min-height: 0 !important;
+}
+
 /* Expandable sidebar rail labels: clipped when collapsed, fade in on hover
    after the rail width transition starts. Pure CSS, no JS. */
 .sidebar-label {

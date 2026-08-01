@@ -3,8 +3,8 @@
 // font family, font size) and Chat (the existing color/log settings via
 // ChatSettingsFields). Both persist to localStorage.
 import {useCallback, useEffect, useState} from "react"
-import {Events, Window} from "@wailsio/runtime"
-import {Code2, Copy, FolderDown, MessageSquareText, Minus, Settings2, X} from "lucide-react"
+import {Events} from "@wailsio/runtime"
+import {Code2, FolderDown, MessageSquareText} from "lucide-react"
 
 import {Button} from "@/components/ui/button"
 import {Input} from "@/components/ui/input"
@@ -23,7 +23,6 @@ export function SettingsWindowScreen() {
 
   return (
     <div className="bg-background flex h-svh flex-col">
-      <WindowFrame />
       <Tabs defaultValue="coding" orientation="vertical" className="flex min-h-0 flex-1 flex-row gap-0">
         <TabsList aria-label="Settings sections" className="h-auto w-44 shrink-0 flex-col items-stretch justify-start gap-1 rounded-none border-b-0 border-r bg-muted/20 p-3">
           <TabsTrigger value="coding" className="justify-start border-b-0 border-l-2 border-transparent px-3 data-[state=active]:border-primary data-[state=active]:bg-accent">
@@ -337,70 +336,6 @@ function ChatSection({
         <Button variant="ghost" onClick={onReset}>Reset defaults</Button>
       </div>
     </div>
-  )
-}
-
-function WindowFrame() {
-  const [maximised, setMaximised] = useState(false)
-
-  useEffect(() => {
-    Window.IsMaximised().then(setMaximised).catch(() => {})
-  }, [])
-
-  const toggleMaximise = async () => {
-    await Window.ToggleMaximise()
-    setMaximised((value) => !value)
-  }
-
-  const controlStyle = {"--wails-draggable": "no-drag"} as React.CSSProperties
-
-  return (
-    <header
-      className="bg-card/30 flex h-12 shrink-0 items-center border-b pl-4 select-none"
-      style={{"--wails-draggable": "drag"} as React.CSSProperties}
-    >
-      <div className="flex min-w-0 items-center gap-2.5">
-        <div className="bg-primary text-primary-foreground flex size-7 items-center justify-center rounded-md">
-          <Settings2 className="size-3.5" />
-        </div>
-        <div className="min-w-0">
-          <h1 className="truncate text-sm font-semibold tracking-tight">Settings</h1>
-          <p className="text-muted-foreground truncate text-[11px]">Workspace preferences</p>
-        </div>
-      </div>
-      <div className="ml-auto flex h-full items-stretch" style={controlStyle}>
-        <button
-          type="button"
-          aria-label="Minimize window"
-          title="Minimize"
-          style={controlStyle}
-          onClick={() => Window.Minimise()}
-          className="text-muted-foreground hover:bg-accent hover:text-foreground flex w-11 items-center justify-center transition-colors"
-        >
-          <Minus className="size-4" />
-        </button>
-        <button
-          type="button"
-          aria-label={maximised ? "Restore window" : "Maximize window"}
-          title={maximised ? "Restore" : "Maximize"}
-          style={controlStyle}
-          onClick={toggleMaximise}
-          className="text-muted-foreground hover:bg-accent hover:text-foreground flex w-11 items-center justify-center transition-colors"
-        >
-          {maximised ? <Copy className="size-3.5" /> : <span className="border-current size-3 border" />}
-        </button>
-        <button
-          type="button"
-          aria-label="Close window"
-          title="Close"
-          style={controlStyle}
-          onClick={() => Window.Close()}
-          className="text-muted-foreground hover:bg-destructive hover:text-destructive-foreground flex w-11 items-center justify-center transition-colors"
-        >
-          <X className="size-4" />
-        </button>
-      </div>
-    </header>
   )
 }
 
