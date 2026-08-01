@@ -31,7 +31,7 @@ export function LoginForm({busy = false, defaultValues, onLogin}: LoginFormProps
         <Label htmlFor="profile-name">Profile name</Label>
         <Input
           id="profile-name"
-          placeholder="Preagonal: (for Reborn)"
+          placeholder="Account profile name"
           value={profileName}
           autoComplete="organization"
           onChange={(e) => setProfileName(e.target.value)}
