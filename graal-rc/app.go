@@ -221,9 +221,10 @@ func migrateLegacyCredentials(vault *credentials.Vault) {
 
 // LoginRequest is the payload sent from the Add Account screen.
 type LoginRequest struct {
-	Nickname string `json:"nickname"`
-	Account  string `json:"account"`
-	Password string `json:"password"`
+	ProfileName string `json:"profileName"`
+	Nickname    string `json:"nickname"`
+	Account     string `json:"account"`
+	Password    string `json:"password"`
 }
 
 // AccountSummary is the password-less account projection exposed to the
@@ -238,31 +239,35 @@ const PreagonalListserverHost = "listserver.graal.in"
 // preagonalPrefix marks a nickname as routing to the alternate listserver.
 const preagonalPrefix = "Preagonal:"
 
-// listserverForName returns the listserver endpoint for a nickname. A nickname
+// listserverForProfile returns the listserver endpoint for a profile name. A profile name
 // prefixed "Preagonal:" selects the alternate endpoint; everything else uses the
 // default Graal listserver. The prefix is a hidden, client-only routing key.
-func listserverForName(name string) (host string, port int) {
-	if strings.HasPrefix(name, preagonalPrefix) {
+func listserverForProfile(profileName string) (host string, port int) {
+	if strings.HasPrefix(strings.TrimSpace(profileName), preagonalPrefix) {
 		return PreagonalListserverHost, rclib.DefaultListserverPort
 	}
 	return rclib.DefaultListserverHost, rclib.DefaultListserverPort
 }
 
-// nicknameForServer strips the routing prefix so only the real nickname is sent
-// to the server (the prefix is a client-side listserver selector, not part of
-// the in-game nick).
-func nicknameForServer(name string) string {
-	return strings.TrimPrefix(name, preagonalPrefix)
+// legacyAccountValues separates the old routing prefix from the nickname for
+// accounts created before ProfileName was added.
+func legacyAccountValues(profileName, nickname string) (string, string) {
+	if strings.TrimSpace(profileName) == "" && strings.HasPrefix(nickname, preagonalPrefix) {
+		return preagonalPrefix, strings.TrimPrefix(nickname, preagonalPrefix)
+	}
+	return profileName, nickname
 }
 
 func toCreds(req LoginRequest) connection.Credentials {
-	host, port := listserverForName(req.Nickname)
-	return connection.Credentials{Nickname: nicknameForServer(req.Nickname), Account: req.Account, Password: req.Password, Host: host, Port: port}
+	profileName, nickname := legacyAccountValues(req.ProfileName, req.Nickname)
+	host, port := listserverForProfile(profileName)
+	return connection.Credentials{Nickname: nickname, Account: req.Account, Password: req.Password, Host: host, Port: port}
 }
 
 func accountToCreds(a credentials.Account) connection.Credentials {
-	host, port := listserverForName(a.Nickname)
-	return connection.Credentials{Nickname: nicknameForServer(a.Nickname), Account: a.Account, Password: a.Password, Host: host, Port: port}
+	profileName, nickname := legacyAccountValues(a.ProfileName, a.Nickname)
+	host, port := listserverForProfile(profileName)
+	return connection.Credentials{Nickname: nickname, Account: a.Account, Password: a.Password, Host: host, Port: port}
 }
 
 // ListAccounts returns the saved accounts without passwords.
@@ -301,9 +306,10 @@ func (a *App) AddAccount(req LoginRequest) ([]rclib.Server, error) {
 	}
 	if a.vault != nil {
 		if saveErr := a.vault.Add(credentials.Account{
-			Nickname: req.Nickname,
-			Account:  req.Account,
-			Password: req.Password,
+			ProfileName: req.ProfileName,
+			Nickname:    req.Nickname,
+			Account:     req.Account,
+			Password:    req.Password,
 		}); saveErr != nil {
 			log.Printf("save account: %v", saveErr)
 		}

@@ -15,17 +15,31 @@ interface LoginFormProps {
 }
 
 export function LoginForm({busy = false, defaultValues, onLogin}: LoginFormProps) {
+  const [profileName, setProfileName] = useState(defaultValues?.profileName ?? "")
   const [nickname, setNickname] = useState(defaultValues?.nickname ?? "")
   const [account, setAccount] = useState(defaultValues?.account ?? "")
   const [password, setPassword] = useState(defaultValues?.password ?? "")
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    await onLogin({nickname, account, password})
+    await onLogin({profileName, nickname, account, password})
   }
 
   return (
     <form onSubmit={handleSubmit} className="grid gap-4">
+      <div className="grid gap-2">
+        <Label htmlFor="profile-name">Profile name</Label>
+        <Input
+          id="profile-name"
+          placeholder="Preagonal: (for Reborn)"
+          value={profileName}
+          autoComplete="organization"
+          onChange={(e) => setProfileName(e.target.value)}
+        />
+        <p className="text-muted-foreground text-xs">
+          Used to choose the account profile/listserver. Leave empty for the default Graal listserver.
+        </p>
+      </div>
       <div className="grid gap-2">
         <Label htmlFor="nickname">Nickname</Label>
         <Input

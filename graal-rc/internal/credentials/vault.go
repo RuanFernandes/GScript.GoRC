@@ -10,11 +10,12 @@ import (
 	"path/filepath"
 )
 
-// Account is a full persisted login (nickname/account/password). DisplayName and
+// Account is a full persisted login (profile name/nickname/account/password). DisplayName and
 // Photo are client-only profile data — they are never sent to the server; only
 // Nickname/Account/Password are. The listserver endpoint is selected from the
-// Nickname, not a stored type.
+// ProfileName.
 type Account struct {
+	ProfileName string `json:"profileName,omitempty"`
 	Nickname    string `json:"nickname"`
 	Account     string `json:"account"`
 	Password    string `json:"password"`
@@ -24,6 +25,7 @@ type Account struct {
 
 // AccountSummary is the password-less projection exposed to the frontend.
 type AccountSummary struct {
+	ProfileName string `json:"profileName"`
 	Nickname    string `json:"nickname"`
 	Account     string `json:"account"`
 	DisplayName string `json:"displayName"`
@@ -33,6 +35,7 @@ type AccountSummary struct {
 // Summary drops the password for safe hand-off to the frontend.
 func (a Account) Summary() AccountSummary {
 	return AccountSummary{
+		ProfileName: a.ProfileName,
 		Nickname:    a.Nickname,
 		Account:     a.Account,
 		DisplayName: a.DisplayName,
