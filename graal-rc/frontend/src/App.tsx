@@ -2,8 +2,9 @@
 // between the account-select, add-account, and server-list screens. Login
 // intents go through useSession; the saved-account list lives in useAccounts.
 // Destructive/login actions are gated by a confirmation dialog.
-import {useEffect, useState} from "react"
+import {useCallback, useEffect, useRef, useState} from "react"
 import {toast} from "sonner"
+import {Events} from "@wailsio/runtime"
 
 import {ConfirmDialog} from "@/components/ConfirmDialog"
 import {rcService} from "@/services/rcService"
@@ -41,6 +42,7 @@ function Shell() {
   const [view, setView] = useState<AppView>("select")
   const [pending, setPending] = useState<PendingConfirm>(null)
   const [confirmBusy, setConfirmBusy] = useState(false)
+  const returningToLogin = useRef(false)
 
   const handleAddAccount = async (req: LoginRequest): Promise<boolean> => {
     if (await session.addAccount(req)) {
@@ -59,8 +61,43 @@ function Shell() {
 
   // Connect to a server; on success leave the server list for the RC screen.
   const handleServerConnect = async (index: number) => {
-    await session.connect(index)
+    const connected = await session.connect(index)
+    if (!connected) {
+      await returnToLogin()
+    }
   }
+
+  const returnToLogin = useCallback(async () => {
+    if (returningToLogin.current) return
+    returningToLogin.current = true
+    try {
+      await session.logout()
+      await accounts.refresh()
+      setView("select")
+    } finally {
+      returningToLogin.current = false
+    }
+  }, [accounts.refresh, session.logout])
+
+  // Unexpected server disconnects arrive through the ordered rc:evt envelope.
+  // Clear the live session so the user cannot keep interacting with a dead
+  // handle, then show the server-provided reason on the login screen.
+  useEffect(() => {
+    const off = Events.On("rc:evt", (event: {data: string}) => {
+      try {
+        const payload = JSON.parse(event.data) as {name?: string; data?: unknown[]}
+        if (payload.name !== "rc:disconnected") return
+        const reason = typeof payload.data?.[0] === "string" ? payload.data[0] : "Disconnected by server"
+        void (async () => {
+          await returnToLogin()
+          toast.error("Connection lost", {description: reason})
+        })()
+      } catch {
+        // Ignore malformed lifecycle events; the session remains usable.
+      }
+    })
+    return off
+  }, [returnToLogin])
 
   // State-driven safety net: the moment a server is connected (connectedServer
   // becomes non-empty), ensure we are on the RC screen regardless of which code
