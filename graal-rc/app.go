@@ -1405,8 +1405,11 @@ func (a *App) OpenSettings() {
 		Name:             "settings",
 		Title:            "Settings",
 		URL:              "/#settings",
-		Width:            520,
-		Height:           620,
+		Width:            720,
+		Height:           720,
+		MinWidth:         620,
+		MinHeight:        620,
+		Frameless:        true,
 		BackgroundColour: application.NewRGB(15, 17, 21),
 	})
 	a.settingsWindow = w
