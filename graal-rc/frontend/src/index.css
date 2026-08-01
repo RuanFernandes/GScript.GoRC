@@ -155,3 +155,14 @@
 *::-webkit-scrollbar-corner {
   background: transparent;
 }
+
+/* Expandable sidebar rail labels: clipped when collapsed, fade in on hover
+   after the rail width transition starts. Pure CSS, no JS. */
+.sidebar-label {
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+.group:hover .sidebar-label {
+  opacity: 1;
+  transition-delay: 60ms;
+}

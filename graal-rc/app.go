@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -24,6 +25,7 @@ import (
 	"graal-rc/internal/connection"
 	"graal-rc/internal/credentials"
 	"graal-rc/internal/sqlite"
+	synclib "graal-rc/internal/sync"
 	"graal-rc/rclib"
 )
 
@@ -89,6 +91,20 @@ type App struct {
 	fileBrowserCfgMu sync.Mutex
 	fileBrowserCfg   FileBrowserConfig
 
+	// Local Sync engine + its persisted config. Config is PER-SERVER (keyed by
+	// server name) so each server keeps its own output folder + settings. The
+	// engine is (re)started after a server connect (once NC comes up) and stopped
+	// on logout / server switch.
+	syncCfgMu        sync.Mutex
+	syncCfgs         map[string]synclib.SyncConfig
+	syncCfgLoaded    bool
+	syncEngineMu     sync.Mutex
+	syncEngine       *synclib.Engine
+	syncCtx          context.Context
+	syncCancel       context.CancelFunc
+	syncReviewMu     sync.Mutex
+	syncReviewWindow *application.WebviewWindow
+
 	// Opened-file caches for the type-aware open behavior (double-click a file):
 	// textCache holds .txt content for the editor window; dbFiles maps a remote
 	// .db path to its local cache file (operated on by the SQLite explorer);
@@ -113,17 +129,17 @@ func NewApp() *App {
 		migrateLegacyCredentials(vault)
 	}
 	return &App{
-		sessions:       connection.NewService(),
-		vault:          vault,
-		editorWindows:  map[string]*application.WebviewWindow{},
-		editorCache:    map[string]rclib.ScriptReply{},
-		editorDirty:    map[string]bool{},
-		textCache:      map[string][]byte{},
-		dbFiles:        map[string]string{},
-		dbHeaders:      map[string][]byte{},
-		textWindows:    map[string]*application.WebviewWindow{},
-		sqliteWindows:  map[string]*application.WebviewWindow{},
-		playerWindows:  map[string]*application.WebviewWindow{},
+		sessions:      connection.NewService(),
+		vault:         vault,
+		editorWindows: map[string]*application.WebviewWindow{},
+		editorCache:   map[string]rclib.ScriptReply{},
+		editorDirty:   map[string]bool{},
+		textCache:     map[string][]byte{},
+		dbFiles:       map[string]string{},
+		dbHeaders:     map[string][]byte{},
+		textWindows:   map[string]*application.WebviewWindow{},
+		sqliteWindows: map[string]*application.WebviewWindow{},
+		playerWindows: map[string]*application.WebviewWindow{},
 	}
 }
 
@@ -141,6 +157,22 @@ func (a *App) attach(app *application.App) {
 	a.app = app
 	var seq uint64
 	a.sessions.SetEmitter(func(name string, data ...any) {
+		// Tap RC chat lines + *Changed push events into the sync engine so
+		// server-side script activity drives a targeted/debounced reconcile.
+		if eng := a.currentSyncEngine(); eng != nil {
+			switch name {
+			case "rc:message":
+				if len(data) > 0 {
+					if text, ok := data[0].(string); ok {
+						eng.HandleChatLine(text)
+					}
+				}
+			case "rc:weaponsChanged", "rc:classesChanged", "rc:npcsChanged":
+				// Structured add/delete push — refreshes the live cache and
+				// signals the engine to re-reconcile (catches new scripts).
+				eng.HandleListChanged(name)
+			}
+		}
 		s := atomic.AddUint64(&seq, 1)
 		payload := struct {
 			Seq  uint64 `json:"seq"`
@@ -342,6 +374,9 @@ func (a *App) GetServers() ([]rclib.Server, error) { return a.sessions.GetServer
 func (a *App) ConnectToServer(index int) error {
 	err := a.sessions.ConnectToServer(index)
 	a.refreshServerChrome()
+	if err == nil {
+		a.startSyncEngine()
+	}
 	return err
 }
 
@@ -350,6 +385,7 @@ func (a *App) SetNewProtocol(enable bool) error { return a.sessions.SetNewProtoc
 
 // Logout drops the active session and restores default window/tray titles.
 func (a *App) Logout() {
+	a.stopSyncEngine()
 	a.sessions.Logout()
 	a.refreshServerChrome()
 }

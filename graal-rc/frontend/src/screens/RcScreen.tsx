@@ -4,7 +4,7 @@
 // panel, and a chat-color settings dialog. Mirrors the reference client's
 // TRemoteFrame.
 import {useEffect, useRef, useState} from "react"
-import {Code2, Flag, FolderOpen, FolderTree, LogOut, Settings, SlidersHorizontal, UserRound, Users} from "lucide-react"
+import {LogOut, Settings, UserRound} from "lucide-react"
 import {toast} from "sonner"
 
 import {Badge} from "@/components/ui/badge"
@@ -13,6 +13,7 @@ import {Input} from "@/components/ui/input"
 import {Tabs, TabsContent, TabsList, TabsTrigger} from "@/components/ui/tabs"
 import {ChatLine} from "@/components/features/chat/ChatLine"
 import {ScriptHelpResult} from "@/components/features/chat/ScriptHelpResult"
+import {RcSidebar} from "@/components/features/rc/RcSidebar"
 import {useChat} from "@/hooks/useChat"
 import {useChatAutocomplete} from "@/hooks/useChatAutocomplete"
 import {useChatInputHistory} from "@/hooks/useChatInputHistory"
@@ -29,10 +30,12 @@ interface RcScreenProps {
   onDisconnect: () => void
 }
 
-function ncLabel(s: NCStatus): string {
+function ncLabel(s: NCStatus, playerCount: number): string {
   if (!s.hasNc) return "No NC server"
-  if (s.authenticated) return "NC authenticated"
-  if (s.connected) return "NC connecting"
+  if (s.authenticated) {
+    return `Connected · ${playerCount} player${playerCount === 1 ? "" : "s"}`
+  }
+  if (s.connected) return "Connecting"
   return "NC off"
 }
 
@@ -167,7 +170,7 @@ function ChatPane({
               }
               history.handleKeyDown(e, text, setText)
             }}
-            placeholder="Type a message or command…"
+            placeholder="Message or /command · Tab to complete"
             autoComplete="off"
           />
         </div>
@@ -261,11 +264,15 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
         <div className="flex flex-col leading-tight">
           <span className="text-sm font-semibold">{apelido}</span>
           <span className="text-muted-foreground text-xs">
-            {displayServer ? `${displayServer}: ` : ""}
+            <span className="text-muted-foreground/70">{displayServer ? `${displayServer} · ` : ""}</span>
             {players.length} player{players.length === 1 ? "" : "s"} online
           </span>
         </div>
         <div className="ml-auto flex items-center gap-2">
+          <Badge variant="outline" className="hidden gap-1.5 sm:flex">
+            <span className="size-1.5 rounded-full bg-emerald-500" />
+            Connected
+          </Badge>
           <Button variant="ghost" size="sm" onClick={() => rcService.openSettings()}>
             <Settings />
             Settings
@@ -277,57 +284,39 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
         </div>
       </header>
 
-      <header className="flex items-center gap-3 border-b px-4 py-2.5">
-        <Badge variant="secondary">{ncLabel(nc)}</Badge>
-        <div className="ml-auto flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={() => rcService.openScriptManager()}>
-            <Code2 />
-            Scripts
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => rcService.openFileBrowser()}>
-            <FolderOpen />
-            Files
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => rcService.openPlayerList()}>
-            <Users />
-            Players
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => openServerText("options", "Server Options")}>
-            <SlidersHorizontal />
-            Server Options
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => openServerText("folder_config", "Folder Config")}>
-            <FolderTree />
-            Folder Config
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => openServerText("flags", "Server Flags")}>
-            <Flag />
-            Server Flags
-          </Button>
-        </div>
-      </header>
-
-      <div className="flex min-h-0 flex-1 flex-col p-3">
+      <div className="flex min-h-0 flex-1">
+        <RcSidebar
+          ncLabel={ncLabel(nc, players.length)}
+          ncConnected={nc.connected && nc.authenticated}
+          openServerText={openServerText}
+        />
+        <div className="flex min-h-0 flex-1 flex-col p-3">
         <Tabs value={activeChannel} onValueChange={setActiveChannel} className="flex min-h-0 flex-1 flex-col">
-          <TabsList>
-            {tabs.map((t, i) => (
-              <TabsTrigger
-                key={t.channel || "server"}
-                value={t.channel}
-                draggable
-                onDragStart={() => (dragIndex.current = i)}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={() => {
-                  if (dragIndex.current >= 0) reorderTabs(dragIndex.current, i)
-                  dragIndex.current = -1
-                }}
-                onDragEnd={() => (dragIndex.current = -1)}
-                className="cursor-grab active:cursor-grabbing"
-              >
-                {t.label}
-              </TabsTrigger>
-            ))}
-          </TabsList>
+          <div className="flex items-center justify-between gap-2">
+            <TabsList>
+              {tabs.map((t, i) => (
+                <TabsTrigger
+                  key={t.channel || "server"}
+                  value={t.channel}
+                  draggable
+                  onDragStart={() => (dragIndex.current = i)}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={() => {
+                    if (dragIndex.current >= 0) reorderTabs(dragIndex.current, i)
+                    dragIndex.current = -1
+                  }}
+                  onDragEnd={() => (dragIndex.current = -1)}
+                  className="cursor-grab active:cursor-grabbing"
+                >
+                  {t.label}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+            <span className="text-muted-foreground hidden items-center gap-1.5 px-2 text-xs sm:flex">
+              <span className="size-1.5 rounded-full bg-emerald-500" />
+              Live
+            </span>
+          </div>
           {tabs.map((t) => (
             <TabsContent key={t.channel || "server"} value={t.channel} className="mt-2 min-h-0 flex-1">
               <ChatPane
@@ -340,6 +329,7 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
             </TabsContent>
           ))}
         </Tabs>
+        </div>
       </div>
     </div>
   )

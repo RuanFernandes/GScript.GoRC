@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"graal-rc/rclib"
@@ -43,14 +44,14 @@ type Status struct {
 // Service manages the grclib connection handle and the credentials in use.
 // Methods are safe to call from Wails-bound goroutines.
 type Service struct {
-	mu            sync.Mutex
-	handle        rclib.Handle
-	creds         Credentials
-	serverName    string // name of the server selected in ConnectToServer; "" when none
-	pumpCancel     context.CancelFunc
-	lastNCAttempt  time.Time // last ConnectToNCServer attempt; throttles retries
+	mu              sync.Mutex
+	handle          rclib.Handle
+	creds           Credentials
+	serverName      string // name of the server selected in ConnectToServer; "" when none
+	pumpCancel      context.CancelFunc
+	lastNCAttempt   time.Time // last ConnectToNCServer attempt; throttles retries
 	lastNCKeepalive time.Time // last silent NC keepalive (weapon-list ping)
-	emit           func(name string, data ...any)
+	emit            func(name string, data ...any)
 
 	// maxUpload is the latest server-reported max upload size (bytes), pushed via
 	// the MaxUploadSize callback. 0 means unknown. Guarded by mu.
@@ -453,6 +454,13 @@ const ncReconnectInterval = 2 * time.Second
 // while (surfacing as "[NC] DISCONNECT: You don't have admin rights."); issuing
 // a lightweight NC round-trip periodically prevents that idle timeout.
 const ncKeepaliveInterval = 30 * time.Second
+
+// ncFetchConcurrency bounds the number of in-flight OpenScript requests during
+// a bulk fetch. The send is serialized on dllMu, but the wait for the reply is
+// not, so pipelining many requests is much faster than strict serial fetches.
+// 16 keeps the server from being flooded while still saturating the round-trip
+// pipeline.
+const ncFetchConcurrency = 16
 
 // maybeConnectNC opens the NC socket when the server exposes one to this
 // account (HasNCServer) and it is not yet connected. Unlike a one-shot latch,
@@ -1190,6 +1198,81 @@ func (s *Service) GetNPCs() ([]rclib.NPC, error) {
 	return rclib.GetNPCs(h)
 }
 
+// IsNCConnected reports whether the NC (script) socket is up. Used by the sync
+// engine to gate server I/O.
+func (s *Service) IsNCConnected() bool {
+	h, err := s.requireHandle()
+	if err != nil || h == 0 {
+		return false
+	}
+	return rclib.IsNCConnected(h)
+}
+
+// FetchAllScripts pulls every weapon/class/npc script body from the server.
+// Requests are PIPELINED with bounded concurrency (ncFetchConcurrency): each
+// OpenScript sends its NC packet (serialized on dllMu for the brief send) then
+// waits on its own pending reply channel, so many requests are in flight at
+// once rather than strictly sequential — a large server that took a minute
+// serially now takes seconds. A single hung script times out (scriptTimeout,
+// 15s) and is skipped+logged; it never aborts the fetch. progress (optional)
+// reports done/total so the UI can show a background bar.
+func (s *Service) FetchAllScripts(ctx context.Context, progress func(done, total int)) ([]rclib.ScriptReply, error) {
+	if _, err := s.requireNC(); err != nil {
+		return nil, err
+	}
+	weapons, _ := s.GetWeapons()
+	classes, _ := s.GetClasses()
+	npcs, _ := s.GetNPCs()
+
+	type job struct {
+		stype, key string
+	}
+	var jobs []job
+	for _, w := range weapons {
+		jobs = append(jobs, job{"weapon", w.Name})
+	}
+	for _, c := range classes {
+		jobs = append(jobs, job{"class", c.Name})
+	}
+	for _, n := range npcs {
+		jobs = append(jobs, job{"npc", strconv.Itoa(n.ID)})
+	}
+	total := len(jobs)
+
+	out := make([]rclib.ScriptReply, 0, total)
+	var outMu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, ncFetchConcurrency)
+	var done int32
+	for _, j := range jobs {
+		if ctx.Err() != nil {
+			break
+		}
+		wg.Add(1)
+		go func(j job) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+			defer func() { <-sem }()
+			if r, err := s.OpenScript(j.stype, j.key); err == nil {
+				outMu.Lock()
+				out = append(out, r)
+				outMu.Unlock()
+			} else {
+				log.Printf("sync fetch %s:%s failed: %v", j.stype, j.key, err)
+			}
+			if progress != nil {
+				progress(int(atomic.AddInt32(&done, 1)), total)
+			}
+		}(j)
+	}
+	wg.Wait()
+	return out, ctx.Err()
+}
+
 // AddWeapon creates a weapon by name.
 func (s *Service) AddWeapon(name string) error {
 	h, err := s.requireNC()
@@ -1447,14 +1530,18 @@ func (s *Service) WarpNPC(id int, x, y float64, level string) error {
 	return rclib.WarpNPC(h, id, x, y, level)
 }
 
-// RefreshWeapons re-requests the weapon list (grclib only sends it once at NC
-// auth), forcing the server to repopulate the cache and re-emit add events.
+// RefreshWeapons re-requests the weapon list via grclib's dedicated
+// rc_request_weapon_list primitive (the same call the reference C++ RC makes),
+// forcing the server to repopulate the cache and re-emit add events. Note:
+// grclib exposes NO equivalent for class/npc lists — those are maintained by
+// the server's live add/delete push packets (rc_on_class_added/deleted,
+// rc_on_npc_added/deleted), wired into the sync engine via HandleListChanged.
 func (s *Service) RefreshWeapons() error {
 	h, err := s.requireNC()
 	if err != nil {
 		return err
 	}
-	return rclib.SendNCPacket(h, weaponListGetPacket)
+	return rclib.RequestWeaponList(h)
 }
 
 // weaponListGetPacket is PLI_NC_WEAPONLISTGET (IEnums.h) — re-request the weapon

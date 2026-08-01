@@ -23,6 +23,7 @@ import {ScriptEditorWindowScreen} from "@/screens/ScriptEditorWindowScreen"
 import {ScriptManagerWindowScreen} from "@/screens/ScriptManagerWindowScreen"
 import {ServerListScreen} from "@/screens/ServerListScreen"
 import {SettingsWindowScreen} from "@/screens/SettingsWindowScreen"
+import {SyncReviewWindowScreen} from "@/screens/SyncReviewWindowScreen"
 import {SqliteExplorerWindowScreen} from "@/screens/SqliteExplorerWindowScreen"
 import {TextEditorWindowScreen} from "@/screens/TextEditorWindowScreen"
 import type {AppView, LoginRequest} from "@/types"
@@ -210,6 +211,7 @@ function App() {
   if (hash.startsWith("#files")) return <FileBrowserWindowScreen />
   if (hash.startsWith("#scripts")) return <ScriptManagerWindowScreen />
   if (hash.startsWith("#settings")) return <SettingsWindowScreen />
+  if (hash.startsWith("#sync")) return <SyncReviewWindowScreen />
   if (hash.startsWith("#editor")) return <ScriptEditorWindowScreen />
   if (hash.startsWith("#textfile")) return <TextEditorWindowScreen />
   if (hash.startsWith("#sqlite")) return <SqliteExplorerWindowScreen />

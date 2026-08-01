@@ -25,6 +25,9 @@ import type {
   SqliteSchema,
   SqliteChanges,
   Weapon,
+  SyncConfig,
+  SyncStatus,
+  SyncScriptPair,
 } from "@/types"
 
 // The v3 bindings resolve to null on the "no result" path and reject on error;
@@ -138,6 +141,22 @@ export interface RcService {
   sqliteQuery(path: string, sql: string, args: unknown[]): Promise<SqliteResult>
   commitSqlite(path: string, changes: SqliteChanges): Promise<void>
   saveSqliteFile(path: string): Promise<void>
+  // Local Sync.
+  getSyncConfig(): Promise<SyncConfig>
+  setSyncConfig(
+    enabled: boolean,
+    outputDir: string,
+    pollingMinutes: number,
+    autoPush: boolean,
+    autoPull: boolean,
+  ): Promise<void>
+  syncNow(): Promise<void>
+  getSyncStatus(): Promise<SyncStatus>
+  getSyncScriptPair(kind: string, key: string): Promise<SyncScriptPair>
+  resolveConflict(kind: string, key: string, choice: "local" | "server"): Promise<void>
+  pauseSync(): Promise<void>
+  resumeSync(): Promise<void>
+  openSyncReview(): Promise<void>
 }
 
 // Default implementation backed by the generated Wails v3 bindings (App service).
@@ -251,4 +270,15 @@ export const rcService: RcService = {
   sqliteQuery: (path, sql, args) => App.SqliteQuery(path, sql, args),
   commitSqlite: (path, changes) => App.CommitSqlite(path, changes),
   saveSqliteFile: (path) => App.SaveSqliteFile(path),
+  // Local Sync.
+  getSyncConfig: () => App.GetSyncConfig(),
+  setSyncConfig: (enabled, outputDir, pollingMinutes, autoPush, autoPull) =>
+    App.SetSyncConfig(enabled, outputDir, pollingMinutes, autoPush, autoPull),
+  syncNow: () => App.SyncNow(),
+  getSyncStatus: () => App.GetSyncStatus(),
+  getSyncScriptPair: (kind, key) => App.GetSyncScriptPair(kind, key),
+  resolveConflict: (kind, key, choice) => App.ResolveConflict(kind, key, choice),
+  pauseSync: () => App.PauseSync(),
+  resumeSync: () => App.ResumeSync(),
+  openSyncReview: () => App.OpenSyncReview(),
 }

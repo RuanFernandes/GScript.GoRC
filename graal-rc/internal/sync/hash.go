@@ -1,0 +1,27 @@
+package sync
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
+)
+
+// normalizeEOL converts CRLF (and a stray CR) to LF. The Windows DLL may emit
+// CRLF while editors save LF; without normalization the two read as different
+// and trigger phantom conflicts.
+func normalizeEOL(s string) string {
+	if !strings.ContainsRune(s, '\r') {
+		return s
+	}
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	return s
+}
+
+// HashScript returns a short hex digest of the normalized script content.
+// Short (16 chars) is plenty — this only needs to detect changes, not resist
+// collision attacks, and a short digest keeps the manifest compact.
+func HashScript(content string) string {
+	sum := sha256.Sum256([]byte(normalizeEOL(content)))
+	return hex.EncodeToString(sum[:])[:16]
+}

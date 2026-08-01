@@ -23,6 +23,13 @@ export type {
   SqliteResult,
   SqliteTable,
 } from "../../bindings/graal-rc/models"
+export type {
+  SyncConfig,
+  SyncStatus,
+  ReviewItem as SyncReviewItem,
+  ScriptPair as SyncScriptPair,
+  State as SyncState,
+} from "../../bindings/graal-rc/internal/sync/models"
 import type {GsFunction} from "@/lib/gscriptApi"
 export type {GsFunction}
 

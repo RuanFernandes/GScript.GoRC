@@ -220,23 +220,23 @@ var (
 	procOnConnected     *proc
 	procOnDisconnected  *proc
 
-	procConnectToNcServer *proc
-	procDisconnectNc      *proc
-	procIsNcConnected     *proc
-	procIsNcAuthenticated *proc
-	procHasNcServer       *proc
-	procIrcLogin          *proc
-	procSendIrcText       *proc
-	procExecute           *proc
-	procSetNickname       *proc
-	procGetPlayers         *proc
-	procOnMessage          *proc
-	procOnIrcMessage       *proc
-	procOnServerData       *proc
-	procOnPrivateMessage   *proc
-	procSendPrivateMessage *proc
-	procSendMassPM         *proc
-	procSendAdminMessage   *proc
+	procConnectToNcServer   *proc
+	procDisconnectNc        *proc
+	procIsNcConnected       *proc
+	procIsNcAuthenticated   *proc
+	procHasNcServer         *proc
+	procIrcLogin            *proc
+	procSendIrcText         *proc
+	procExecute             *proc
+	procSetNickname         *proc
+	procGetPlayers          *proc
+	procOnMessage           *proc
+	procOnIrcMessage        *proc
+	procOnServerData        *proc
+	procOnPrivateMessage    *proc
+	procSendPrivateMessage  *proc
+	procSendMassPM          *proc
+	procSendAdminMessage    *proc
 	procSendAdminMessageAll *proc
 
 	// Player admin editors (rights / attributes / bans) on the main server.
@@ -275,6 +275,7 @@ var (
 	procRequestWeaponScript  *proc
 	procRequestClassScript   *proc
 	procRequestNPCScript     *proc
+	procRequestWeaponList    *proc
 	procResetNPC             *proc
 	procRequestNPCAttributes *proc
 	procGetNPCFlags          *proc
@@ -303,23 +304,23 @@ var (
 	procOnNPCAttributes  *proc
 
 	// File browser (main server socket).
-	procFileBrowserStart        *proc
-	procFileBrowserCd           *proc
-	procFileBrowserDownload     *proc
-	procFileBrowserDelete       *proc
-	procFileBrowserRename       *proc
-	procFileBrowserMove         *proc
-	procUploadFile              *proc
-	procGetMaxUploadFileSize    *proc
-	procCopyFileBrowserFolders  *proc
-	procFreeFileBrowserFolders  *proc
-	procCopyFileBrowserFiles    *proc
-	procFreeFileBrowserFiles    *proc
-	procOnFileBrowserFolders    *proc
-	procOnFileBrowserFiles      *proc
-	procOnFileBrowserMessage    *proc
-	procOnFileReceived          *proc
-	procOnMaxUploadFileSize     *proc
+	procFileBrowserStart       *proc
+	procFileBrowserCd          *proc
+	procFileBrowserDownload    *proc
+	procFileBrowserDelete      *proc
+	procFileBrowserRename      *proc
+	procFileBrowserMove        *proc
+	procUploadFile             *proc
+	procGetMaxUploadFileSize   *proc
+	procCopyFileBrowserFolders *proc
+	procFreeFileBrowserFolders *proc
+	procCopyFileBrowserFiles   *proc
+	procFreeFileBrowserFiles   *proc
+	procOnFileBrowserFolders   *proc
+	procOnFileBrowserFiles     *proc
+	procOnFileBrowserMessage   *proc
+	procOnFileReceived         *proc
+	procOnMaxUploadFileSize    *proc
 )
 
 // Default listserver endpoint used by the reference client.
@@ -505,6 +506,7 @@ func registerAll(resolve func(name string) (*proc, error)) error {
 	procRequestWeaponScript = get("rc_request_weapon_script")
 	procRequestClassScript = get("rc_request_class_script")
 	procRequestNPCScript = get("rc_request_npc_script")
+	procRequestWeaponList = get("rc_request_weapon_list")
 	procResetNPC = get("rc_reset_npc")
 	procRequestNPCAttributes = get("rc_request_npc_attributes")
 	procGetNPCFlags = get("rc_get_npc_flags")
@@ -598,11 +600,11 @@ func bptrToString(p *byte) string {
 // Methods are invoked from the event-pump goroutine (during rc_process_events),
 // so they must be non-blocking.
 type EventCallbacks struct {
-	Connected    func()
-	Disconnected func(reason string)
-	Message      func(text string)
-	IrcMessage   func(channel, line string)
-	ServerData   func(dataType, content string)
+	Connected      func()
+	Disconnected   func(reason string)
+	Message        func(text string)
+	IrcMessage     func(channel, line string)
+	ServerData     func(dataType, content string)
 	PrivateMessage func(playerID int, account, nick, message string)
 
 	// Script/NC callbacks (fired on the pump goroutine).
@@ -630,11 +632,11 @@ type EventCallbacks struct {
 }
 
 var (
-	cbConnected    = newCallback(connectedEntry)
-	cbDisconnected = newCallback(disconnectedEntry)
-	cbMessage      = newCallback(messageEntry)
-	cbIrcMessage   = newCallback(ircMessageEntry)
-	cbServerData   = newCallback(serverDataEntry)
+	cbConnected      = newCallback(connectedEntry)
+	cbDisconnected   = newCallback(disconnectedEntry)
+	cbMessage        = newCallback(messageEntry)
+	cbIrcMessage     = newCallback(ircMessageEntry)
+	cbServerData     = newCallback(serverDataEntry)
 	cbPrivateMessage = newCallback(privateMessageEntry)
 
 	cbScriptReceived = newCallback(scriptReceivedEntry)
@@ -1835,6 +1837,21 @@ func SendNCPacket(h Handle, packetID int) error {
 	// so the byte is never read.
 	var dummy [1]byte
 	r1, _, _ := procSendNCPacket.Call(uintptr(h), uintptr(packetID), uintptr(unsafe.Pointer(&dummy[0])), 0)
+	if r1 == 0 {
+		return errors.New(LastError(h))
+	}
+	return nil
+}
+
+// RequestWeaponList re-requests the full weapon list from the server (the
+// dedicated refresh primitive the reference C++ RC uses; equivalent to
+// SendNCPacket(PLI_NC_WEAPONLISTGET) but explicit). The list arrives via the
+// rc_on_weapon_added push packets, repopulating grclib's cache.
+func RequestWeaponList(h Handle) error {
+	if err := load(); err != nil {
+		return err
+	}
+	r1, _, _ := procRequestWeaponList.Call(uintptr(h))
 	if r1 == 0 {
 		return errors.New(LastError(h))
 	}
