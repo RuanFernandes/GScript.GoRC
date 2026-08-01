@@ -1,7 +1,7 @@
 // Pure presentational login form. Knows nothing about the backend; it only
 // reports the entered credentials through onLogin and reflects busy state.
 import {useState} from "react"
-import {Loader2, LogIn} from "lucide-react"
+import {Eye, EyeOff, Loader2, LogIn} from "lucide-react"
 
 import {Button} from "@/components/ui/button"
 import {Input} from "@/components/ui/input"
@@ -18,6 +18,7 @@ export function LoginForm({busy = false, defaultValues, onLogin}: LoginFormProps
   const [profileName, setProfileName] = useState(defaultValues?.profileName ?? "")
   const [account, setAccount] = useState(defaultValues?.account ?? "")
   const [password, setPassword] = useState(defaultValues?.password ?? "")
+  const [showPassword, setShowPassword] = useState(false)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -56,15 +57,27 @@ export function LoginForm({busy = false, defaultValues, onLogin}: LoginFormProps
       </div>
       <div className="grid gap-2">
         <Label htmlFor="password">Password</Label>
-        <Input
-          id="password"
-          type="password"
-          placeholder="••••••••"
-          required
-          autoComplete="current-password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-        />
+        <div className="relative">
+          <Input
+            id="password"
+            type={showPassword ? "text" : "password"}
+            placeholder="••••••••"
+            required
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="pr-10"
+          />
+          <button
+            type="button"
+            aria-label={showPassword ? "Hide password" : "Show password"}
+            title={showPassword ? "Hide password" : "Show password"}
+            onClick={() => setShowPassword((visible) => !visible)}
+            className="text-muted-foreground hover:text-foreground absolute inset-y-0 right-0 flex w-10 items-center justify-center transition-colors"
+          >
+            {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+          </button>
+        </div>
       </div>
       <Button type="submit" disabled={busy} className="w-full">
         {busy ? <Loader2 className="animate-spin" /> : <LogIn />}
