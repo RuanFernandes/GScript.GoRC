@@ -224,7 +224,7 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
   }, [accountName])
 
   const {label: displayServer} = serverDisplay(serverName)
-  const apelido = profile?.displayName || profile?.nickname || accountName
+  const apelido = profile?.displayName || accountName
 
   // Open a server-side text config editor (options/folder_config/flags). These
   // travel on the main socket, not NC, so they're available without script

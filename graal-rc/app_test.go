@@ -30,14 +30,11 @@ func TestListserverForProfile(t *testing.T) {
 	}
 }
 
-func TestLegacyAccountValues(t *testing.T) {
-	profile, nickname := legacyAccountValues("", "Preagonal:Repinho")
-	if profile != preagonalPrefix || nickname != "Repinho" {
-		t.Fatalf("legacy values = (%q, %q), want (%q, %q)", profile, nickname, preagonalPrefix, "Repinho")
+func TestProfileNameForLegacyNickname(t *testing.T) {
+	if got := profileNameForLegacyNickname("Preagonal:Repinho"); got != preagonalPrefix {
+		t.Fatalf("profile = %q, want %q", got, preagonalPrefix)
 	}
-
-	profile, nickname = legacyAccountValues("", "Repinho")
-	if profile != "" || nickname != "Repinho" {
-		t.Fatalf("default values = (%q, %q), want (%q, %q)", profile, nickname, "", "Repinho")
+	if got := profileNameForLegacyNickname("Repinho"); got != "" {
+		t.Fatalf("profile = %q, want empty", got)
 	}
 }

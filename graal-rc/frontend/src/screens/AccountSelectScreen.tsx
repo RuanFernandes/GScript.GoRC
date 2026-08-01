@@ -3,7 +3,7 @@
 // no saved accounts it shows only an Add Account button. Pure presentational —
 // all intents arrive via props.
 import {useRef, useState} from "react"
-import {ImagePlus, Loader2, Pencil, Plus, Trash2, UserRound} from "lucide-react"
+import {ImagePlus, Info, Loader2, Pencil, Plus, Trash2, UserRound} from "lucide-react"
 
 import {
   AlertDialog,
@@ -23,7 +23,9 @@ interface AccountSelectScreenProps {
   accounts: AccountSummary[]
   loading: boolean
   busy: boolean
-  onSelect: (accountName: string) => void
+  nickname: string
+  onNicknameChange: (nickname: string) => void
+  onSelect: (accountName: string, nickname: string) => void
   onRemove: (accountName: string) => void
   onAdd: () => void
   onRename: (accountName: string, displayName: string) => void | Promise<void>
@@ -60,6 +62,8 @@ export function AccountSelectScreen({
   onAdd,
   onRename,
   onPhoto,
+  nickname,
+  onNicknameChange,
 }: AccountSelectScreenProps) {
   const [renaming, setRenaming] = useState<string | null>(null)
   const [display, setDisplay] = useState("")
@@ -68,7 +72,7 @@ export function AccountSelectScreen({
 
   const startRename = (acc: AccountSummary) => {
     setRenaming(acc.account)
-    setDisplay(acc.displayName || acc.nickname || "")
+    setDisplay(acc.displayName || acc.account || "")
   }
 
   const confirmRename = async () => {
@@ -108,6 +112,22 @@ export function AccountSelectScreen({
         <CardContent className="grid gap-4">
           <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={onFile} />
 
+          <div className="grid gap-2">
+            <Label htmlFor="session-nickname">Session nickname</Label>
+            <Input
+              id="session-nickname"
+              placeholder="The nickname used in-game"
+              required
+              autoComplete="nickname"
+              value={nickname}
+              onChange={(e) => onNicknameChange(e.target.value)}
+            />
+            <div className="text-muted-foreground flex items-start gap-2 text-xs">
+              <Info className="mt-0.5 size-3.5 shrink-0" />
+              <span>This nickname is used for every account you log in with during this session.</span>
+            </div>
+          </div>
+
           {loading ? (
             <div className="flex items-center justify-center py-8 text-muted-foreground">
               <Loader2 className="animate-spin" />
@@ -129,12 +149,12 @@ export function AccountSelectScreen({
                     <button
                       type="button"
                       disabled={busy}
-                      onClick={() => onSelect(account.account)}
+                      onClick={() => onSelect(account.account, nickname)}
                       className="flex flex-1 flex-col items-start gap-0.5 text-left disabled:opacity-50"
                     >
                       <span className="flex items-center gap-1.5">
                         <span className="text-sm font-medium">
-                          {account.displayName || account.nickname || account.account}
+                          {account.displayName || account.account}
                         </span>
                       </span>
                       <span className="text-xs text-muted-foreground">{account.account}</span>
@@ -188,7 +208,7 @@ export function AccountSelectScreen({
             <AlertDialogTitle>Rename account</AlertDialogTitle>
             <AlertDialogDescription>
               A client-only label shown in the account list and RC header. It does not change your
-              nickname or username.
+              the account nickname or username.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="grid gap-2">

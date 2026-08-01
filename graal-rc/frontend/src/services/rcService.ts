@@ -34,8 +34,8 @@ import type {
 // callers treat null as "empty/none" and rely on try/catch for real errors.
 export interface RcService {
   listAccounts(): Promise<AccountSummary[] | null>
-  loginWithAccount(accountName: string): Promise<Server[] | null>
-  addAccount(req: LoginRequest): Promise<Server[] | null>
+  loginWithAccount(accountName: string, nickname: string): Promise<Server[] | null>
+  addAccount(req: LoginRequest, nickname: string): Promise<Server[] | null>
   removeAccount(accountName: string): Promise<void>
   renameAccount(accountName: string, displayName: string): Promise<void>
   setAccountPhoto(accountName: string, dataURL: string): Promise<void>
@@ -162,8 +162,8 @@ export interface RcService {
 // Default implementation backed by the generated Wails v3 bindings (App service).
 export const rcService: RcService = {
   listAccounts: () => App.ListAccounts(),
-  loginWithAccount: (accountName) => App.LoginWithAccount(accountName),
-  addAccount: (req) => App.AddAccount(req),
+  loginWithAccount: (accountName, nickname) => App.LoginWithAccount(accountName, nickname),
+  addAccount: (req, nickname) => App.AddAccount(req, nickname),
   removeAccount: (accountName) => App.RemoveAccount(accountName),
   renameAccount: (accountName, displayName) => App.RenameAccount(accountName, displayName),
   setAccountPhoto: (accountName, dataURL) => App.SetAccountPhoto(accountName, dataURL),

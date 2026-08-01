@@ -16,13 +16,12 @@ interface LoginFormProps {
 
 export function LoginForm({busy = false, defaultValues, onLogin}: LoginFormProps) {
   const [profileName, setProfileName] = useState(defaultValues?.profileName ?? "")
-  const [nickname, setNickname] = useState(defaultValues?.nickname ?? "")
   const [account, setAccount] = useState(defaultValues?.account ?? "")
   const [password, setPassword] = useState(defaultValues?.password ?? "")
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    await onLogin({profileName, nickname, account, password})
+    await onLogin({profileName, account, password})
   }
 
   return (
@@ -41,16 +40,6 @@ export function LoginForm({busy = false, defaultValues, onLogin}: LoginFormProps
         </p>
       </div>
       <div className="grid gap-2">
-        <Label htmlFor="nickname">Nickname</Label>
-        <Input
-          id="nickname"
-          placeholder="Community name / display nick (e.g. Repinho)"
-          value={nickname}
-          autoComplete="username"
-          onChange={(e) => setNickname(e.target.value)}
-        />
-      </div>
-      <div className="grid gap-2">
         <Label htmlFor="account">Account</Label>
         <Input
           id="account"
@@ -62,7 +51,7 @@ export function LoginForm({busy = false, defaultValues, onLogin}: LoginFormProps
         />
         <p className="text-muted-foreground text-xs">
           Login identity. Player queries (rights/attrs/ban/comments) use this exact value, so it must be
-          the account id, not your community name. The nickname above is what others see in-game.
+          the account id, not your community name. The session nickname is configured on the account selection screen.
         </p>
       </div>
       <div className="grid gap-2">

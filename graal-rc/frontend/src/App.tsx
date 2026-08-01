@@ -42,10 +42,11 @@ function Shell() {
   const [view, setView] = useState<AppView>("select")
   const [pending, setPending] = useState<PendingConfirm>(null)
   const [confirmBusy, setConfirmBusy] = useState(false)
+  const [sessionNickname, setSessionNickname] = useState("")
   const returningToLogin = useRef(false)
 
   const handleAddAccount = async (req: LoginRequest): Promise<boolean> => {
-    if (await session.addAccount(req)) {
+    if (await session.addAccount(req, sessionNickname.trim())) {
       await accounts.refresh()
       setView("serverlist")
       return true
@@ -121,7 +122,7 @@ function Shell() {
     const account = pending.account
     setConfirmBusy(true)
     try {
-      if (await session.loginWithAccount(account)) setView("serverlist")
+      if (await session.loginWithAccount(account, sessionNickname.trim())) setView("serverlist")
     } finally {
       setConfirmBusy(false)
       setPending(null)
@@ -151,6 +152,7 @@ function Shell() {
     return (
       <AddAccountScreen
         busy={session.busy}
+        nickname={sessionNickname}
         onLogin={handleAddAccount}
         onCancel={() => setView("select")}
       />
@@ -188,9 +190,24 @@ function Shell() {
         accounts={accounts.accounts}
         loading={accounts.loading}
         busy={session.busy}
-        onSelect={(accountName) => setPending({kind: "login", account: accountName})}
+        nickname={sessionNickname}
+        onNicknameChange={setSessionNickname}
+        onSelect={(accountName, nickname) => {
+          if (!nickname.trim()) {
+            toast.error("Nickname required", {description: "Set the session nickname before logging in."})
+            return
+          }
+          setSessionNickname(nickname)
+          setPending({kind: "login", account: accountName})
+        }}
         onRemove={(accountName) => setPending({kind: "delete", account: accountName})}
-        onAdd={() => setView("add")}
+        onAdd={() => {
+          if (!sessionNickname.trim()) {
+            toast.error("Nickname required", {description: "Set the session nickname before adding an account."})
+            return
+          }
+          setView("add")
+        }}
         onRename={async (accountName, displayName) => {
           try {
             await rcService.renameAccount(accountName, displayName)

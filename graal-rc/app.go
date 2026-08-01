@@ -30,8 +30,9 @@ import (
 )
 
 var (
-	errNoVault         = errors.New("account vault is not available")
-	errAccountNotFound = errors.New("account not found")
+	errNoVault          = errors.New("account vault is not available")
+	errAccountNotFound  = errors.New("account not found")
+	errNicknameRequired = errors.New("session nickname is required")
 )
 
 // App is the Wails v3 service: its public methods are auto-bound to the
@@ -207,9 +208,9 @@ func migrateLegacyCredentials(vault *credentials.Vault) {
 		return
 	}
 	if err := vault.Add(credentials.Account{
-		Nickname: c.Nickname,
-		Account:  c.Account,
-		Password: c.Password,
+		ProfileName: profileNameForLegacyNickname(c.Nickname),
+		Account:     c.Account,
+		Password:    c.Password,
 	}); err != nil {
 		log.Printf("migrate legacy credentials: %v", err)
 		return
@@ -222,7 +223,6 @@ func migrateLegacyCredentials(vault *credentials.Vault) {
 // LoginRequest is the payload sent from the Add Account screen.
 type LoginRequest struct {
 	ProfileName string `json:"profileName"`
-	Nickname    string `json:"nickname"`
 	Account     string `json:"account"`
 	Password    string `json:"password"`
 }
@@ -239,6 +239,13 @@ const PreagonalListserverHost = "listserver.graal.in"
 // preagonalPrefix marks a nickname as routing to the alternate listserver.
 const preagonalPrefix = "Preagonal:"
 
+func profileNameForLegacyNickname(nickname string) string {
+	if strings.HasPrefix(nickname, preagonalPrefix) {
+		return preagonalPrefix
+	}
+	return ""
+}
+
 // listserverForProfile returns the listserver endpoint for a profile name. A profile name
 // prefixed "Preagonal:" selects the alternate endpoint; everything else uses the
 // default Graal listserver. The prefix is a hidden, client-only routing key.
@@ -249,25 +256,14 @@ func listserverForProfile(profileName string) (host string, port int) {
 	return rclib.DefaultListserverHost, rclib.DefaultListserverPort
 }
 
-// legacyAccountValues separates the old routing prefix from the nickname for
-// accounts created before ProfileName was added.
-func legacyAccountValues(profileName, nickname string) (string, string) {
-	if strings.TrimSpace(profileName) == "" && strings.HasPrefix(nickname, preagonalPrefix) {
-		return preagonalPrefix, strings.TrimPrefix(nickname, preagonalPrefix)
-	}
-	return profileName, nickname
-}
-
 func toCreds(req LoginRequest) connection.Credentials {
-	profileName, nickname := legacyAccountValues(req.ProfileName, req.Nickname)
-	host, port := listserverForProfile(profileName)
-	return connection.Credentials{Nickname: nickname, Account: req.Account, Password: req.Password, Host: host, Port: port}
+	host, port := listserverForProfile(req.ProfileName)
+	return connection.Credentials{Account: req.Account, Password: req.Password, Host: host, Port: port}
 }
 
 func accountToCreds(a credentials.Account) connection.Credentials {
-	profileName, nickname := legacyAccountValues(a.ProfileName, a.Nickname)
-	host, port := listserverForProfile(profileName)
-	return connection.Credentials{Nickname: nickname, Account: a.Account, Password: a.Password, Host: host, Port: port}
+	host, port := listserverForProfile(a.ProfileName)
+	return connection.Credentials{Account: a.Account, Password: a.Password, Host: host, Port: port}
 }
 
 // ListAccounts returns the saved accounts without passwords.
@@ -289,25 +285,36 @@ func (a *App) ListAccounts() ([]AccountSummary, error) {
 // LoginWithAccount logs in with a previously saved account (looked up by name),
 // reading its password from the vault. The password never crosses to the
 // frontend.
-func (a *App) LoginWithAccount(accountName string) ([]rclib.Server, error) {
+func (a *App) LoginWithAccount(accountName, nickname string) ([]rclib.Server, error) {
+	nickname = strings.TrimSpace(nickname)
+	if nickname == "" {
+		return nil, errNicknameRequired
+	}
 	acc, err := a.findAccount(accountName)
 	if err != nil {
 		return nil, err
 	}
-	return a.sessions.Login(accountToCreds(acc))
+	creds := accountToCreds(acc)
+	creds.Nickname = nickname
+	return a.sessions.Login(creds)
 }
 
 // AddAccount logs in with the supplied credentials and, on success, persists
 // them to the vault. On failure nothing is saved.
-func (a *App) AddAccount(req LoginRequest) ([]rclib.Server, error) {
-	servers, err := a.sessions.Login(toCreds(req))
+func (a *App) AddAccount(req LoginRequest, nickname string) ([]rclib.Server, error) {
+	nickname = strings.TrimSpace(nickname)
+	if nickname == "" {
+		return nil, errNicknameRequired
+	}
+	creds := toCreds(req)
+	creds.Nickname = nickname
+	servers, err := a.sessions.Login(creds)
 	if err != nil {
 		return nil, err
 	}
 	if a.vault != nil {
 		if saveErr := a.vault.Add(credentials.Account{
 			ProfileName: req.ProfileName,
-			Nickname:    req.Nickname,
 			Account:     req.Account,
 			Password:    req.Password,
 		}); saveErr != nil {
