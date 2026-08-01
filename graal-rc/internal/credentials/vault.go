@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Account is a full persisted login (profile name/nickname/account/password). DisplayName and
@@ -75,9 +76,36 @@ func (v *Vault) Load() ([]Account, error) {
 	if err != nil {
 		return nil, err
 	}
-	var accounts []Account
-	if err := json.Unmarshal(plain, &accounts); err != nil {
+	var stored []struct {
+		ProfileName string `json:"profileName,omitempty"`
+		Nickname    string `json:"nickname,omitempty"`
+		Account     string `json:"account"`
+		Password    string `json:"password"`
+		DisplayName string `json:"displayName,omitempty"`
+		Photo       string `json:"photo,omitempty"`
+	}
+	if err := json.Unmarshal(plain, &stored); err != nil {
 		return nil, err
+	}
+	accounts := make([]Account, len(stored))
+	migrated := false
+	for i, old := range stored {
+		accounts[i] = Account{
+			ProfileName: old.ProfileName,
+			Account:     old.Account,
+			Password:    old.Password,
+			DisplayName: old.DisplayName,
+			Photo:       old.Photo,
+		}
+		if accounts[i].ProfileName == "" && strings.HasPrefix(old.Nickname, "Preagonal:") {
+			accounts[i].ProfileName = "Preagonal:"
+			migrated = true
+		}
+	}
+	if migrated {
+		if err := v.Save(accounts); err != nil {
+			return nil, err
+		}
 	}
 	return accounts, nil
 }
