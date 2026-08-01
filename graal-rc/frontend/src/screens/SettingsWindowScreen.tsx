@@ -194,6 +194,7 @@ function CodingSection({
         </div>
         <div className="grid gap-4 p-4">
           <ThemePreview
+            key={`settings-preview-${theme}-${themeDialog.open ? "dialog-open" : "dialog-closed"}`}
             theme={theme}
             definition={activeCustom?.definition ?? (theme === "remoteTheme" ? remoteDefinition : undefined)}
             fontFamily={fontFamily}

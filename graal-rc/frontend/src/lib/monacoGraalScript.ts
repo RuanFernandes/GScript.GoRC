@@ -43,7 +43,9 @@ export function registerGraalScript(monaco: MonacoLanguageAPI): void {
           [/\b(public|private|const|enum|function)\b/, "storage.modifier"],
           [/\b(new|datablock)\b/, "keyword.other"],
           [/\b(true|false|nil|null|NULL|pi|timevar2)\b/, "constant.language"],
-          [/\b(temp|server|client|clientr|player|this|thiso)\.[a-zA-Z_][a-zA-Z0-9_]*/, "variable.language"],
+          // Keep the GS2 namespace/prefix separate from the member name so
+          // themes can style `temp.` independently from `playerName`.
+          [/\b(?:temp|server|client|clientr|player|this|thiso)(?=\.)/, "variable.language.prefix", "@memberAccess"],
           [/\b(serverr)\b/, "variable.language.flag"],
           [/\b(name)\b/, "variable.language"],
           // ClassName::method() — the identifier before `::` is the object/class,
@@ -57,6 +59,11 @@ export function registerGraalScript(monaco: MonacoLanguageAPI): void {
           [/[-~^/%|=+*!?&<>]/, "keyword.operator"],
           [/[\[\]]/, "keyword.operator.array"],
           [/[{}();:,.]/, "punctuation"],
+        ],
+        memberAccess: [
+          [/\./, "punctuation"],
+          [/[a-zA-Z_][a-zA-Z0-9_]*/, "variable.language.member", "@pop"],
+          [/./, "@pop"],
         ],
         // "..." string with SQL keywords highlighted inside (grammar:
         // repository.sql-strings). Because this state shadows plain strings,

@@ -13,7 +13,7 @@ import {Loader2} from "lucide-react"
 import {AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogHeader, AlertDialogTitle} from "@/components/ui/alert-dialog"
 import {Button} from "@/components/ui/button"
 import {useCodingSettings} from "@/hooks/useCodingSettings"
-import {ensureTheme} from "@/lib/monacoThemes"
+import {ensureTheme, toMonacoThemeName} from "@/lib/monacoThemes"
 import {registerGraalScript} from "@/lib/monacoGraalScript"
 import {registerServerConfig} from "@/lib/monacoServerConfig"
 import {adaptMonacoTheme} from "@/lib/adaptTheme"
@@ -245,8 +245,9 @@ export function ScriptEditorWindowScreen() {
     const customDef = customDefs[settings.theme]
     if (customDef) {
       try {
-        m.editor.defineTheme(settings.theme, adaptMonacoTheme(customDef as never))
-        m.editor.setTheme(settings.theme)
+        const themeName = toMonacoThemeName(settings.theme)
+        m.editor.defineTheme(themeName, adaptMonacoTheme(customDef as never))
+        m.editor.setTheme(themeName)
       } catch { m.editor.setTheme("vs-dark") }
     } else if (settings.theme === "remoteTheme") {
       if (remoteDef) {
