@@ -7,7 +7,6 @@ import {useEffect, useRef, useState} from "react"
 import {LogOut, Settings, UserRound} from "lucide-react"
 import {toast} from "sonner"
 
-import {Badge} from "@/components/ui/badge"
 import {Button} from "@/components/ui/button"
 import {Input} from "@/components/ui/input"
 import {Tabs, TabsContent, TabsList, TabsTrigger} from "@/components/ui/tabs"
@@ -269,10 +268,6 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
           </span>
         </div>
         <div className="ml-auto flex items-center gap-2">
-          <Badge variant="outline" className="hidden gap-1.5 sm:flex">
-            <span className="size-1.5 rounded-full bg-emerald-500" />
-            Connected
-          </Badge>
           <Button variant="ghost" size="sm" onClick={() => rcService.openSettings()}>
             <Settings />
             Settings
@@ -312,10 +307,6 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
                 </TabsTrigger>
               ))}
             </TabsList>
-            <span className="text-muted-foreground hidden items-center gap-1.5 px-2 text-xs sm:flex">
-              <span className="size-1.5 rounded-full bg-emerald-500" />
-              Live
-            </span>
           </div>
           {tabs.map((t) => (
             <TabsContent key={t.channel || "server"} value={t.channel} className="mt-2 min-h-0 flex-1">
