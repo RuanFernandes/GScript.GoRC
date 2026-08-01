@@ -193,5 +193,20 @@ export function useChatAutocomplete(players: Player[]) {
       : null
   }
 
-  return {complete, suggest}
+  // options exposes the current completion set for the inline suggestion
+  // palette. It uses the same matcher as Tab, so the visual list and keyboard
+  // completion can never disagree.
+  const options = (text: string): string[] => {
+    if (!text.startsWith("/")) return []
+    return build(text)?.matches ?? []
+  }
+
+  const select = (text: string, value: string, setText: (v: string) => void) => {
+    const produced = render(text, value)
+    setText(produced)
+    lastSet.current = produced
+    ctx.current = {matches: options(text), index: Math.max(0, options(text).indexOf(value))}
+  }
+
+  return {complete, suggest, options, select}
 }

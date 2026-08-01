@@ -124,6 +124,43 @@ function ChatPane({
             always starts where the caret is. */}
         <div className="relative flex-1">
           {(() => {
+            const options = autocomplete.options(text)
+            if (!options.length) return null
+            const accountPhase = /^\/\S+\s/.test(text)
+            return (
+              <div
+                role="listbox"
+                aria-label={accountPhase ? "Player suggestions" : "Command suggestions"}
+                className="bg-popover text-popover-foreground absolute right-0 bottom-full left-0 z-30 mb-2 max-h-64 overflow-y-auto rounded-md border p-1 shadow-lg"
+              >
+                <div className="text-muted-foreground flex items-center justify-between px-2 py-1 text-[11px]">
+                  <span>{accountPhase ? "Players" : "Commands"}</span>
+                  <span>Tab to complete</span>
+                </div>
+                {options.map((option) => (
+                  <button
+                    key={option}
+                    type="button"
+                    role="option"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => {
+                      setGhostOff(false)
+                      autocomplete.select(text, option, setText)
+                    }}
+                    className="hover:bg-accent hover:text-accent-foreground flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-left font-mono text-xs transition-colors"
+                  >
+                    <span>{accountPhase ? option : `/${option}`}</span>
+                    {!accountPhase && (
+                      <span className="text-muted-foreground ml-3 font-sans text-[10px]">
+                        {option === "open" || option === "openrights" || option === "opencomments" || option === "openaccess" || option === "openacc" || option === "openprofile" || option === "playerinfo" || option === "disconnect" || option === "reset" || option === "staffactivity" ? "player" : "command"}
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )
+          })()}
+          {(() => {
             const ghost = !ghostOff ? autocomplete.suggest(text) : null
             if (!ghost) return null
             // Split at the first case-sensitive divergence between typed text
