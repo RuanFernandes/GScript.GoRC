@@ -8,10 +8,11 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
-// trayIcon is the app icon embedded for the system tray. Reused from the
-// Windows build icon so the tray matches the executable/taskbar icon.
+// trayIcon is the PNG icon embedded for the system tray. Wails' Windows tray
+// converter accepts PNG bytes here; passing the ICO container used by the
+// executable resource can fail with a misleading ERROR_SUCCESS message.
 //
-//go:embed build/windows/icon.ico
+//go:embed assets/rc_icon.png
 var trayIcon []byte
 
 // setupTray creates the system-tray icon (Open / Close menu) and installs the

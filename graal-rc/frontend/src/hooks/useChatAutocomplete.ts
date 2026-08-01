@@ -28,12 +28,48 @@ interface CmdDef {
 // imported) because that file interleaves them with server routing — a flat
 // registry is all the completer needs.
 const COMMANDS: CmdDef[] = [
-  {name: "openrights", arg: "account"},
-  {name: "openaccess", arg: "account"},
-  {name: "opencomments", arg: "account"},
-  {name: "open", arg: "account"},
-  {name: "clear", arg: "none"},
-  {name: "scripthelp2", arg: "none"},
+	{name: "clear", arg: "none"},
+	{name: "help", arg: "none"},
+	{name: "optionshelp", arg: "none"},
+	{name: "stats", arg: "none"},
+	{name: "playerinfo", arg: "account"},
+	{name: "open", arg: "account"},
+	{name: "openrights", arg: "account"},
+	{name: "opencomments", arg: "account"},
+	{name: "openaccess", arg: "account"},
+	{name: "openacc", arg: "account"},
+	{name: "openprofile", arg: "account"},
+	{name: "disconnect", arg: "account"},
+	{name: "reset", arg: "account"},
+	{name: "localbans", arg: "none"},
+	{name: "staffactivity", arg: "account"},
+	{name: "find", arg: "none"},
+	{name: "finddef", arg: "none"},
+	{name: "global", arg: "none"},
+	{name: "updatelevel", arg: "none"},
+	{name: "clientstats", arg: "none"},
+	{name: "npcstart", arg: "none"},
+	{name: "npckill", arg: "none"},
+	{name: "reloadscriptlibs", arg: "none"},
+	{name: "loadlang", arg: "none"},
+	{name: "savenpcs", arg: "none"},
+	{name: "clearnpcs", arg: "none"},
+	{name: "npc", arg: "none"},
+	{name: "style", arg: "none"},
+	{name: "listscriptlogfunctions", arg: "none"},
+	{name: "functionprofilestart", arg: "none"},
+	{name: "functionprofilestop", arg: "none"},
+	{name: "functionprofileshow", arg: "none"},
+	{name: "scripthelp", arg: "none"},
+	{name: "scriptscan", arg: "none"},
+	{name: "memstats", arg: "none"},
+	{name: "activeobjects", arg: "none"},
+	{name: "show", arg: "none"},
+	{name: "staticvarlinks", arg: "none"},
+	{name: "countnoclassnpcs", arg: "none"},
+	{name: "clearnoclassnpcs", arg: "none"},
+	{name: "npcshutdown", arg: "none"},
+	{name: "scripthelp2", arg: "none"},
 ]
 
 const cmdByName = (name: string): CmdDef | undefined =>
@@ -157,5 +193,20 @@ export function useChatAutocomplete(players: Player[]) {
       : null
   }
 
-  return {complete, suggest}
+  // options exposes the current completion set for the inline suggestion
+  // palette. It uses the same matcher as Tab, so the visual list and keyboard
+  // completion can never disagree.
+  const options = (text: string): string[] => {
+    if (!text.startsWith("/")) return []
+    return build(text)?.matches ?? []
+  }
+
+  const select = (text: string, value: string, setText: (v: string) => void) => {
+    const produced = render(text, value)
+    setText(produced)
+    lastSet.current = produced
+    ctx.current = {matches: options(text), index: Math.max(0, options(text).indexOf(value))}
+  }
+
+  return {complete, suggest, options, select}
 }

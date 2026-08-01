@@ -2,10 +2,12 @@
 // between the account-select, add-account, and server-list screens. Login
 // intents go through useSession; the saved-account list lives in useAccounts.
 // Destructive/login actions are gated by a confirmation dialog.
-import {useEffect, useState} from "react"
+import {useCallback, useEffect, useRef, useState} from "react"
 import {toast} from "sonner"
+import {Events} from "@wailsio/runtime"
 
 import {ConfirmDialog} from "@/components/ConfirmDialog"
+import {AppWindowFrame} from "@/components/AppWindowFrame"
 import {rcService} from "@/services/rcService"
 import {useAccounts} from "@/hooks/useAccounts"
 import {useSession} from "@/hooks/useSession"
@@ -23,6 +25,7 @@ import {ScriptEditorWindowScreen} from "@/screens/ScriptEditorWindowScreen"
 import {ScriptManagerWindowScreen} from "@/screens/ScriptManagerWindowScreen"
 import {ServerListScreen} from "@/screens/ServerListScreen"
 import {SettingsWindowScreen} from "@/screens/SettingsWindowScreen"
+import {SyncReviewWindowScreen} from "@/screens/SyncReviewWindowScreen"
 import {SqliteExplorerWindowScreen} from "@/screens/SqliteExplorerWindowScreen"
 import {TextEditorWindowScreen} from "@/screens/TextEditorWindowScreen"
 import type {AppView, LoginRequest} from "@/types"
@@ -32,6 +35,8 @@ type PendingConfirm =
   | {kind: "delete"; account: string}
   | null
 
+const NICKNAME_STORAGE_KEY = "graal-rc:sessionNickname"
+
 // Shell is the main window's orchestrator (select/add/serverlist/rc). The
 // external player-list window renders its own screen via the App router below.
 function Shell() {
@@ -40,9 +45,18 @@ function Shell() {
   const [view, setView] = useState<AppView>("select")
   const [pending, setPending] = useState<PendingConfirm>(null)
   const [confirmBusy, setConfirmBusy] = useState(false)
+  const [sessionNickname, setSessionNickname] = useState(() => {
+    if (typeof window === "undefined") return ""
+    return window.localStorage.getItem(NICKNAME_STORAGE_KEY) ?? ""
+  })
+
+  useEffect(() => {
+    window.localStorage.setItem(NICKNAME_STORAGE_KEY, sessionNickname)
+  }, [sessionNickname])
+  const returningToLogin = useRef(false)
 
   const handleAddAccount = async (req: LoginRequest): Promise<boolean> => {
-    if (await session.addAccount(req)) {
+    if (await session.addAccount(req, sessionNickname.trim())) {
       await accounts.refresh()
       setView("serverlist")
       return true
@@ -58,8 +72,43 @@ function Shell() {
 
   // Connect to a server; on success leave the server list for the RC screen.
   const handleServerConnect = async (index: number) => {
-    await session.connect(index)
+    const connected = await session.connect(index)
+    if (!connected) {
+      await returnToLogin()
+    }
   }
+
+  const returnToLogin = useCallback(async () => {
+    if (returningToLogin.current) return
+    returningToLogin.current = true
+    try {
+      await session.logout()
+      await accounts.refresh()
+      setView("select")
+    } finally {
+      returningToLogin.current = false
+    }
+  }, [accounts.refresh, session.logout])
+
+  // Unexpected server disconnects arrive through the ordered rc:evt envelope.
+  // Clear the live session so the user cannot keep interacting with a dead
+  // handle, then show the server-provided reason on the login screen.
+  useEffect(() => {
+    const off = Events.On("rc:evt", (event: {data: string}) => {
+      try {
+        const payload = JSON.parse(event.data) as {name?: string; data?: unknown[]}
+        if (payload.name !== "rc:disconnected") return
+        const reason = typeof payload.data?.[0] === "string" ? payload.data[0] : "Disconnected by server"
+        void (async () => {
+          await returnToLogin()
+          toast.error("Connection lost", {description: reason})
+        })()
+      } catch {
+        // Ignore malformed lifecycle events; the session remains usable.
+      }
+    })
+    return off
+  }, [returnToLogin])
 
   // State-driven safety net: the moment a server is connected (connectedServer
   // becomes non-empty), ensure we are on the RC screen regardless of which code
@@ -83,7 +132,7 @@ function Shell() {
     const account = pending.account
     setConfirmBusy(true)
     try {
-      if (await session.loginWithAccount(account)) setView("serverlist")
+      if (await session.loginWithAccount(account, sessionNickname.trim())) setView("serverlist")
     } finally {
       setConfirmBusy(false)
       setPending(null)
@@ -113,6 +162,7 @@ function Shell() {
     return (
       <AddAccountScreen
         busy={session.busy}
+        nickname={sessionNickname}
         onLogin={handleAddAccount}
         onCancel={() => setView("select")}
       />
@@ -150,9 +200,24 @@ function Shell() {
         accounts={accounts.accounts}
         loading={accounts.loading}
         busy={session.busy}
-        onSelect={(accountName) => setPending({kind: "login", account: accountName})}
+        nickname={sessionNickname}
+        onNicknameChange={setSessionNickname}
+        onSelect={(accountName, nickname) => {
+          if (!nickname.trim()) {
+            toast.error("Nickname required", {description: "Set the session nickname before logging in."})
+            return
+          }
+          setSessionNickname(nickname)
+          setPending({kind: "login", account: accountName})
+        }}
         onRemove={(accountName) => setPending({kind: "delete", account: accountName})}
-        onAdd={() => setView("add")}
+        onAdd={() => {
+          if (!sessionNickname.trim()) {
+            toast.error("Nickname required", {description: "Set the session nickname before adding an account."})
+            return
+          }
+          setView("add")
+        }}
         onRename={async (accountName, displayName) => {
           try {
             await rcService.renameAccount(accountName, displayName)
@@ -200,20 +265,34 @@ function Shell() {
 function App() {
   if (typeof window === "undefined") return <Shell />
   const hash = window.location.hash
-  if (hash.startsWith("#players")) return <PlayerListWindowScreen />
-  if (hash.startsWith("#rights")) return <RightsWindowScreen />
-  if (hash.startsWith("#attrs")) return <AttrsWindowScreen />
-  if (hash.startsWith("#banhistory")) return <PlayerTextRecordWindowScreen />
-  if (hash.startsWith("#staffactivity")) return <PlayerTextRecordWindowScreen />
-  if (hash.startsWith("#ban")) return <BanWindowScreen />
-  if (hash.startsWith("#comments")) return <CommentsWindowScreen />
-  if (hash.startsWith("#files")) return <FileBrowserWindowScreen />
-  if (hash.startsWith("#scripts")) return <ScriptManagerWindowScreen />
-  if (hash.startsWith("#settings")) return <SettingsWindowScreen />
-  if (hash.startsWith("#editor")) return <ScriptEditorWindowScreen />
-  if (hash.startsWith("#textfile")) return <TextEditorWindowScreen />
-  if (hash.startsWith("#sqlite")) return <SqliteExplorerWindowScreen />
-  return <Shell />
+  const route = hash.startsWith("#players")
+    ? {title: "Player List", content: <PlayerListWindowScreen />}
+    : hash.startsWith("#rights")
+      ? {title: "Rights", content: <RightsWindowScreen />}
+      : hash.startsWith("#attrs")
+        ? {title: "Attributes", content: <AttrsWindowScreen />}
+        : hash.startsWith("#banhistory") || hash.startsWith("#staffactivity")
+          ? {title: "Player Records", content: <PlayerTextRecordWindowScreen />}
+          : hash.startsWith("#ban")
+            ? {title: "Access", content: <BanWindowScreen />}
+            : hash.startsWith("#comments")
+              ? {title: "Comments", content: <CommentsWindowScreen />}
+              : hash.startsWith("#files")
+                ? {title: "File Browser", content: <FileBrowserWindowScreen />}
+                : hash.startsWith("#scripts")
+                  ? {title: "Script Manager", content: <ScriptManagerWindowScreen />}
+                  : hash.startsWith("#settings")
+                    ? {title: "Settings", content: <SettingsWindowScreen />}
+                    : hash.startsWith("#sync")
+                      ? {title: "Sync Review", content: <SyncReviewWindowScreen />}
+                      : hash.startsWith("#editor")
+                        ? {title: "Script Editor", content: <ScriptEditorWindowScreen />}
+                        : hash.startsWith("#textfile")
+                          ? {title: "Text Editor", content: <TextEditorWindowScreen />}
+                          : hash.startsWith("#sqlite")
+                            ? {title: "SQLite Explorer", content: <SqliteExplorerWindowScreen />}
+                            : {title: "Graal Remote Control", content: <Shell />}
+  return <AppWindowFrame title={route.title}>{route.content}</AppWindowFrame>
 }
 
 export default App

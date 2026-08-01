@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -24,12 +25,14 @@ import (
 	"graal-rc/internal/connection"
 	"graal-rc/internal/credentials"
 	"graal-rc/internal/sqlite"
+	synclib "graal-rc/internal/sync"
 	"graal-rc/rclib"
 )
 
 var (
-	errNoVault         = errors.New("account vault is not available")
-	errAccountNotFound = errors.New("account not found")
+	errNoVault          = errors.New("account vault is not available")
+	errAccountNotFound  = errors.New("account not found")
+	errNicknameRequired = errors.New("session nickname is required")
 )
 
 // App is the Wails v3 service: its public methods are auto-bound to the
@@ -89,6 +92,20 @@ type App struct {
 	fileBrowserCfgMu sync.Mutex
 	fileBrowserCfg   FileBrowserConfig
 
+	// Local Sync engine + its persisted config. Config is PER-SERVER (keyed by
+	// server name) so each server keeps its own output folder + settings. The
+	// engine is (re)started after a server connect (once NC comes up) and stopped
+	// on logout / server switch.
+	syncCfgMu        sync.Mutex
+	syncCfgs         map[string]synclib.SyncConfig
+	syncCfgLoaded    bool
+	syncEngineMu     sync.Mutex
+	syncEngine       *synclib.Engine
+	syncCtx          context.Context
+	syncCancel       context.CancelFunc
+	syncReviewMu     sync.Mutex
+	syncReviewWindow *application.WebviewWindow
+
 	// Opened-file caches for the type-aware open behavior (double-click a file):
 	// textCache holds .txt content for the editor window; dbFiles maps a remote
 	// .db path to its local cache file (operated on by the SQLite explorer);
@@ -113,17 +130,17 @@ func NewApp() *App {
 		migrateLegacyCredentials(vault)
 	}
 	return &App{
-		sessions:       connection.NewService(),
-		vault:          vault,
-		editorWindows:  map[string]*application.WebviewWindow{},
-		editorCache:    map[string]rclib.ScriptReply{},
-		editorDirty:    map[string]bool{},
-		textCache:      map[string][]byte{},
-		dbFiles:        map[string]string{},
-		dbHeaders:      map[string][]byte{},
-		textWindows:    map[string]*application.WebviewWindow{},
-		sqliteWindows:  map[string]*application.WebviewWindow{},
-		playerWindows:  map[string]*application.WebviewWindow{},
+		sessions:      connection.NewService(),
+		vault:         vault,
+		editorWindows: map[string]*application.WebviewWindow{},
+		editorCache:   map[string]rclib.ScriptReply{},
+		editorDirty:   map[string]bool{},
+		textCache:     map[string][]byte{},
+		dbFiles:       map[string]string{},
+		dbHeaders:     map[string][]byte{},
+		textWindows:   map[string]*application.WebviewWindow{},
+		sqliteWindows: map[string]*application.WebviewWindow{},
+		playerWindows: map[string]*application.WebviewWindow{},
 	}
 }
 
@@ -141,6 +158,22 @@ func (a *App) attach(app *application.App) {
 	a.app = app
 	var seq uint64
 	a.sessions.SetEmitter(func(name string, data ...any) {
+		// Tap RC chat lines + *Changed push events into the sync engine so
+		// server-side script activity drives a targeted/debounced reconcile.
+		if eng := a.currentSyncEngine(); eng != nil {
+			switch name {
+			case "rc:message":
+				if len(data) > 0 {
+					if text, ok := data[0].(string); ok {
+						eng.HandleChatLine(text)
+					}
+				}
+			case "rc:weaponsChanged", "rc:classesChanged", "rc:npcsChanged":
+				// Structured add/delete push — refreshes the live cache and
+				// signals the engine to re-reconcile (catches new scripts).
+				eng.HandleListChanged(name)
+			}
+		}
 		s := atomic.AddUint64(&seq, 1)
 		payload := struct {
 			Seq  uint64 `json:"seq"`
@@ -175,9 +208,9 @@ func migrateLegacyCredentials(vault *credentials.Vault) {
 		return
 	}
 	if err := vault.Add(credentials.Account{
-		Nickname: c.Nickname,
-		Account:  c.Account,
-		Password: c.Password,
+		ProfileName: profileNameForLegacyNickname(c.Nickname),
+		Account:     c.Account,
+		Password:    c.Password,
 	}); err != nil {
 		log.Printf("migrate legacy credentials: %v", err)
 		return
@@ -189,9 +222,9 @@ func migrateLegacyCredentials(vault *credentials.Vault) {
 
 // LoginRequest is the payload sent from the Add Account screen.
 type LoginRequest struct {
-	Nickname string `json:"nickname"`
-	Account  string `json:"account"`
-	Password string `json:"password"`
+	ProfileName string `json:"profileName"`
+	Account     string `json:"account"`
+	Password    string `json:"password"`
 }
 
 // AccountSummary is the password-less account projection exposed to the
@@ -206,31 +239,31 @@ const PreagonalListserverHost = "listserver.graal.in"
 // preagonalPrefix marks a nickname as routing to the alternate listserver.
 const preagonalPrefix = "Preagonal:"
 
-// listserverForName returns the listserver endpoint for a nickname. A nickname
+func profileNameForLegacyNickname(nickname string) string {
+	if strings.HasPrefix(nickname, preagonalPrefix) {
+		return preagonalPrefix
+	}
+	return ""
+}
+
+// listserverForProfile returns the listserver endpoint for a profile name. A profile name
 // prefixed "Preagonal:" selects the alternate endpoint; everything else uses the
 // default Graal listserver. The prefix is a hidden, client-only routing key.
-func listserverForName(name string) (host string, port int) {
-	if strings.HasPrefix(name, preagonalPrefix) {
+func listserverForProfile(profileName string) (host string, port int) {
+	if strings.HasPrefix(strings.TrimSpace(profileName), preagonalPrefix) {
 		return PreagonalListserverHost, rclib.DefaultListserverPort
 	}
 	return rclib.DefaultListserverHost, rclib.DefaultListserverPort
 }
 
-// nicknameForServer strips the routing prefix so only the real nickname is sent
-// to the server (the prefix is a client-side listserver selector, not part of
-// the in-game nick).
-func nicknameForServer(name string) string {
-	return strings.TrimPrefix(name, preagonalPrefix)
-}
-
 func toCreds(req LoginRequest) connection.Credentials {
-	host, port := listserverForName(req.Nickname)
-	return connection.Credentials{Nickname: nicknameForServer(req.Nickname), Account: req.Account, Password: req.Password, Host: host, Port: port}
+	host, port := listserverForProfile(req.ProfileName)
+	return connection.Credentials{Account: req.Account, Password: req.Password, Host: host, Port: port}
 }
 
 func accountToCreds(a credentials.Account) connection.Credentials {
-	host, port := listserverForName(a.Nickname)
-	return connection.Credentials{Nickname: nicknameForServer(a.Nickname), Account: a.Account, Password: a.Password, Host: host, Port: port}
+	host, port := listserverForProfile(a.ProfileName)
+	return connection.Credentials{Account: a.Account, Password: a.Password, Host: host, Port: port}
 }
 
 // ListAccounts returns the saved accounts without passwords.
@@ -252,26 +285,38 @@ func (a *App) ListAccounts() ([]AccountSummary, error) {
 // LoginWithAccount logs in with a previously saved account (looked up by name),
 // reading its password from the vault. The password never crosses to the
 // frontend.
-func (a *App) LoginWithAccount(accountName string) ([]rclib.Server, error) {
+func (a *App) LoginWithAccount(accountName, nickname string) ([]rclib.Server, error) {
+	nickname = strings.TrimSpace(nickname)
+	if nickname == "" {
+		return nil, errNicknameRequired
+	}
 	acc, err := a.findAccount(accountName)
 	if err != nil {
 		return nil, err
 	}
-	return a.sessions.Login(accountToCreds(acc))
+	creds := accountToCreds(acc)
+	creds.Nickname = nickname
+	return a.sessions.Login(creds)
 }
 
 // AddAccount logs in with the supplied credentials and, on success, persists
 // them to the vault. On failure nothing is saved.
-func (a *App) AddAccount(req LoginRequest) ([]rclib.Server, error) {
-	servers, err := a.sessions.Login(toCreds(req))
+func (a *App) AddAccount(req LoginRequest, nickname string) ([]rclib.Server, error) {
+	nickname = strings.TrimSpace(nickname)
+	if nickname == "" {
+		return nil, errNicknameRequired
+	}
+	creds := toCreds(req)
+	creds.Nickname = nickname
+	servers, err := a.sessions.Login(creds)
 	if err != nil {
 		return nil, err
 	}
 	if a.vault != nil {
 		if saveErr := a.vault.Add(credentials.Account{
-			Nickname: req.Nickname,
-			Account:  req.Account,
-			Password: req.Password,
+			ProfileName: req.ProfileName,
+			Account:     req.Account,
+			Password:    req.Password,
 		}); saveErr != nil {
 			log.Printf("save account: %v", saveErr)
 		}
@@ -342,6 +387,9 @@ func (a *App) GetServers() ([]rclib.Server, error) { return a.sessions.GetServer
 func (a *App) ConnectToServer(index int) error {
 	err := a.sessions.ConnectToServer(index)
 	a.refreshServerChrome()
+	if err == nil {
+		a.startSyncEngine()
+	}
 	return err
 }
 
@@ -350,6 +398,7 @@ func (a *App) SetNewProtocol(enable bool) error { return a.sessions.SetNewProtoc
 
 // Logout drops the active session and restores default window/tray titles.
 func (a *App) Logout() {
+	a.stopSyncEngine()
 	a.sessions.Logout()
 	a.refreshServerChrome()
 }
@@ -496,6 +545,7 @@ func (a *App) openPlayerWindow(kind, label, account string, width, height int) e
 		URL:              "/#" + kind + "?a=" + url.QueryEscape(account),
 		Width:            width,
 		Height:           height,
+		Frameless:        true,
 		BackgroundColour: application.NewRGB(15, 17, 21),
 	})
 	a.playerWindowMu.Lock()
@@ -911,6 +961,7 @@ func (a *App) openTextWindow(remotePath string) error {
 		URL:              "/#textfile?p=" + url.QueryEscape(remotePath),
 		Width:            820,
 		Height:           620,
+		Frameless:        true,
 		BackgroundColour: application.NewRGB(15, 17, 21),
 	})
 	a.editorMu.Lock()
@@ -1112,6 +1163,7 @@ func (a *App) openSqliteWindow(remotePath string) error {
 		URL:              "/#sqlite?p=" + url.QueryEscape(remotePath),
 		Width:            960,
 		Height:           640,
+		Frameless:        true,
 		BackgroundColour: application.NewRGB(15, 17, 21),
 	})
 	a.openMu.Lock()
@@ -1303,6 +1355,7 @@ func (a *App) OpenPlayerList() {
 		URL:              "/#players",
 		Width:            560,
 		Height:           520,
+		Frameless:        true,
 		BackgroundColour: application.NewRGB(15, 17, 21),
 	})
 	a.playerListWindow = w
@@ -1331,6 +1384,7 @@ func (a *App) OpenScriptManager() {
 		URL:              "/#scripts",
 		Width:            720,
 		Height:           560,
+		Frameless:        true,
 		BackgroundColour: application.NewRGB(15, 17, 21),
 	})
 	a.scriptMgrWindow = w
@@ -1356,8 +1410,11 @@ func (a *App) OpenSettings() {
 		Name:             "settings",
 		Title:            "Settings",
 		URL:              "/#settings",
-		Width:            520,
-		Height:           620,
+		Width:            720,
+		Height:           720,
+		MinWidth:         620,
+		MinHeight:        620,
+		Frameless:        true,
 		BackgroundColour: application.NewRGB(15, 17, 21),
 	})
 	a.settingsWindow = w
@@ -1385,6 +1442,7 @@ func (a *App) OpenFileBrowser() {
 		URL:              "/#files",
 		Width:            920,
 		Height:           600,
+		Frameless:        true,
 		BackgroundColour: application.NewRGB(15, 17, 21),
 	})
 	a.fileBrowserWindow = w
@@ -1480,6 +1538,7 @@ func (a *App) OpenScriptEditor(scriptType, key string) error {
 		URL:              "/#editor?t=" + scriptType + "&k=" + url.QueryEscape(key),
 		Width:            820,
 		Height:           620,
+		Frameless:        true,
 		BackgroundColour: application.NewRGB(15, 17, 21),
 	})
 	a.editorMu.Lock()

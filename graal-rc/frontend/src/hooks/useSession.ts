@@ -20,8 +20,8 @@ export interface UseSessionResult {
   connectedServer: string
   activeAccount: string
   select: (index: number) => void
-  loginWithAccount: (accountName: string) => Promise<boolean>
-  addAccount: (req: LoginRequest) => Promise<boolean>
+  loginWithAccount: (accountName: string, nickname: string) => Promise<boolean>
+  addAccount: (req: LoginRequest, nickname: string) => Promise<boolean>
   refresh: () => Promise<void>
   connect: (index: number) => Promise<boolean>
   logout: () => Promise<void>
@@ -58,9 +58,9 @@ export function useSession(service: RcService): UseSessionResult {
   }, [])
 
   const loginWithAccount = useCallback(
-    async (accountName: string): Promise<boolean> => {
+    async (accountName: string, nickname: string): Promise<boolean> => {
       setStatusText("Connecting to listserver...")
-      const result = await run("Login", () => service.loginWithAccount(accountName))
+      const result = await run("Login", () => service.loginWithAccount(accountName, nickname))
       if (!result) {
         setStatusText("")
         return false
@@ -73,9 +73,9 @@ export function useSession(service: RcService): UseSessionResult {
   )
 
   const addAccount = useCallback(
-    async (req: LoginRequest): Promise<boolean> => {
+    async (req: LoginRequest, nickname: string): Promise<boolean> => {
       setStatusText("Connecting to listserver...")
-      const result = await run("Login", () => service.addAccount(req))
+      const result = await run("Login", () => service.addAccount(req, nickname))
       if (!result) {
         setStatusText("")
         return false

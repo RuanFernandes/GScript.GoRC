@@ -11,18 +11,19 @@ import type {LoginRequest} from "@/types"
 
 interface AddAccountScreenProps {
   busy: boolean
+  nickname: string
   onLogin: (req: LoginRequest) => Promise<boolean> | boolean
   onCancel: () => void
 }
 
-export function AddAccountScreen({busy, onLogin, onCancel}: AddAccountScreenProps) {
+export function AddAccountScreen({busy, nickname, onLogin, onCancel}: AddAccountScreenProps) {
   return (
     <div className="flex min-h-svh items-center justify-center bg-background p-4">
       <Card className="w-full max-w-sm">
         <CardHeader>
           <CardTitle className="text-xl">Add Account</CardTitle>
           <CardDescription>
-            Sign in with a staff account. It is saved on success.
+            Sign in with a staff account. It is saved on success. The session nickname is <strong>{nickname || "not set"}</strong> and applies to every account.
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4">
