@@ -152,10 +152,9 @@ export function FileBrowserWindowScreen() {
   const [dragging, setDragging] = useState(false)
   const [query, setQuery] = useState("")
 
-  // Expanded node paths (by cleaned path). Default-expand the top level so the
-  // folder structure is visible immediately.
+  // Expanded node paths (by cleaned path). Start collapsed so opening the
+  // Files window does not expand the entire folder tree.
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
-  const [autoExpandedRoot, setAutoExpandedRoot] = useState(false)
 
   // Dialog state for rename / delete / move.
   const [renameTarget, setRenameTarget] = useState<FileBrowserEntry | null>(null)
@@ -192,18 +191,6 @@ export function FileBrowserWindowScreen() {
     if (!q) return fb.files
     return fb.files.filter((f) => basename(f.path).toLowerCase().includes(q))
   }, [fb.files, query])
-
-  // Auto-expand the top-level nodes once the folder list first arrives.
-  useEffect(() => {
-    if (!autoExpandedRoot && tree.length > 0) {
-      setExpanded((prev) => {
-        const next = new Set(prev)
-        tree.forEach((n) => next.add(n.path))
-        return next
-      })
-      setAutoExpandedRoot(true)
-    }
-  }, [tree, autoExpandedRoot])
 
   const currentClean = trimFolder(fb.currentFolder)
 

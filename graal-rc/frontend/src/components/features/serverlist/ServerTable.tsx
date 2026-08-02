@@ -1,10 +1,10 @@
 // Presentational server table. Highlights the selected row and reports
 // selection + double-click-to-connect through callbacks.
-import {Users} from "lucide-react"
+import {ArrowDownWideNarrow, Search, Users} from "lucide-react"
+import {useMemo, useState} from "react"
 
 import {Badge} from "@/components/ui/badge"
 import {ScrollArea} from "@/components/ui/scroll-area"
-import {Table, TableBody, TableCell, TableHead, TableHeader, TableRow} from "@/components/ui/table"
 import {cn} from "@/lib/utils"
 import {serverDisplay, tierBadge} from "@/lib/server"
 import type {Server} from "@/types"
@@ -20,48 +20,70 @@ interface ServerTableProps {
 
 export function ServerTable({servers, selectedIndex, busy, onSelect, onConnect}: ServerTableProps) {
   const {t} = useLanguage()
+  const [query, setQuery] = useState("")
+  const filteredServers = useMemo(() => {
+    const normalizedQuery = query.trim().toLocaleLowerCase()
+    return servers
+      .map((server, index) => ({server, index}))
+      .filter(({server}) => !normalizedQuery || server.name.toLocaleLowerCase().includes(normalizedQuery))
+      .sort((a, b) => b.server.players - a.server.players || a.index - b.index)
+  }, [query, servers])
+
   return (
-    <ScrollArea className="h-full rounded-lg border">
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>{t("server.server")}</TableHead>
-            <TableHead className="w-[90px]">{t("server.language")}</TableHead>
-            <TableHead className="w-[70px]">{t("server.version")}</TableHead>
-            <TableHead className="w-[90px] text-right">{t("server.players")}</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {servers.map((server, index) => {
+    <section className="server-list-panel flex min-h-0 flex-col overflow-hidden rounded-xl border" aria-label={t("server.title")}>
+      <div className="server-list-heading flex items-center justify-between border-b px-5 py-4">
+        <div>
+          <p className="server-section-kicker">{t("server.server")}</p>
+          <p className="text-muted-foreground mt-1 text-xs">{t("server.doubleClickToConnect")}</p>
+        </div>
+        <div className="server-list-tools">
+          <span className="server-sort-indicator"><ArrowDownWideNarrow aria-hidden="true" />{t("server.mostActive")}</span>
+          <label className="server-search-field">
+            <Search aria-hidden="true" />
+            <span className="sr-only">{t("server.search")}</span>
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("server.search")} />
+          </label>
+        </div>
+      </div>
+      <ScrollArea className="min-h-0 flex-1">
+        <div className="server-card-list p-3">
+          {filteredServers.map(({server, index}) => {
             const {label, tier} = serverDisplay(server.name)
             const badge = tierBadge(tier)
             return (
-              <TableRow
+              <button
+                type="button"
                 key={`${server.name}-${index}`}
-                data-state={index === selectedIndex ? "selected" : undefined}
-                className={cn(busy && "opacity-60")}
+                aria-pressed={index === selectedIndex}
+                className={cn("server-item", index === selectedIndex && "server-item-selected", busy && "opacity-60")}
                 onClick={() => onSelect(index)}
                 onDoubleClick={() => onConnect(index)}
+                tabIndex={0}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault()
+                    onSelect(index)
+                  }
+                }}
               >
-                <TableCell className="font-medium">
-                  <div className="flex items-center gap-2">
-                    <span>{label}</span>
-                    {badge && <Badge variant={tier === "gold" ? "default" : "secondary"}>{badge}</Badge>}
-                  </div>
-                </TableCell>
-                <TableCell className="text-muted-foreground">{server.language || "—"}</TableCell>
-                <TableCell className="text-muted-foreground">{server.version || "—"}</TableCell>
-                <TableCell className="text-right tabular-nums">
-                  <span className="inline-flex items-center gap-1 justify-end">
-                    <Users className="size-3.5 text-muted-foreground" />
-                    {server.players}
+                <span className="server-item-topline">
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="server-online-dot" aria-hidden="true" />
+                    <span className="server-item-name truncate">{label}</span>
                   </span>
-                </TableCell>
-              </TableRow>
+                  {badge && <Badge variant={tier === "gold" ? "default" : "secondary"}>{badge}</Badge>}
+                </span>
+                <span className="server-item-meta">
+                  <span><span className="server-item-label">{t("server.language")}</span>{server.language || "—"}</span>
+                  <span className="server-item-players"><Users aria-hidden="true" />{server.players}<span className="sr-only"> {t("server.players")}</span></span>
+                </span>
+                {server.description?.trim() && <span className="server-item-description">{server.description.trim()}</span>}
+              </button>
             )
           })}
-        </TableBody>
-      </Table>
-    </ScrollArea>
+          {filteredServers.length === 0 && <div className="server-empty-state">{t("server.noResults")}</div>}
+        </div>
+      </ScrollArea>
+    </section>
   )
 }

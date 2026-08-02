@@ -129,6 +129,107 @@
   }
 }
 
+.server-picker-screen {
+  --server-accent: oklch(0.72 0.12 165);
+  background: var(--background);
+}
+
+.server-picker-header {
+  background: color-mix(in oklab, var(--background) 94%, var(--foreground));
+}
+
+.server-picker-brand-icon {
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  color: var(--server-accent);
+  background: color-mix(in oklab, var(--server-accent) 10%, var(--background));
+}
+
+.server-picker-brand-icon svg { width: 1rem; height: 1rem; }
+.server-picker-refresh svg { width: 0.9rem; height: 0.9rem; }
+.server-picker-brand-overline { color: var(--muted-foreground); font-size: 0.58rem; letter-spacing: 0.12em; line-height: 1; text-transform: uppercase; }
+
+.server-picker-layout { background: color-mix(in oklab, var(--background) 96%, var(--foreground)); }
+.server-selection-intro { min-height: 6.3rem; }
+.server-selection-title { margin-top: 0.45rem; font-size: clamp(1.45rem, 2vw, 2rem); font-weight: 650; letter-spacing: -0.045em; line-height: 1.1; }
+.server-summary-grid { display: grid; grid-template-columns: repeat(2, minmax(5rem, 1fr)); border: 1px solid var(--border); border-radius: 0.7rem; overflow: hidden; }
+.server-summary-grid > div { display: grid; min-width: 5.3rem; gap: 0.2rem; padding: 0.7rem 0.85rem; background: var(--card); }
+.server-summary-grid > div + div { border-left: 1px solid var(--border); }
+.server-summary-grid strong { font-size: 1.2rem; font-weight: 650; letter-spacing: -0.04em; }
+.server-summary-grid span { display: inline-flex; align-items: center; gap: 0.25rem; color: var(--muted-foreground); font-size: 0.63rem; white-space: nowrap; }
+.server-summary-grid svg { width: 0.72rem; height: 0.72rem; }
+
+.server-list-panel,
+.server-details-card {
+  border-color: color-mix(in oklab, var(--border) 82%, var(--foreground));
+  background: var(--card);
+  box-shadow: 0 1px 2px color-mix(in oklab, var(--foreground) 5%, transparent);
+}
+
+.server-list-heading { min-height: 4.7rem; background: color-mix(in oklab, var(--card) 94%, var(--foreground)); }
+.server-section-kicker { color: var(--muted-foreground); font-size: 0.68rem; font-weight: 650; letter-spacing: 0.1em; text-transform: uppercase; }
+.server-list-count { min-width: 1.75rem; border: 1px solid var(--border); border-radius: 0.45rem; padding: 0.25rem 0.45rem; color: var(--muted-foreground); font-size: 0.72rem; text-align: center; }
+.server-list-tools { display: flex; align-items: center; gap: 0.75rem; }
+.server-sort-indicator { display: inline-flex; align-items: center; gap: 0.35rem; color: var(--muted-foreground); font-size: 0.68rem; white-space: nowrap; }
+.server-sort-indicator svg { width: 0.8rem; height: 0.8rem; color: var(--server-accent); }
+.server-search-field { display: flex; width: min(13rem, 42%); align-items: center; gap: 0.5rem; border: 1px solid var(--border); border-radius: 0.45rem; padding: 0.45rem 0.6rem; color: var(--muted-foreground); background: var(--background); transition: border-color 180ms ease, box-shadow 180ms ease; }
+.server-search-field:focus-within { border-color: var(--ring); box-shadow: 0 0 0 3px color-mix(in oklab, var(--ring) 18%, transparent); }
+.server-search-field svg { width: 0.85rem; height: 0.85rem; flex: 0 0 auto; }
+.server-search-field input { width: 100%; min-width: 0; border: 0; outline: 0; color: var(--foreground); background: transparent; font: inherit; font-size: 0.75rem; }
+.server-search-field input::placeholder { color: var(--muted-foreground); }
+.server-table-header th { height: 2.75rem; color: var(--muted-foreground); font-size: 0.68rem; letter-spacing: 0.06em; text-transform: uppercase; }
+.server-card-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 0.65rem; }
+.server-item { display: grid; gap: 1rem; min-width: 0; padding: 1rem; border: 1px solid var(--border); border-radius: 0.7rem; color: var(--foreground); background: var(--card); text-align: left; cursor: pointer; outline: none; transition: border-color 180ms ease, background 180ms ease, transform 180ms ease; }
+.server-item:hover { border-color: color-mix(in oklab, var(--server-accent) 40%, var(--border)); background: color-mix(in oklab, var(--server-accent) 5%, var(--card)); transform: translateY(-1px); }
+.server-item:active { transform: translateY(0); }
+.server-item:focus-visible { box-shadow: inset 0 0 0 2px var(--ring); }
+.server-item-selected { border-color: color-mix(in oklab, var(--server-accent) 60%, var(--border)); background: color-mix(in oklab, var(--server-accent) 9%, var(--card)); box-shadow: inset 3px 0 0 var(--server-accent); }
+.server-item-topline, .server-item-meta { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
+.server-item-name { font-size: 0.95rem; font-weight: 650; letter-spacing: -0.01em; }
+.server-item-meta { color: var(--muted-foreground); font-size: 0.75rem; }
+.server-item-meta > span:not(.server-item-players) { display: grid; gap: 0.2rem; min-width: 0; }
+.server-item-label { color: color-mix(in oklab, var(--muted-foreground) 78%, var(--background)); font-size: 0.62rem; letter-spacing: 0.08em; text-transform: uppercase; }
+.server-item-players { display: inline-flex; align-items: center; gap: 0.35rem; color: var(--foreground); font-variant-numeric: tabular-nums; }
+.server-item-players svg { width: 0.9rem; height: 0.9rem; color: var(--muted-foreground); }
+.server-item-description { display: -webkit-box; overflow: hidden; color: var(--muted-foreground); font-size: 0.76rem; line-height: 1.45; text-align: left; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.server-empty-state { display: grid; min-height: 12rem; place-items: center; color: var(--muted-foreground); font-size: 0.8rem; }
+.server-online-dot { width: 0.4rem; height: 0.4rem; flex: 0 0 auto; border-radius: 999px; background: var(--server-accent); box-shadow: 0 0 0 3px color-mix(in oklab, var(--server-accent) 14%, transparent); }
+.server-details-header { padding-bottom: 1.25rem; }
+.server-detail-status { display: inline-flex; align-items: center; gap: 0.5rem; margin-top: 0.8rem; color: var(--muted-foreground); font-size: 0.75rem; }
+.server-player-highlight { display: flex; align-items: center; gap: 0.75rem; border: 1px solid color-mix(in oklab, var(--server-accent) 22%, var(--border)); border-radius: 0.7rem; padding: 0.9rem 1rem; background: color-mix(in oklab, var(--server-accent) 7%, var(--card)); }
+.server-player-highlight > svg { width: 1.15rem; height: 1.15rem; color: var(--server-accent); }
+.server-player-highlight > div { display: grid; gap: 0.1rem; }
+.server-player-highlight strong { font-size: 1.2rem; line-height: 1; }
+.server-player-highlight span { color: var(--muted-foreground); font-size: 0.7rem; }
+.server-details-content { min-height: 0; }
+.server-details-grid { display: grid; gap: 0.85rem; }
+.server-details-grid > div { display: grid; grid-template-columns: 6.25rem minmax(0, 1fr); gap: 0.75rem; align-items: center; }
+.server-details-grid dt { color: var(--muted-foreground); }
+.server-details-grid dd { min-width: 0; }
+.server-description { display: grid; gap: 0.45rem; }
+.server-connect-button { width: 100%; margin-top: auto; }
+
+@media (max-width: 767px) {
+  .server-picker-layout { overflow: auto; }
+  .server-list-panel { min-height: 22rem; }
+  .server-details-card { min-height: 20rem; }
+}
+
+@media (max-width: 620px) {
+  .server-picker-layout { padding-right: 1rem; padding-left: 1rem; }
+  .server-selection-intro { align-items: flex-start; flex-direction: column; }
+  .server-summary-grid { width: 100%; }
+  .server-summary-grid > div { min-width: 0; }
+}
+
+@media (max-width: 540px) {
+  .server-card-list { grid-template-columns: 1fr; }
+}
+
 /* Thin, themed scrollbars (WebView2/Chromium). Applies to every overflow area
    so the file browser tree/table/log and any plain scroll containers match the
    dark UI instead of the chunky light native bar. */
