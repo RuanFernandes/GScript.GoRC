@@ -645,6 +645,7 @@ function SqlConsole({
             options={{
               minimap: {enabled: false},
               scrollBeyondLastLine: false,
+              fontLigatures: true,
               fontSize: 13,
               automaticLayout: true,
               fixedOverflowWidgets: true,

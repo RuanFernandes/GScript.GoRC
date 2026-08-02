@@ -83,6 +83,7 @@ export function CommentsWindowScreen() {
             options={{
               fontFamily: "monospace",
               fontSize: 12,
+              fontLigatures: true,
               minimap: {enabled: false},
               scrollBeyondLastLine: false,
               automaticLayout: true,

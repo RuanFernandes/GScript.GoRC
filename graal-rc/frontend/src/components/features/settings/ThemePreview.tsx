@@ -233,7 +233,7 @@ export function ThemePreview({theme, definition, fontFamily, fontSize}: {theme: 
           beforeMount={beforeMount}
           onMount={onMount}
           theme={activeTheme}
-          options={{readOnly: true, minimap: {enabled: false}, fontFamily, fontSize, lineNumbers: "on", folding: false, padding: {top: 12, bottom: 12}, scrollBeyondLastLine: false, overviewRulerLanes: 0}}
+          options={{readOnly: true, minimap: {enabled: false}, fontFamily, fontSize, fontLigatures: true, lineNumbers: "on", folding: false, padding: {top: 12, bottom: 12}, scrollBeyondLastLine: false, overviewRulerLanes: 0}}
         />
       </div>
     </div>

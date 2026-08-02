@@ -185,6 +185,7 @@ export function TextEditorWindowScreen() {
             options={{
               fontFamily: settings.fontFamily,
               fontSize: settings.fontSize,
+              fontLigatures: true,
               minimap: {enabled: false},
               scrollBeyondLastLine: false,
               automaticLayout: true,

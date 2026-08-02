@@ -54,6 +54,9 @@ export function registerGraalScript(monaco: MonacoLanguageAPI): void {
           [/\b[a-zA-Z_][a-zA-Z0-9_]*(?=::)/, "type.identifier"],
           [/::/, "keyword.operator"],
           [/\b[a-zA-Z_][a-zA-Z0-9_]*\s*(?=\()/, "entity.name.function"],
+          // Consume the complete identifier before tokenizing operators or
+          // numbers, so names such as p1, p2, and file1 stay one token.
+          [/\b[a-zA-Z_][a-zA-Z0-9_]*/, "identifier"],
           [/@/, "keyword.operator.append"],
           [/\bSPC\b/, "keyword.operator.append"],
           [/[-~^/%|=+*!?&<>]/, "keyword.operator"],

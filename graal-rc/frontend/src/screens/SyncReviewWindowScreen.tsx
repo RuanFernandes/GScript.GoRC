@@ -66,6 +66,7 @@ function ReviewRow({
               options={{
                 readOnly: true,
                 renderSideBySide: true,
+                fontLigatures: true,
                 minimap: {enabled: false},
                 scrollBeyondLastLine: false,
               }}

@@ -129,6 +129,14 @@ function FilesSection({t}: {t: (key: string) => string}) {
   )
 }
 
+function primaryFontFamily(value: string): string {
+  const first = value.split(",", 1)[0]?.trim() ?? ""
+  if (first.length >= 2 && first[0] === first[first.length - 1] && (first[0] === "'" || first[0] === '"')) {
+    return first.slice(1, -1).trim()
+  }
+  return first
+}
+
 function CodingSection({
   theme,
   fontFamily,
@@ -144,8 +152,8 @@ function CodingSection({
   onReset: () => void
   t: (key: string) => string
 }) {
-  // Installed system fonts for the font autocomplete. Fetched once; if it fails
-  // the input still works as free text.
+  // Installed system fonts for the font picker. Fetched once; the current
+  // value is kept as an option so older/custom settings remain selectable.
   const [fonts, setFonts] = useState<string[]>([])
   useEffect(() => {
     rcService
@@ -176,6 +184,8 @@ function CodingSection({
   }, [])
 
   const activeCustom = customThemes.find((item) => item.key === theme)
+  const selectedFont = primaryFontFamily(fontFamily) || "monospace"
+  const fontOptions = Array.from(new Set([selectedFont, ...fonts].filter(Boolean)))
 
   const activateRemote = useCallback(async (name: string, definition: string) => {
     await rcService.saveRemoteTheme(name, definition)
@@ -227,18 +237,16 @@ function CodingSection({
 
       <div className="grid gap-2 sm:grid-cols-[140px_1fr] sm:items-center">
         <Label htmlFor="font">{t("settings.fontFamily")}</Label>
-        <Input
+        <select
           id="font"
-          list="system-fonts"
-          value={fontFamily}
+          value={selectedFont}
           onChange={(e) => onChange({fontFamily: e.target.value})}
-          placeholder={t("settings.fontPlaceholder")}
-        />
-        <datalist id="system-fonts">
-          {fonts.map((f) => (
-            <option key={f} value={f} />
+          className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-9 w-full rounded-md border px-3 py-1 text-sm shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-offset-2"
+        >
+          {fontOptions.map((font) => (
+            <option key={font} value={font}>{font}</option>
           ))}
-        </datalist>
+        </select>
       </div>
 
       <div className="grid gap-2 sm:grid-cols-[140px_1fr] sm:items-center">

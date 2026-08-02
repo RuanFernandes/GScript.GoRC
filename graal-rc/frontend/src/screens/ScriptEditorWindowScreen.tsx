@@ -325,6 +325,7 @@ export function ScriptEditorWindowScreen() {
             options={{
               fontFamily: settings.fontFamily,
               fontSize: settings.fontSize,
+              fontLigatures: true,
               readOnly,
               minimap: {enabled: false},
               scrollBeyondLastLine: false,

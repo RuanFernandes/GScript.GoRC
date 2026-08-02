@@ -122,6 +122,7 @@ export function PlayerTextRecordWindowScreen() {
               readOnly: true,
               fontFamily: "monospace",
               fontSize: 12,
+              fontLigatures: true,
               minimap: {enabled: false},
               scrollBeyondLastLine: false,
               automaticLayout: true,

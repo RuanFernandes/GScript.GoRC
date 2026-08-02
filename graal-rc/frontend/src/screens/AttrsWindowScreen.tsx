@@ -274,6 +274,7 @@ function MonacoText({value, onChange}: {value: string; onChange: (v: string) => 
         options={{
           fontFamily: "monospace",
           fontSize: 12,
+          fontLigatures: true,
           minimap: {enabled: false},
           scrollBeyondLastLine: false,
           automaticLayout: true,
