@@ -145,10 +145,26 @@ func (p *semicolonParser) looksLikeBlockOpen(index int) bool {
 	if previous.text == ")" || previous.text == ";" || previous.text == "}" {
 		return true
 	}
+	if previous.text == ":" && p.followsCaseLabel(index) {
+		return true
+	}
 	if previous.kind == tokenIdentifier {
 		switch strings.ToLower(previous.text) {
 		case "else", "try", "finally", "do":
 			return true
+		}
+	}
+	return false
+}
+
+func (p *semicolonParser) followsCaseLabel(index int) bool {
+	for i := index - 1; i >= 0; i-- {
+		if p.isCaseLabel(i) {
+			return true
+		}
+		switch p.tokens[i].text {
+		case "{", "}", ";":
+			return false
 		}
 	}
 	return false

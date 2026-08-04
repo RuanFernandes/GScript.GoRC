@@ -38,6 +38,19 @@ function onPlayerChats(message, count) {
 	}
 }
 
+func TestParseDocumentTracksQualifiedImportsAndConstructors(t *testing.T) {
+	doc := parseDocument("memory://qualified-import", `import class_gsorm.entity;
+function onCreated() {
+  this.entity = new Entity("players");
+}`, 1)
+	if len(doc.Imports) != 1 || doc.Imports[0] != "class_gsorm.entity" {
+		t.Fatalf("imports = %#v, want class_gsorm.entity", doc.Imports)
+	}
+	if len(doc.Members) != 1 || doc.Members[0].Type != "Entity" {
+		t.Fatalf("members = %#v, want Entity constructor type", doc.Members)
+	}
+}
+
 func TestCatalogParsesScriptHelpDefinitionsWithEmptyFunctionType(t *testing.T) {
 	data := `{
         "setTimer": {"name":"setTimer", "type":"", "params":[], "returns":"void", "scope":"global"},
@@ -890,6 +903,158 @@ function implicitClient() {}
 	}
 }
 
+func TestImportExportsOnlyPublicWhileJoinMergesAllClassFunctions(t *testing.T) {
+	root := t.TempDir()
+	classDir := filepath.Join(root, "classes")
+	if err := os.MkdirAll(classDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	class := `public function publicServer() {}
+function implicitServer() {}
+private function privateServer() {}
+//#CLIENTSIDE
+public function publicClient() {}
+function implicitClient() {}
+private function privateClient() {}`
+	if err := os.WriteFile(filepath.Join(classDir, "CombatHelpers.gs2"), []byte(class), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := NewLanguageServer()
+	if err := server.workspace.setRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	uri := "memory://class-visibility"
+
+	list := completionAtText(server, uri, "import CombatHelpers;\nimp", "imp")
+	if hasCompletion(list.Items, "implicitServer") || hasCompletion(list.Items, "implicitClient") {
+		t.Fatalf("import exposed implicit functions: %#v", list.Items)
+	}
+	list = completionAtText(server, uri, "import CombatHelpers;\npriv", "priv")
+	if hasCompletion(list.Items, "privateServer") || hasCompletion(list.Items, "privateClient") {
+		t.Fatalf("import exposed private functions: %#v", list.Items)
+	}
+	list = completionAtText(server, uri, "import CombatHelpers;\npub", "pub")
+	if !hasCompletion(list.Items, "publicServer") || hasCompletion(list.Items, "publicClient") {
+		t.Fatalf("import visibility or side filtering is incorrect: %#v", list.Items)
+	}
+
+	list = completionAtText(server, uri, "join(\"CombatHelpers\");\nimp", "imp")
+	if !hasCompletion(list.Items, "implicitServer") || hasCompletion(list.Items, "implicitClient") {
+		t.Fatalf("join did not merge implicit server functions: %#v", list.Items)
+	}
+	list = completionAtText(server, uri, "join(\"CombatHelpers\");\npriv", "priv")
+	if !hasCompletion(list.Items, "privateServer") || hasCompletion(list.Items, "privateClient") {
+		t.Fatalf("join did not merge private server functions: %#v", list.Items)
+	}
+
+	text := `import CombatHelpers;
+function onCreated() {
+  temp.obj = new CombatHelpers();
+  temp.obj.imp
+}`
+	list = completionAtText(server, uri, text, "temp.obj.imp")
+	if hasCompletion(list.Items, "implicitServer") {
+		t.Fatalf("imported class instance exposed an implicit function: %#v", list.Items)
+	}
+
+	text = `function onCreated() {
+  temp.obj = new CombatHelpers();
+  temp.obj.join("CombatHelpers");
+  temp.obj.imp
+}`
+	list = completionAtText(server, uri, text, "temp.obj.imp")
+	if !hasCompletion(list.Items, "implicitServer") {
+		t.Fatalf("joined class instance did not expose an implicit function: %#v", list.Items)
+	}
+	text = strings.Replace(text, "temp.obj.imp", "temp.obj.priv", 1)
+	list = completionAtText(server, uri, text, "temp.obj.priv")
+	if !hasCompletion(list.Items, "privateServer") {
+		t.Fatalf("joined class instance did not expose a private function: %#v", list.Items)
+	}
+}
+
+func TestWorkspaceResolvesImportedConstructorsAndTransitiveClassJoins(t *testing.T) {
+	root := t.TempDir()
+	classDir := filepath.Join(root, "classes")
+	if err := os.MkdirAll(classDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	classes := map[string]string{
+		"func_arrays.gs2": `public function _join(arr, delimiter) {}
+public function _map(arr, callback) {}
+private function arrayPrivate() {}`,
+		"class_gsorm.entity.gs2": `public function Entity(tableName) {
+  this.join("func_arrays");
+}
+public function addField(fieldName, fieldType, extra) {}
+public function addIndex(indexName, fields, isUnique) {}
+private function entityPrivate() {}`,
+		"class_gsorm.orm.gs2": `public function ORM(dbName) {
+  this.join("func_arrays");
+}
+public function registerEntity(name, entity) {}
+public function syncEntity(name) {}
+private function ormPrivate() {}`,
+	}
+	for name, source := range classes {
+		if err := os.WriteFile(filepath.Join(classDir, name), []byte(source), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	server := NewLanguageServer()
+	if err := server.workspace.setRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	uri := "memory://gsorm"
+	text := `import class_gsorm.entity;
+import class_gsorm.orm;
+
+function syncEntity() {}
+function onCreated() {
+  this.ORM = new ORM("emotes");
+  this.pemote_entity = new Entity("player_emotes");
+  with (this.pemote_entity) {
+    addF
+    this.addI
+  }
+  this.ORM.reg
+  this.ORM._ma
+  this.syn
+}`
+
+	list := completionAtText(server, uri, text, "new Ent")
+	if !hasCompletion(list.Items, "Entity") {
+		t.Fatalf("qualified import did not expose Entity constructor: %#v", list.Items)
+	}
+
+	list = completionAtText(server, uri, text, "addF")
+	if !hasCompletion(list.Items, "addField") {
+		t.Fatalf("with(Entity) did not expose direct members: %#v", list.Items)
+	}
+	list = completionAtText(server, uri, text, "_ma")
+	if !hasCompletion(list.Items, "_map") {
+		t.Fatalf("with(Entity) did not expose members inherited from func_arrays: %#v", list.Items)
+	}
+	list = completionAtText(server, uri, text, "this.addI")
+	if !hasCompletion(list.Items, "addIndex") {
+		t.Fatalf("this inside with(Entity) did not resolve the Entity type: %#v", list.Items)
+	}
+	list = completionAtText(server, uri, text, "this.ORM.reg")
+	if !hasCompletion(list.Items, "registerEntity") || hasCompletion(list.Items, "ormPrivate") {
+		t.Fatalf("ORM instance completion is incorrect: %#v", list.Items)
+	}
+	list = completionAtText(server, uri, text, "this.ORM._ma")
+	if !hasCompletion(list.Items, "_map") || hasCompletion(list.Items, "arrayPrivate") {
+		t.Fatalf("transitive ORM join completion is incorrect: %#v", list.Items)
+	}
+	list = completionAtText(server, uri, text, "this.syn")
+	if !hasCompletion(list.Items, "syncEntity") {
+		t.Fatalf("this receiver did not expose the current script function: %#v", list.Items)
+	}
+}
+
 func TestJoinedClassesRespectVariableWithAndGUIScopes(t *testing.T) {
 	root := t.TempDir()
 	classDir := filepath.Join(root, "classes")
@@ -1085,6 +1250,52 @@ func TestLanguageServerRequiresSyncWhenDisabled(t *testing.T) {
 	}
 	if !strings.Contains(string(response), `"code":-32002`) {
 		t.Fatalf("disabled server response = %s", response)
+	}
+}
+
+func TestServerContextCompletionRespectsScopesAndConfigSections(t *testing.T) {
+	server := NewLanguageServer()
+	server.SetServerContext(ServerScriptContext{
+		ServerFlags:   "# ignored\nserver.eventActive=true\nserverr.globalTime=120\n[Ignored]\nserver.notAFlag=false\n",
+		ServerOptions: "# ignored\njaillevels=jail.nw,guest.nw\n[Tags]\nnotAnOption=true\nguild_Graal Police=staff.nw\n",
+	})
+	uri := "memory://server-context"
+	serverText := `function onCreated() {
+  server.event
+  serverr.global
+  serveroptions.jail
+}
+`
+
+	list := completionAtText(server, uri, serverText, "server.event")
+	if !hasCompletion(list.Items, "eventActive") {
+		t.Fatalf("server flag completion missing on serverside: %#v", list.Items)
+	}
+	list = completionAtText(server, uri, serverText, "serverr.global")
+	if !hasCompletion(list.Items, "globalTime") {
+		t.Fatalf("serverr flag completion missing on serverside: %#v", list.Items)
+	}
+	list = completionAtText(server, uri, serverText, "serveroptions.jail")
+	if !hasCompletion(list.Items, "jaillevels") || hasCompletion(list.Items, "Tags") || hasCompletion(list.Items, "notAnOption") {
+		t.Fatalf("server option completion parsed comments/sections incorrectly: %#v", list.Items)
+	}
+
+	clientText := `//#CLIENTSIDE
+	server.eventActive
+	serverr.globalTime
+	serveroptions.jaillevels
+`
+	list = completionAtText(server, uri+"-client", clientText, "server.eventActive")
+	if hasCompletion(list.Items, "eventActive") {
+		t.Fatalf("server-only flag leaked into clientside completion: %#v", list.Items)
+	}
+	list = completionAtText(server, uri+"-client", clientText, "serverr.globalTime")
+	if !hasCompletion(list.Items, "globalTime") {
+		t.Fatalf("serverr flag was not readable clientside: %#v", list.Items)
+	}
+	list = completionAtText(server, uri+"-client", clientText, "serveroptions.jaillevels")
+	if hasCompletion(list.Items, "jaillevels") {
+		t.Fatalf("server option leaked into clientside completion: %#v", list.Items)
 	}
 }
 

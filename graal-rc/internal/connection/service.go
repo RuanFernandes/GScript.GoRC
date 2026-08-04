@@ -51,6 +51,7 @@ type Service struct {
 	handle          rclib.Handle
 	creds           Credentials
 	serverName      string // name of the server selected in ConnectToServer; "" when none
+	serverEpoch     uint64 // increments whenever the active server/session changes
 	pumpCancel      context.CancelFunc
 	lastNCAttempt   time.Time  // last ConnectToNCServer attempt; throttles retries
 	lastNCKeepalive time.Time  // last silent NC keepalive (weapon-list ping)
@@ -113,6 +114,17 @@ type Service struct {
 	// pushed via the BanListData callback with data_type=="bantypes". Guarded by
 	// editorMu. Empty until requested via GetBanTypes.
 	banTypes string
+
+	// serverText contains the latest server options/flags snapshot. These are
+	// fetched after server login so the embedded GraalScript LSP can resolve
+	// server., serverr. and serveroptions. without opening a config editor first.
+	serverTextMu        sync.RWMutex
+	serverTextRequestMu sync.Mutex
+	serverOptions       string
+	serverFlags         string
+	serverOptionsLoaded bool
+	serverFlagsLoaded   bool
+	serverTextServer    string
 }
 
 const remoteControlBuildDate = "2026/08/03"
@@ -151,6 +163,17 @@ type BanData struct {
 type CommentsData struct {
 	Account string `json:"account"`
 	Content string `json:"content"`
+}
+
+// ServerScriptContext is the server-side configuration snapshot consumed by
+// the embedded GraalScript language server. The raw text stays here so the
+// parser remains the single source of truth for the options/flags formats.
+type ServerScriptContext struct {
+	ServerName         string `json:"serverName"`
+	ServerOptions      string `json:"serverOptions"`
+	ServerFlags        string `json:"serverFlags"`
+	ServerOptionsReady bool   `json:"serverOptionsReady"`
+	ServerFlagsReady   bool   `json:"serverFlagsReady"`
 }
 
 // scriptTimeout is how long OpenScript/OpenNPC* waits for the NC server reply.
@@ -780,9 +803,11 @@ func (s *Service) Login(creds Credentials) ([]rclib.Server, error) {
 	}
 	s.handle = h
 	s.creds = creds
+	s.serverEpoch++
 	s.channels = nil
 	s.mu.Unlock()
 	s.clearSelfFolderRights()
+	s.clearServerTextCache()
 
 	return servers, nil
 }
@@ -813,6 +838,11 @@ func (s *Service) ConnectToServer(index int) error {
 		return errors.New("not connected: log in first")
 	}
 	s.clearSelfFolderRights()
+	s.clearServerTextCache()
+	s.mu.Lock()
+	s.serverEpoch++
+	epoch := s.serverEpoch
+	s.mu.Unlock()
 	// ConnectToServer reuses the same grclib handle. The NC socket belongs to
 	// the previously selected server, so it must be closed before switching the
 	// main connection; otherwise the next sync can observe the old NC lists and
@@ -851,6 +881,7 @@ func (s *Service) ConnectToServer(index int) error {
 			s.serverName = ""
 			s.mu.Unlock()
 			s.clearSelfFolderRights()
+			s.clearServerTextCacheIfCurrent(epoch)
 			s.emitEvent("rc:disconnected", reason)
 			s.emitEvent("rc:channels", s.resetChannels())
 		},
@@ -868,6 +899,7 @@ func (s *Service) ConnectToServer(index int) error {
 			// grclib data_type. Resolve it here and do NOT forward to rc:serverdata
 			// — otherwise useChat dumps the whole config body into the chat log.
 			if isServerTextKind(dataType) {
+				s.cacheServerText(epoch, serverName, dataType, content)
 				s.resolvePending(pendingKey("serverdata", dataType), rclib.ScriptReply{Type: dataType, Script: content})
 				return
 			}
@@ -981,6 +1013,7 @@ func (s *Service) ConnectToServer(index int) error {
 		s.mu.Lock()
 		s.serverName = serverName
 		s.mu.Unlock()
+		go s.refreshServerTextCache(h, epoch, serverName)
 		return nil
 	case reason := <-disconnected:
 		s.mu.Lock()
@@ -1161,6 +1194,99 @@ func (s *Service) clearSelfFolderRights() {
 	s.selfRightsUpdated = time.Time{}
 	s.rightsMu.Unlock()
 	s.emitEvent("rc:scriptPermissionsChanged")
+}
+
+// clearServerTextCache invalidates the options/flags snapshot when the active
+// account or server changes. Server flags and options are server-specific and
+// must never leak into a later connection.
+func (s *Service) clearServerTextCache() {
+	s.serverTextMu.Lock()
+	s.serverOptions = ""
+	s.serverFlags = ""
+	s.serverOptionsLoaded = false
+	s.serverFlagsLoaded = false
+	s.serverTextServer = ""
+	s.serverTextMu.Unlock()
+}
+
+func (s *Service) clearServerTextCacheIfCurrent(epoch uint64) {
+	s.mu.Lock()
+	current := s.serverEpoch == epoch
+	s.mu.Unlock()
+	if current {
+		s.clearServerTextCache()
+	}
+}
+
+func (s *Service) cacheServerText(epoch uint64, serverName, dataType, content string) {
+	s.mu.Lock()
+	current := s.serverEpoch == epoch && s.serverName == serverName
+	s.mu.Unlock()
+	if !current {
+		log.Printf("[serverdata] ignoring stale %s response for server=%q", dataType, serverName)
+		return
+	}
+
+	s.serverTextMu.Lock()
+	s.serverTextServer = serverName
+	switch dataType {
+	case "options":
+		s.serverOptions = content
+		s.serverOptionsLoaded = true
+	case "flags":
+		s.serverFlags = content
+		s.serverFlagsLoaded = true
+	default:
+		s.serverTextMu.Unlock()
+		return
+	}
+	s.serverTextMu.Unlock()
+	log.Printf("[serverdata] cached %s for server=%q len=%d", dataType, serverName, len(content))
+}
+
+func (s *Service) cacheCurrentServerText(dataType, content string) {
+	s.mu.Lock()
+	epoch, serverName := s.serverEpoch, s.serverName
+	s.mu.Unlock()
+	s.cacheServerText(epoch, serverName, dataType, content)
+}
+
+// GetServerScriptContext returns a copy of the current server options/flags
+// snapshot for the embedded GraalScript language server.
+func (s *Service) GetServerScriptContext() ServerScriptContext {
+	s.mu.Lock()
+	serverName := s.serverName
+	s.mu.Unlock()
+	s.serverTextMu.RLock()
+	context := ServerScriptContext{
+		ServerName:         serverName,
+		ServerOptions:      s.serverOptions,
+		ServerFlags:        s.serverFlags,
+		ServerOptionsReady: s.serverOptionsLoaded,
+		ServerFlagsReady:   s.serverFlagsLoaded,
+	}
+	s.serverTextMu.RUnlock()
+	return context
+}
+
+// RefreshServerScriptContext requests fresh server options and flags for the
+// active server. The callbacks update the same cache used by the login warm-up
+// and by the embedded GraalScript language server.
+func (s *Service) RefreshServerScriptContext() error {
+	s.mu.Lock()
+	h := s.handle
+	serverName := s.serverName
+	s.mu.Unlock()
+	if h == 0 || strings.TrimSpace(serverName) == "" {
+		return errors.New("not connected to a server")
+	}
+
+	for _, kind := range []string{"options", "flags"} {
+		if _, err := s.requestServerText(h, kind); err != nil {
+			return fmt.Errorf("refresh server %s: %w", kind, err)
+		}
+	}
+	return nil
 }
 
 func (s *Service) invalidateSelfFolderRights(err error) {
@@ -1998,6 +2124,27 @@ func (s *Service) OpenServerText(kind string) (rclib.ScriptReply, error) {
 	if err != nil {
 		return rclib.ScriptReply{}, err
 	}
+	return s.requestServerText(h, kind)
+}
+
+// requestServerText registers the waiter before dispatching the request. The
+// server-data callback is asynchronous, but a fast local response can still
+// arrive before a waiter registered after the request, which would otherwise
+// make the cache/editor wait forever. Serializing these requests also lets the
+// login warm-up and a manually opened config share the same callback safely.
+func (s *Service) requestServerText(h rclib.Handle, kind string) (rclib.ScriptReply, error) {
+	switch kind {
+	case "options", "folder_config", "flags":
+	default:
+		return rclib.ScriptReply{}, errors.New("unknown server text kind: " + kind)
+	}
+
+	s.serverTextRequestMu.Lock()
+	defer s.serverTextRequestMu.Unlock()
+
+	key := pendingKey("serverdata", kind)
+	ch := s.registerPending(key)
+	var err error
 	switch kind {
 	case "options":
 		err = rclib.RequestServerOptions(h)
@@ -2005,21 +2152,31 @@ func (s *Service) OpenServerText(kind string) (rclib.ScriptReply, error) {
 		err = rclib.RequestFolderConfig(h)
 	case "flags":
 		err = rclib.RequestServerFlags(h)
-	default:
-		return rclib.ScriptReply{}, errors.New("unknown server text kind: " + kind)
 	}
 	if err != nil {
+		s.dropPending(key, ch)
 		return rclib.ScriptReply{}, err
 	}
-	ch := s.registerPending(pendingKey("serverdata", kind))
 	select {
 	case reply := <-ch:
 		return reply, nil
 	case <-time.After(scriptTimeout):
-		s.pendingMu.Lock()
-		delete(s.pending, pendingKey("serverdata", kind))
-		s.pendingMu.Unlock()
+		s.dropPending(key, ch)
 		return rclib.ScriptReply{}, errors.New("server text request timed out")
+	}
+}
+
+func (s *Service) refreshServerTextCache(h rclib.Handle, epoch uint64, serverName string) {
+	for _, kind := range []string{"options", "flags"} {
+		s.mu.Lock()
+		current := s.handle == h && s.serverEpoch == epoch && s.serverName == serverName
+		s.mu.Unlock()
+		if !current {
+			return
+		}
+		if _, err := s.requestServerText(h, kind); err != nil {
+			log.Printf("[serverdata] login cache %s failed for server=%q: %v", kind, serverName, err)
+		}
 	}
 }
 
@@ -2030,15 +2187,21 @@ func (s *Service) UploadServerText(kind, content string) error {
 	if err != nil {
 		return err
 	}
+	var uploadErr error
 	switch kind {
 	case "options":
-		return rclib.UploadServerOptions(h, content)
+		uploadErr = rclib.UploadServerOptions(h, content)
 	case "folder_config":
-		return rclib.UploadFolderConfig(h, content)
+		uploadErr = rclib.UploadFolderConfig(h, content)
 	case "flags":
-		return rclib.UploadServerFlags(h, content)
+		uploadErr = rclib.UploadServerFlags(h, content)
+	default:
+		return errors.New("unknown server text kind: " + kind)
 	}
-	return errors.New("unknown server text kind: " + kind)
+	if uploadErr == nil && (kind == "options" || kind == "flags") {
+		s.cacheCurrentServerText(kind, content)
+	}
+	return uploadErr
 }
 
 // ResetNPC resets an NPC by id.
@@ -2274,9 +2437,11 @@ func (s *Service) Logout() {
 	}
 	s.creds = Credentials{}
 	s.serverName = ""
+	s.serverEpoch++
 	s.channels = nil
 	s.mu.Unlock()
 	s.clearSelfFolderRights()
+	s.clearServerTextCache()
 }
 
 // Status returns a snapshot of the current session state.

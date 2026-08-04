@@ -1,14 +1,14 @@
 // SyncReviewWindowScreen lists scripts awaiting human resolution (conflicts,
 // server changes that need human review. Each row provides a diff and an
 // editable merge buffer; nothing is overwritten until the user chooses.
-import {useState} from "react"
+import {useEffect, useRef, useState} from "react"
 import {DiffEditor} from "@monaco-editor/react"
 
 import {Button} from "@/components/ui/button"
 import {Badge} from "@/components/ui/badge"
 import {Skeleton} from "@/components/ui/skeleton"
 import {useSync} from "@/hooks/useSync"
-import type {SyncReviewItem, SyncState} from "@/types"
+import type {SyncReviewItem} from "@/types"
 import {useLanguage} from "@/hooks/useLanguage"
 
 const STATE_BADGE: Record<string, "destructive" | "secondary" | "default"> = {
@@ -33,39 +33,52 @@ function ReviewRow({
   const {t} = useLanguage()
   const [open, setOpen] = useState(false)
   const [merged, setMerged] = useState(item.local ?? "")
+  const diffHostRef = useRef<HTMLDivElement>(null)
+  const [compactDiff, setCompactDiff] = useState(false)
+
+  useEffect(() => {
+    const element = diffHostRef.current
+    if (!element) return
+    const update = () => setCompactDiff(element.clientWidth < 720)
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [open])
 
   return (
-    <div className="border-b">
+    <div className="border-b last:border-b-0">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="hover:bg-accent flex w-full items-center gap-3 px-3 py-2 text-left"
+        aria-expanded={open}
+        className="hover:bg-accent flex min-w-0 w-full flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2 text-left sm:px-4"
       >
         <Badge variant={STATE_BADGE[item.state] ?? "default"}>
           {t(`sync.state.${item.state === "initial-conflict" ? "initial" : item.state === "new-local" ? "newLocal" : item.state === "local-missing-keep" ? "localMissing" : item.state === "server-missing-keep" ? "serverMissing" : "conflict"}`)}
         </Badge>
-        <span className="font-medium">{item.name}</span>
+        <span className="min-w-0 flex-1 truncate font-medium">{item.name}</span>
         <span className="text-muted-foreground text-xs uppercase">{item.kind}</span>
         {item.actor && (
-          <span className="text-muted-foreground ml-auto text-xs">by {item.actor}</span>
+          <span className="text-muted-foreground ml-0 max-w-full truncate text-xs sm:ml-auto">by {item.actor}</span>
         )}
       </button>
       {open && (
-        <div className="grid gap-2 px-3 pb-3">
-          <div className="grid grid-cols-2 gap-2 text-xs">
+        <div className="grid gap-3 px-3 pb-3 sm:px-4">
+          <div className="grid grid-cols-1 gap-1 text-xs sm:grid-cols-2 sm:gap-2">
             <div className="text-muted-foreground">{t("sync.local")} {item.local ? "" : t("sync.absent")}</div>
             <div className="text-muted-foreground">{t("sync.server")} {item.server ? "" : t("sync.absent")}</div>
           </div>
-          <div className="h-[320px] overflow-hidden rounded-md border">
+          <div ref={diffHostRef} className="h-64 min-h-0 overflow-hidden rounded-md border sm:h-80">
             <DiffEditor
-              height={320}
+              height="100%"
               original={item.local ?? ""}
               modified={item.server ?? ""}
               language="plaintext"
               theme="vs-dark"
               options={{
                 readOnly: true,
-                renderSideBySide: true,
+                renderSideBySide: !compactDiff,
                 fontLigatures: true,
                 minimap: {enabled: false},
                 scrollBeyondLastLine: false,
@@ -76,12 +89,12 @@ function ReviewRow({
             value={merged}
             onChange={(e) => setMerged(e.target.value)}
             aria-label={t("sync.mergedContent")}
-            className="min-h-40 w-full rounded-md border bg-background p-3 font-mono text-xs outline-none focus:ring-2 focus:ring-ring"
+            className="min-h-32 w-full resize-y rounded-md border bg-background p-3 font-mono text-xs outline-none focus:ring-2 focus:ring-ring sm:min-h-40"
           />
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={() => onResolve(item.kind, item.key, "local")}>{t("sync.keepLocal")}</Button>
-            <Button variant="outline" onClick={() => onResolve(item.kind, item.key, "server")}>{t("sync.useServer")}</Button>
-            <Button onClick={() => onResolve(item.kind, item.key, "merge", merged)}>{t("sync.applyMerge")}</Button>
+          <div className="flex flex-wrap gap-2">
+            <Button className="min-w-32 flex-1 sm:flex-none" variant="outline" onClick={() => onResolve(item.kind, item.key, "local")}>{t("sync.keepLocal")}</Button>
+            <Button className="min-w-32 flex-1 sm:flex-none" variant="outline" onClick={() => onResolve(item.kind, item.key, "server")}>{t("sync.useServer")}</Button>
+            <Button className="min-w-32 flex-1 sm:flex-none" onClick={() => onResolve(item.kind, item.key, "merge", merged)}>{t("sync.applyMerge")}</Button>
           </div>
         </div>
       )}
@@ -94,23 +107,25 @@ export function SyncReviewWindowScreen() {
   const {status, loaded, resolveConflict, pause, resume} = useSync()
 
   return (
-    <div className="bg-background flex h-svh flex-col">
-      <header className="flex items-center gap-3 border-b px-4 py-2.5">
-        <h1 className="text-base font-semibold">{t("sync.reviewTitle")}</h1>
-        {status.paused ? (
-          <Button variant="outline" size="sm" onClick={resume}>
-            {t("sync.resume")}
-          </Button>
-        ) : (
-          <Button variant="ghost" size="sm" onClick={pause}>
-            {t("sync.pause")}
-          </Button>
-        )}
-        {status.reviewCount > 0 && (
-          <Badge variant="destructive" className="ml-auto">
-            {status.reviewCount} {t("sync.pending")}
-          </Badge>
-        )}
+    <div className="bg-background flex h-svh min-w-0 flex-col">
+      <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b px-3 py-2.5 sm:px-4">
+        <h1 className="min-w-0 flex-1 text-base font-semibold">{t("sync.reviewTitle")}</h1>
+        <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
+          {status.paused ? (
+            <Button variant="outline" size="sm" onClick={resume}>
+              {t("sync.resume")}
+            </Button>
+          ) : (
+            <Button variant="ghost" size="sm" onClick={pause}>
+              {t("sync.pause")}
+            </Button>
+          )}
+          {status.reviewCount > 0 && (
+            <Badge variant="destructive">
+              {status.reviewCount} {t("sync.pending")}
+            </Badge>
+          )}
+        </div>
       </header>
       <main className="min-h-0 flex-1 overflow-y-auto">
         {!loaded ? (

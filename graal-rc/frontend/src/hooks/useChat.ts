@@ -267,14 +267,14 @@ export function useChat(service: RcService): UseChatResult {
     [pushScriptHelp, push]
   )
 
-  const handleRefreshGsDocApi = useCallback(
+  const handleRefreshLsp = useCallback(
     async (channel: string) => {
       try {
         await service.refreshGraalScriptDocApi()
         const entries = await refreshGsFunctions()
-        push(channel, `GraalScript doc API atualizada (${entries.length} definições).`, "system")
+        push(channel, `GraalScript doc API e contexto do servidor atualizados (${entries.length} definições).`, "system")
       } catch (err) {
-        push(channel, `refreshgsdocapi falhou: ${err instanceof Error ? err.message : String(err)}`, "system")
+        push(channel, `refreshlsp falhou: ${err instanceof Error ? err.message : String(err)}`, "system")
       }
     },
     [service, push]
@@ -290,8 +290,8 @@ export function useChat(service: RcService): UseChatResult {
         clearChannel(channel)
         return true
       }
-      if (trimmed.toLowerCase() === "/refreshgsdocapi") {
-        void handleRefreshGsDocApi(channel)
+      if (trimmed.toLowerCase() === "/refreshlsp") {
+        void handleRefreshLsp(channel)
         return true
       }
       // /openrights, /openaccess, /open {account} open a client-side editor
@@ -355,7 +355,7 @@ export function useChat(service: RcService): UseChatResult {
         return false
       }
     },
-    [service, clearChannel, handleScriptHelp, handleRefreshGsDocApi]
+    [service, clearChannel, handleScriptHelp, handleRefreshLsp]
   )
 
   // reorderTabs moves a tab (drag-and-drop reorder). The server tab stays in

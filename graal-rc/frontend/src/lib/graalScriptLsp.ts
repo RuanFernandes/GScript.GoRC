@@ -118,52 +118,64 @@ export class GraalScriptLspClient {
   private version = 0
   private uri = ""
   private sendQueue: Promise<unknown> = Promise.resolve()
+  private initializePromise: Promise<unknown> | null = null
+  private documentPromise: Promise<unknown> | null = null
   private disposed = false
 
   async initialize(workspaceRoot: string): Promise<LspInitializeResult> {
     if (this.disposed) return {}
     const rootUri = workspaceRoot ? filePathToUri(workspaceRoot) : null
-    const result = await this.request<LspInitializeResult>("initialize", {
-      processId: null,
-      rootUri,
-      capabilities: {
-        textDocument: {
-          completion: {completionItem: {snippetSupport: false}},
-          hover: {contentFormat: ["markdown", "plaintext"]},
-          signatureHelp: {signatureInformation: {documentationFormat: ["markdown", "plaintext"]}},
+    const task = (async () => {
+      const result = await this.request<LspInitializeResult>("initialize", {
+        processId: null,
+        rootUri,
+        capabilities: {
+          textDocument: {
+            completion: {completionItem: {snippetSupport: false}},
+            hover: {contentFormat: ["markdown", "plaintext"]},
+            signatureHelp: {signatureInformation: {documentationFormat: ["markdown", "plaintext"]}},
+          },
         },
-      },
-      clientInfo: {name: "graal-rc", version: "0.1.0"},
-    })
-    await this.notify("initialized", {})
-    if (this.disposed) return result ?? {}
-    this.initialized = true
-    return result ?? {}
+        clientInfo: {name: "graal-rc", version: "0.1.0"},
+      })
+      await this.notify("initialized", {})
+      if (this.disposed) return result ?? {}
+      this.initialized = true
+      return result ?? {}
+    })()
+    this.initializePromise = task
+    return task
   }
 
   async open(model: MonacoModel, documentUri: string): Promise<GraalScriptDiagnostic[]> {
     if (this.disposed) return []
-    this.uri = documentUri
-    this.version = 1
-    await this.notify("textDocument/didOpen", {
-      textDocument: {
-        uri: this.uri,
-        languageId: "graalscript",
-        version: this.version,
-        text: model.getValue(),
-      },
-    })
-    return this.diagnostics()
+    const task = (async () => {
+      if (this.initializePromise) await this.initializePromise
+      if (this.disposed || !this.initialized) return []
+      this.uri = documentUri
+      this.version = 1
+      await this.notify("textDocument/didOpen", {
+        textDocument: {
+          uri: this.uri,
+          languageId: "graalscript",
+          version: this.version,
+          text: model.getValue(),
+        },
+      })
+      return this.requestDiagnostics()
+    })()
+    this.documentPromise = task
+    return task
   }
 
   async change(text: string): Promise<GraalScriptDiagnostic[]> {
-    if (!this.initialized || !this.uri) return []
+    if (!await this.waitForDocument()) return []
     this.version++
     await this.notify("textDocument/didChange", {
       textDocument: {uri: this.uri, version: this.version},
       contentChanges: [{text}],
     })
-    return this.diagnostics()
+    return this.requestDiagnostics()
   }
 
   async close(): Promise<void> {
@@ -175,7 +187,7 @@ export class GraalScriptLspClient {
   }
 
   async completion(position: LspPosition): Promise<LspCompletionList | null> {
-    if (!this.initialized || !this.uri) return null
+    if (!await this.waitForDocument()) return null
     return this.request<LspCompletionList>("textDocument/completion", {
       textDocument: {uri: this.uri},
       position,
@@ -184,7 +196,7 @@ export class GraalScriptLspClient {
   }
 
   async hover(position: LspPosition): Promise<LspHover | null> {
-    if (!this.initialized || !this.uri) return null
+    if (!await this.waitForDocument()) return null
     return this.request<LspHover>("textDocument/hover", {
       textDocument: {uri: this.uri},
       position,
@@ -192,7 +204,7 @@ export class GraalScriptLspClient {
   }
 
   async signatureHelp(position: LspPosition): Promise<LspSignatureHelp | null> {
-    if (!this.initialized || !this.uri) return null
+    if (!await this.waitForDocument()) return null
     return this.request<LspSignatureHelp>("textDocument/signatureHelp", {
       textDocument: {uri: this.uri},
       position,
@@ -200,11 +212,25 @@ export class GraalScriptLspClient {
   }
 
   async diagnostics(): Promise<GraalScriptDiagnostic[]> {
-    if (!this.initialized || !this.uri) return []
+    if (!await this.waitForDocument()) return []
+    return this.requestDiagnostics()
+  }
+
+  private async requestDiagnostics(): Promise<GraalScriptDiagnostic[]> {
     const result = await this.request<LspDocumentDiagnosticReport>("textDocument/diagnostic", {
       textDocument: {uri: this.uri},
     })
     return result?.kind === "full" ? result.items ?? [] : []
+  }
+
+  private async waitForDocument(): Promise<boolean> {
+    try {
+      if (this.initializePromise) await this.initializePromise
+      if (this.documentPromise) await this.documentPromise
+    } catch {
+      return false
+    }
+    return !this.disposed && this.initialized && Boolean(this.uri)
   }
 
   private async notify(method: string, params: unknown): Promise<void> {

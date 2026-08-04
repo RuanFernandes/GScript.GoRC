@@ -211,10 +211,13 @@ func (d *Document) parseJoinsAndVariables() {
 		if isIdentifier(tok, "import") {
 			value := nextSignificant(d.Tokens, i+1)
 			if value >= 0 && (d.Tokens[value].kind == tokenString || d.Tokens[value].kind == tokenIdentifier) {
-				className := tokenStringValue(d.Tokens[value])
+				className, end := qualifiedName(d.Tokens, value)
 				if className != "" {
 					d.Imports = appendUnique(d.Imports, className)
-					d.AST.Children = append(d.AST.Children, ASTNode{Kind: nodeJoin, Name: className, Range: Range{Start: tok.startPos, End: d.Tokens[value].endPos}})
+					if end < value {
+						end = value
+					}
+					d.AST.Children = append(d.AST.Children, ASTNode{Kind: nodeJoin, Name: className, Range: Range{Start: tok.startPos, End: d.Tokens[end].endPos}})
 				}
 			}
 		}
@@ -320,7 +323,7 @@ func (d *Document) addDynamicVariableSymbol(scope, name, expression string, symb
 
 func isDynamicVariableScope(scope string) bool {
 	switch strings.ToLower(strings.TrimSpace(scope)) {
-	case "temp", "this", "thiso", "player", "client", "clientr", "server", "serverr":
+	case "temp", "this", "thiso", "player", "client", "clientr", "server", "serverr", "serveroptions":
 		return true
 	default:
 		return false
@@ -591,6 +594,13 @@ func (d *Document) inferExpression(start int, position Position) inferredValue {
 		return inferredValue{Type: "bool", Value: strings.ToLower(tok.text)}
 	case "nil", "null":
 		return inferredValue{Type: "nil", Value: strings.ToLower(tok.text)}
+	}
+	if isIdentifier(tok, "new") {
+		constructorStart := nextSignificant(d.Tokens, start+1)
+		className, _ := qualifiedName(d.Tokens, constructorStart)
+		if className != "" {
+			return inferredValue{Type: className}
+		}
 	}
 	if isNPCFinder(tok.text) {
 		open := nextSignificant(d.Tokens, start+1)
@@ -954,6 +964,30 @@ func (d *Document) symbolFor(scope, name string, position Position) *VariableSym
 	return nil
 }
 
+func (d *Document) receiverSymbol(scope, name string, position Position) *VariableSymbol {
+	scope = strings.ToLower(strings.TrimSpace(scope))
+	name = strings.ToLower(strings.TrimSpace(name))
+	if scope != "this" && scope != "thiso" {
+		return d.symbolFor(scope, name, position)
+	}
+
+	// A with() receiver is evaluated before entering the with body. Resolve
+	// this.foo against the owning script even when the completion request is
+	// already inside that body's semantic scope.
+	side := d.sideAtOffset(offsetAt(d.Text, position))
+	for i := range d.Members {
+		member := &d.Members[i]
+		if !memberScopeMatches(member.Scope, scope) ||
+			!strings.EqualFold(member.Name, name) ||
+			member.OwnerKey != scriptScopeKey ||
+			!memberAvailableInSide(*member, side) {
+			continue
+		}
+		return member
+	}
+	return d.symbolFor(scope, name, position)
+}
+
 func memberScopeMatches(memberScope, receiverScope string) bool {
 	if strings.EqualFold(receiverScope, "thiso") {
 		return strings.EqualFold(memberScope, "this") || strings.EqualFold(memberScope, "thiso")
@@ -1212,8 +1246,12 @@ func (d *Document) joinedClassesForNamedReceiver(receiver string, position Posit
 	}
 }
 
-func (d *Document) currentClassNames(position Position) []string {
-	classes := append([]string(nil), d.Imports...)
+func (d *Document) importedClassNames() []string {
+	return append([]string(nil), d.Imports...)
+}
+
+func (d *Document) currentJoinedClassNames(position Position) []string {
+	classes := []string{}
 	scope := d.semanticScopeAt(position)
 	for _, className := range d.joinedClassesForOwner(scope.key, position) {
 		classes = appendUnique(classes, className)
@@ -1287,6 +1325,34 @@ func matchingToken(tokens []token, start int, open, close string) int {
 
 func isIdentifier(tok token, value string) bool {
 	return tok.kind == tokenIdentifier && strings.EqualFold(tok.text, value)
+}
+
+func qualifiedName(tokens []token, start int) (string, int) {
+	if start < 0 || start >= len(tokens) {
+		return "", -1
+	}
+	if tokens[start].kind == tokenString {
+		return tokenStringValue(tokens[start]), start
+	}
+	if tokens[start].kind != tokenIdentifier {
+		return "", -1
+	}
+
+	name := tokens[start].text
+	end := start
+	for {
+		dot := nextSignificant(tokens, end+1)
+		if dot < 0 || tokens[dot].text != "." {
+			break
+		}
+		part := nextSignificant(tokens, dot+1)
+		if part < 0 || tokens[part].kind != tokenIdentifier {
+			break
+		}
+		name += "." + tokens[part].text
+		end = part
+	}
+	return name, end
 }
 
 func tokenStringValue(tok token) string {

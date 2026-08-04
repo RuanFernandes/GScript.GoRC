@@ -17,6 +17,8 @@ type LanguageServer struct {
 	mu                     sync.Mutex
 	workspace              *Workspace
 	catalog                *Catalog
+	serverContext          serverContextDefinitions
+	serverContextInput     ServerScriptContext
 	enabled                bool
 	workspaceRefreshNeeded bool
 }
@@ -34,6 +36,21 @@ func (s *LanguageServer) SetEnabled(enabled bool) {
 		s.workspaceRefreshNeeded = true
 	}
 	s.enabled = enabled
+	s.mu.Unlock()
+}
+
+// SetServerContext replaces the server options/flags snapshot used by
+// completions and hover. The desktop app calls this before every LSP request,
+// so a config loaded asynchronously after login becomes visible without
+// restarting the editor.
+func (s *LanguageServer) SetServerContext(context ServerScriptContext) {
+	s.mu.Lock()
+	if s.serverContextInput == context {
+		s.mu.Unlock()
+		return
+	}
+	s.serverContextInput = context
+	s.serverContext = parseServerContext(context)
 	s.mu.Unlock()
 }
 
@@ -272,6 +289,11 @@ func (s *LanguageServer) completion(params CompletionParams) CompletionList {
 		}
 	} else if receiver, ok := dynamicPropertyCompletionScope(doc, offset); ok {
 		definitions = append(definitions, s.memberDefinitions(receiver, doc, doc.sideAtOffset(offset), params.Position)...)
+		if strings.EqualFold(receiver, "serveroptions") {
+			// Option names may contain spaces, so dynamic access should insert
+			// serveroptions.("option name") instead of a bare identifier.
+			decorateDynamicVariables = true
+		}
 	} else if len(sig) > 0 && sig[len(sig)-1].text == "." {
 		receiver := receiverContextAtDot(doc, sig, len(sig)-1, params.Position)
 		definitions = append(definitions, s.memberDefinitionsForContext(receiver, doc, doc.sideAtOffset(offset), params.Position)...)
@@ -344,7 +366,12 @@ func isFunctionDeclarationContext(text string, offset int) bool {
 
 func (s *LanguageServer) memberDefinitions(receiver string, doc *Document, side string, position Position) []Definition {
 	receiver = strings.TrimSpace(receiver)
-	return s.memberDefinitionsAtOwner(receiver, doc, side, position, doc.memberOwnerKey(receiver, position))
+	if !serverScopeVisible(receiver, side) {
+		return nil
+	}
+	definitions := s.memberDefinitionsAtOwner(receiver, doc, side, position, doc.memberOwnerKey(receiver, position))
+	definitions = append(definitions, s.serverScopeDefinitions(receiver, side)...)
+	return definitions
 }
 
 func (s *LanguageServer) memberDefinitionsAtOwner(receiver string, doc *Document, side string, position Position, ownerKey string) []Definition {
@@ -410,7 +437,7 @@ func (s *LanguageServer) memberDefinitionsForContext(receiver receiverContext, d
 		definitions := []Definition{}
 		seen := map[string]bool{}
 		for _, className := range receiver.objectNames() {
-			for _, fn := range s.workspace.classSymbols([]string{className}, side) {
+			for _, fn := range s.workspace.joinedClassSymbols([]string{className}, side) {
 				key := normalizeName(fn.Name)
 				if seen[key] {
 					continue
@@ -432,6 +459,18 @@ func (s *LanguageServer) memberDefinitionsForContext(receiver receiverContext, d
 		return s.guiDefinitions(receiver.name, receiver.ownerKey, doc, side)
 	case "gui-profile":
 		return s.memberDefinitions("GuiControlProfile", doc, side, position)
+	case "server", "serverr", "serveroptions":
+		if !serverScopeVisible(receiver.name, side) {
+			return nil
+		}
+		definitions := s.memberDefinitionsAtOwner(receiver.name, doc, side, position, receiver.ownerKey)
+		return append(definitions, s.serverScopeDefinitions(receiver.name, side)...)
+	case "class":
+		definitions := []Definition{}
+		for _, fn := range s.workspace.classSymbols([]string{receiver.name}, side) {
+			definitions = append(definitions, definitionFromFunctionInScope(fn, classScope(receiver.name)))
+		}
+		return definitions
 	case "npc":
 		definitions := []Definition{}
 		seen := map[string]bool{}
@@ -470,7 +509,19 @@ func (s *LanguageServer) memberDefinitionsForContext(receiver receiverContext, d
 		}
 		return s.memberDefinitions("string", doc, side, position)
 	case "static":
-		return s.memberDefinitionsAtOwner(receiver.name, doc, side, position, receiver.ownerKey)
+		if !serverScopeVisible(receiver.name, side) {
+			return nil
+		}
+		definitions := s.memberDefinitionsAtOwner(receiver.name, doc, side, position, receiver.ownerKey)
+		definitions = append(definitions, s.serverScopeDefinitions(receiver.name, side)...)
+		if strings.EqualFold(receiver.name, "this") || strings.EqualFold(receiver.name, "thiso") {
+			for _, fn := range doc.Functions {
+				if fn.Side == "" || strings.EqualFold(fn.Side, side) {
+					definitions = append(definitions, definitionFromFunction(fn))
+				}
+			}
+		}
+		return definitions
 	default:
 		return s.memberDefinitionsAtOwner(receiver.name, doc, side, position, receiver.ownerKey)
 	}
@@ -510,8 +561,12 @@ func (s *LanguageServer) localDefinitions(doc *Document, position Position) []De
 		}
 		definitions = append(definitions, Definition{Name: member.Name, Kind: "variable", Scope: member.Scope, Description: member.Detail})
 	}
-	classNames := doc.currentClassNames(position)
-	for _, className := range classNames {
+	for _, className := range doc.currentJoinedClassNames(position) {
+		for _, fn := range s.workspace.joinedClassSymbols([]string{className}, side) {
+			definitions = append(definitions, definitionFromFunctionInScope(fn, classScope(className)))
+		}
+	}
+	for _, className := range doc.importedClassNames() {
 		for _, fn := range s.workspace.classSymbols([]string{className}, side) {
 			definitions = append(definitions, definitionFromFunctionInScope(fn, classScope(className)))
 		}
@@ -608,6 +663,11 @@ func (s *LanguageServer) hover(params TextDocumentPositionParams) *Hover {
 		if receiver.name != "" {
 			fullName = receiver.name + "." + word
 		}
+		if receiver.kind == "static" {
+			if serverDefinition, found := s.serverScopeDefinition(receiver.name, word, doc.sideAtOffset(offset)); found {
+				return &Hover{Contents: MarkupContent{Kind: "markdown", Value: formatDefinition(serverDefinition)}, Range: &Range{Start: positionAt(doc.Text, start), End: positionAt(doc.Text, end)}}
+			}
+		}
 	}
 	definition, ok := s.catalog.lookup(fullName)
 	if ok && !definitionAvailableInSide(definition, doc.sideAtOffset(offset)) {
@@ -629,8 +689,15 @@ func (s *LanguageServer) hover(params TextDocumentPositionParams) *Hover {
 		}
 	}
 	if !ok {
+		definition, ok = s.joinedClassFunctionDefinition(
+			doc.currentJoinedClassNames(params.Position),
+			word,
+			doc.sideAtOffset(offset),
+		)
+	}
+	if !ok {
 		definition, ok = s.classFunctionDefinition(
-			doc.currentClassNames(params.Position),
+			doc.importedClassNames(),
 			word,
 			doc.sideAtOffset(offset),
 		)
@@ -693,8 +760,15 @@ func (s *LanguageServer) signatureHelp(params TextDocumentPositionParams) *Signa
 		}
 	}
 	if !found {
+		definition, found = s.joinedClassFunctionDefinition(
+			doc.currentJoinedClassNames(params.Position),
+			name,
+			doc.sideAtOffset(offsetAt(doc.Text, params.Position)),
+		)
+	}
+	if !found {
 		definition, found = s.classFunctionDefinition(
-			doc.currentClassNames(params.Position),
+			doc.importedClassNames(),
 			name,
 			doc.sideAtOffset(offsetAt(doc.Text, params.Position)),
 		)
@@ -865,6 +939,17 @@ func classScope(name string) string {
 func (s *LanguageServer) classFunctionDefinition(classNames []string, functionName, side string) (Definition, bool) {
 	for _, className := range classNames {
 		for _, fn := range s.workspace.classSymbols([]string{className}, side) {
+			if strings.EqualFold(fn.Name, functionName) {
+				return definitionFromFunctionInScope(fn, classScope(className)), true
+			}
+		}
+	}
+	return Definition{}, false
+}
+
+func (s *LanguageServer) joinedClassFunctionDefinition(classNames []string, functionName, side string) (Definition, bool) {
+	for _, className := range classNames {
+		for _, fn := range s.workspace.joinedClassSymbols([]string{className}, side) {
 			if strings.EqualFold(fn.Name, functionName) {
 				return definitionFromFunctionInScope(fn, classScope(className)), true
 			}
@@ -1132,6 +1217,9 @@ func guiProfileReceiverContext(doc *Document, position Position) receiverContext
 }
 
 func withReceiverContext(doc *Document, receiver string, position Position) receiverContext {
+	if context := receiverContextForExpression(doc, receiver, position); context.kind != "" {
+		return context
+	}
 	lower := strings.ToLower(strings.TrimSpace(receiver))
 	switch {
 	case strings.Contains(lower, "findnpc"):
@@ -1147,6 +1235,24 @@ func withReceiverContext(doc *Document, receiver string, position Position) rece
 		return receiverContext{kind: "joined", names: classes}
 	}
 	return receiverContext{kind: "static", name: "this"}
+}
+
+func receiverContextForExpression(doc *Document, expression string, position Position) receiverContext {
+	tokens := lex(strings.TrimSpace(expression))
+	start := nextSignificant(tokens, 0)
+	if start < 0 || tokens[start].kind != tokenIdentifier {
+		return receiverContext{}
+	}
+	dot := nextSignificant(tokens, start+1)
+	member := nextSignificant(tokens, dot+1)
+	if dot < 0 || member < 0 || tokens[dot].text != "." || tokens[member].kind != tokenIdentifier {
+		return receiverContext{}
+	}
+	symbol := doc.receiverSymbol(tokens[start].text, tokens[member].text, position)
+	if symbol == nil {
+		return receiverContext{}
+	}
+	return receiverContextFromSymbol(*symbol)
 }
 
 func callArgumentValue(expression string) string {
@@ -1198,7 +1304,8 @@ func receiverContextFromSymbols(symbols []VariableSymbol) receiverContext {
 }
 
 func receiverContextFromType(symbol VariableSymbol) receiverContext {
-	switch strings.ToLower(strings.TrimSpace(symbol.Type)) {
+	typeName := strings.TrimSpace(symbol.Type)
+	switch strings.ToLower(typeName) {
 	case "npc":
 		if symbol.Value != "" {
 			return receiverContext{kind: "npc", name: symbol.Value}
@@ -1211,6 +1318,10 @@ func receiverContextFromType(symbol VariableSymbol) receiverContext {
 		return receiverContext{kind: "player", name: "player"}
 	case "level":
 		return receiverContext{kind: "level", name: "level"}
+	case "", "array", "bool", "boolean", "float", "int", "nil", "number", "object", "string":
+		return receiverContext{}
+	default:
+		return receiverContext{kind: "class", name: typeName}
 	}
 	return receiverContext{}
 }

@@ -68,3 +68,27 @@ func TestDiagnosticsAllowNestedGUIObjectBlocksWithoutSemicolons(t *testing.T) {
 		t.Fatalf("GUI object blocks produced diagnostics: %#v", diagnostics)
 	}
 }
+
+func TestDiagnosticsAllowOptionalCaseBlockSemicolon(t *testing.T) {
+	withoutSemicolon := `function onCreated() {
+  switch (temp.a) {
+    case b: {
+      break;
+    }
+  }
+}`
+	if diagnostics := parseDocument("memory://case-block", withoutSemicolon, 1).diagnostics(); len(diagnostics) != 0 {
+		t.Fatalf("case block without semicolon produced diagnostics: %#v", diagnostics)
+	}
+
+	withSemicolon := `function onCreated() {
+  switch (temp.a) {
+    case b: {
+      break;
+    };
+  }
+}`
+	if diagnostics := parseDocument("memory://case-block-semicolon", withSemicolon, 1).diagnostics(); len(diagnostics) != 0 {
+		t.Fatalf("case block with semicolon produced diagnostics: %#v", diagnostics)
+	}
+}

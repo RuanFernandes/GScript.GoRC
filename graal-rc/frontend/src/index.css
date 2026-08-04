@@ -121,6 +121,8 @@
   body,
   #root {
     height: 100%;
+    min-width: 0;
+    min-height: 0;
   }
   body {
     @apply bg-background text-foreground;
@@ -261,6 +263,34 @@
 .app-window-content > * {
   height: 100% !important;
   min-height: 0 !important;
+  min-width: 0 !important;
+}
+
+/* Every external Wails window can be resized independently. Keep flex/grid
+   children shrinkable so a narrow window scrolls its data region instead of
+   pushing the toolbar or custom title bar outside the viewport. */
+.app-window-content,
+.app-window-content > *,
+.app-window-content main,
+.app-window-content header {
+  min-width: 0;
+}
+
+@media (max-width: 560px) {
+  .app-window-content {
+    font-size: 0.9375rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
 }
 
 /* Expandable sidebar rail labels: clipped when collapsed, fade in on hover

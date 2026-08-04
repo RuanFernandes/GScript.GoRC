@@ -250,7 +250,6 @@ export function ScriptEditorWindowScreen() {
       if (model && supportsGraalScriptLsp) {
         const client = new GraalScriptLspClient()
         lspClientRef.current = client
-        lspRegistrationRef.current = registerGraalScriptLsp(m, client)
         const applyDiagnostics = (diagnostics: GraalScriptDiagnostic[]) => {
           diagnosticsRef.current = diagnostics
           m.editor.setModelMarkers(model, "graalscript-lsp", diagnostics.map(toMonacoMarker))
@@ -265,6 +264,12 @@ export function ScriptEditorWindowScreen() {
             await client.initialize(syncConfig.outputDir)
             const diagnostics = await client.open(model, graalScriptDocumentUri(kind, key))
             if (lspClientRef.current === client) {
+              // Do not register a provider that can only answer with an empty
+              // list while the workspace index is still being built. Monaco
+              // may keep that first empty response and fall back to word-only
+              // completion until the user invokes suggestions again.
+              lspRegistrationRef.current?.dispose()
+              lspRegistrationRef.current = registerGraalScriptLsp(m, client)
               pendingLspUpdateRef.current = Promise.resolve()
               applyDiagnostics(diagnostics)
             }

@@ -391,6 +391,9 @@ func (a *App) OpenSyncReview() {
 		URL:              "/#sync",
 		Width:            960,
 		Height:           660,
+		MinWidth:         460,
+		MinHeight:        360,
+		Frameless:        true,
 		BackgroundColour: application.NewRGB(15, 17, 21),
 	})
 	a.syncReviewWindow = w

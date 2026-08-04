@@ -266,6 +266,10 @@
   "editor.couldNotOpen": "No se pudo abrir el archivo"
   ,"editor.canClose": "Puedes cerrar esta ventana.",
   "scripts.title": "Gestor de scripts",
+  "scripts.lspReady": "LSP listo",
+  "scripts.lspStarting": "Iniciando LSP",
+  "scripts.lspDisabled": "LSP no disponible",
+  "scripts.lspError": "Error del LSP",
   "scripts.onlyReadable": "Mostrar solo scripts a los que tengo acceso",
   "scripts.filter": "Filtrar…",
   "scripts.noEntries": "No hay entradas.",

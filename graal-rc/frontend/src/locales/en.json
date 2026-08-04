@@ -266,6 +266,10 @@
   "editor.couldNotOpen": "Couldn't open file"
   ,"editor.canClose": "You can close this window.",
   "scripts.title": "Script Manager",
+  "scripts.lspReady": "LSP ready",
+  "scripts.lspStarting": "LSP starting",
+  "scripts.lspDisabled": "LSP unavailable",
+  "scripts.lspError": "LSP error",
   "scripts.onlyReadable": "Show only scripts I have rights to",
   "scripts.filter": "Filter…",
   "scripts.noEntries": "No entries.",

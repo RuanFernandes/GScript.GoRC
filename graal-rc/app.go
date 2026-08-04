@@ -1458,6 +1458,8 @@ func (a *App) OpenScriptManager() {
 		URL:              "/#scripts",
 		Width:            720,
 		Height:           560,
+		MinWidth:         480,
+		MinHeight:        420,
 		Frameless:        true,
 		BackgroundColour: application.NewRGB(15, 17, 21),
 	})
@@ -1749,18 +1751,58 @@ func (a *App) GraalScriptLSPRequest(message string) (string, error) {
 	if strings.TrimSpace(message) == "" {
 		return "", errors.New("empty GraalScript LSP message")
 	}
+	var envelope struct {
+		Method string `json:"method"`
+	}
+	_ = json.Unmarshal([]byte(message), &envelope)
 	cfg := a.GetSyncConfig()
 	a.graalScriptLSP.SetEnabled(cfg.Enabled && strings.TrimSpace(cfg.OutputDir) != "")
+	serverContext := a.sessions.GetServerScriptContext()
+	a.graalScriptLSP.SetServerContext(graalscript.ServerScriptContext{
+		ServerOptions: serverContext.ServerOptions,
+		ServerFlags:   serverContext.ServerFlags,
+	})
 	response, err := a.graalScriptLSP.HandleJSON([]byte(message))
 	if err != nil {
+		if envelope.Method == "initialize" {
+			a.emitGraalScriptLSPStatus("error", err.Error())
+		}
 		return "", err
+	}
+	if envelope.Method == "initialize" {
+		var rpc struct {
+			Error *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(response, &rpc) == nil && rpc.Error != nil {
+			a.emitGraalScriptLSPStatus("error", rpc.Error.Message)
+		} else {
+			a.emitGraalScriptLSPStatus("ready", "")
+		}
 	}
 	return string(response), nil
 }
 
-// RefreshGraalScriptDocAPI refetches the GScript reference used by the embedded
-// GraalScript LSP and rebuilds its catalog for already-open editors.
+func (a *App) emitGraalScriptLSPStatus(state, message string) {
+	if a.app == nil {
+		return
+	}
+	payload, err := json.Marshal(struct {
+		State   string `json:"state"`
+		Message string `json:"message,omitempty"`
+	}{State: state, Message: message})
+	if err == nil {
+		a.app.Event.Emit("rc:lspStatus", string(payload))
+	}
+}
+
+// RefreshGraalScriptDocAPI refetches the GScript reference and the active
+// server options/flags used by the embedded GraalScript LSP.
 func (a *App) RefreshGraalScriptDocAPI() error {
+	if err := a.sessions.RefreshServerScriptContext(); err != nil {
+		return err
+	}
 	return a.graalScriptLSP.RefreshDefinitions()
 }
 

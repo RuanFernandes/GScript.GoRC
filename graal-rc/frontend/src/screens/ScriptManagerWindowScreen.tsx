@@ -5,9 +5,11 @@
 // opens that script in its own editor window.
 import {useEffect, useMemo, useRef, useState} from "react"
 import {toast} from "sonner"
-import {Flag, LocateFixed, Loader2, RotateCcw, UserRound} from "lucide-react"
+import {Events} from "@wailsio/runtime"
+import {CircleAlert, CircleCheck, CircleOff, Flag, LocateFixed, Loader2, RotateCcw, UserRound} from "lucide-react"
 
 import {Button} from "@/components/ui/button"
+import {Badge} from "@/components/ui/badge"
 import {Input} from "@/components/ui/input"
 import {ScrollArea} from "@/components/ui/scroll-area"
 import {Tabs, TabsContent, TabsList, TabsTrigger} from "@/components/ui/tabs"
@@ -26,6 +28,7 @@ import {scriptCompare} from "@/lib/scriptSort"
 import {rcService} from "@/services/rcService"
 import type {NPC} from "@/types"
 import {useLanguage} from "@/hooks/useLanguage"
+import {useSync} from "@/hooks/useSync"
 
 // openScriptEditorOrFail opens the editor; OpenScriptEditor fetches the script
 // server-side first and only opens a window on success. A failure (e.g. the
@@ -44,6 +47,57 @@ async function openScriptEditorOrFail(scriptType: string, key: string) {
   }
 }
 
+function LspStatusBadge() {
+  const {t} = useLanguage()
+  const {config, status, loaded} = useSync()
+  const [requestState, setRequestState] = useState<"ready" | "error" | null>(null)
+  const [requestError, setRequestError] = useState("")
+  const configured = (status.enabled && Boolean(status.outputDir?.trim())) || (config.enabled && Boolean(config.outputDir?.trim()))
+  const hasError = Boolean(status.permissionsError)
+  const starting = configured && !hasError && (!status.permissionsReady || Boolean(status.progress?.active))
+  useEffect(() => {
+    const off = Events.On("rc:lspStatus", (event: {data: string}) => {
+      try {
+        const payload = JSON.parse(event.data) as {state?: "ready" | "error"; message?: string}
+        if (payload.state !== "ready" && payload.state !== "error") return
+        setRequestState(payload.state)
+        setRequestError(payload.message ?? "")
+      } catch {
+        // Ignore malformed cross-window status events.
+      }
+    })
+    return off
+  }, [])
+
+  useEffect(() => {
+    if (!configured) {
+      setRequestState(null)
+      setRequestError("")
+    }
+  }, [configured])
+
+  const state = !loaded ? "starting" : hasError || requestState === "error" ? "error" : !configured ? "disabled" : starting ? "starting" : "ready"
+  let details = t("scripts.lspReady")
+  if (!loaded || starting) details = t("scripts.lspStarting")
+  else if (hasError || requestState === "error") details = t("scripts.lspError")
+  else if (!configured) details = t("scripts.lspDisabled")
+  const Icon = state === "ready" ? CircleCheck : state === "error" ? CircleAlert : state === "disabled" ? CircleOff : Loader2
+  const tone = state === "ready"
+    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+    : state === "error"
+      ? "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+      : state === "starting"
+        ? "border-primary/30 bg-primary/10 text-primary"
+        : "text-muted-foreground"
+
+  return (
+    <Badge variant="outline" className={`max-w-full ${tone}`} title={requestError || details} aria-label={details}>
+      <Icon className={state === "starting" ? "animate-spin" : undefined} />
+      <span className="truncate">{details}</span>
+    </Badge>
+  )
+}
+
 export function ScriptManagerWindowScreen() {
   const {t} = useLanguage()
   const [onlyReadable, setOnlyReadable] = useState(false)
@@ -58,19 +112,22 @@ export function ScriptManagerWindowScreen() {
 
   return (
     <div className="bg-background flex h-svh flex-col">
-      <header className="flex items-center gap-2 border-b px-4 py-2.5">
-        <h1 className="text-base font-semibold">{t("scripts.title")}</h1>
-        <label className="text-muted-foreground ml-auto inline-flex cursor-pointer items-center gap-2 text-xs">
+      <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b px-3 py-2.5 sm:px-4">
+        <h1 className="min-w-0 text-base font-semibold">{t("scripts.title")}</h1>
+        <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
+          <LspStatusBadge />
+          <label className="text-muted-foreground inline-flex max-w-full cursor-pointer items-center gap-2 text-xs">
           <input
             type="checkbox"
             checked={onlyReadable}
             onChange={(event) => setOnlyReadable(event.target.checked)}
             className="accent-primary"
           />
-          <span>{t("scripts.onlyReadable")}</span>
-        </label>
+            <span className="truncate">{t("scripts.onlyReadable")}</span>
+          </label>
+        </div>
       </header>
-      <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)} className="flex min-h-0 flex-1 flex-col p-3">
+      <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)} className="flex min-h-0 flex-1 flex-col p-2 sm:p-3">
         <TabsList>
           <TabsTrigger value="weapons">{t("scripts.weapons")} ({lists.weapons.length})</TabsTrigger>
           <TabsTrigger value="classes">{t("scripts.classes")} ({lists.classes.length})</TabsTrigger>
@@ -187,14 +244,14 @@ function WeaponClassTab({
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-2">
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <Input
           placeholder={t("scripts.filter")}
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
-          className="max-w-56"
+          className="w-full min-w-0 sm:max-w-56"
         />
-        <div className="ml-auto flex gap-2">
+        <div className="ml-auto flex w-full flex-wrap justify-end gap-2 sm:w-auto">
           <Button variant="outline" size="sm" onClick={() => onRefresh()}>
             {t("scripts.refresh")}
           </Button>
@@ -212,7 +269,7 @@ function WeaponClassTab({
         </div>
       </div>
       <ScrollArea className="min-h-0 flex-1 rounded-md border">
-        <table className="w-full text-sm">
+        <table className="w-full min-w-60 text-sm">
           <thead className="bg-muted/50 sticky top-0">
             <tr>
               <th className="px-3 py-2 text-left font-medium">
@@ -411,14 +468,14 @@ function NPCTab({
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-2">
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <Input
           placeholder={t("scripts.filter")}
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
-          className="max-w-56"
+          className="w-full min-w-0 sm:max-w-56"
         />
-        <div className="ml-auto flex gap-2">
+        <div className="ml-auto flex w-full flex-wrap justify-end gap-2 sm:w-auto">
           <Button variant="outline" size="sm" onClick={() => onRefresh()}>
             {t("scripts.refresh")}
           </Button>
@@ -431,7 +488,7 @@ function NPCTab({
         </div>
       </div>
       <ScrollArea className="min-h-0 flex-1 rounded-md border">
-        <table className="w-full text-sm">
+        <table className="w-full min-w-[30rem] text-sm">
           <thead className="bg-muted/50 sticky top-0">
             <tr>
               {[["id", "ID"], ["name", "Name"], ["type", "Type"], ["level", "Level"]].map(([key, label]) => (
