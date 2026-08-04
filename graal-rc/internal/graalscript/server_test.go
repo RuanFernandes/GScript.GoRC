@@ -2,6 +2,9 @@ package graalscript
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -58,6 +61,208 @@ func TestCatalogParsesScriptHelpDefinitionsWithEmptyFunctionType(t *testing.T) {
 	}
 	if members := catalog.members("player"); !hasDefinition(members, "account") {
 		t.Fatalf("player members do not contain account: %#v", members)
+	}
+}
+
+func TestCatalogNormalizesClientAndServerScopes(t *testing.T) {
+	catalog := newCatalog()
+	catalog.add(Definition{Name: "clientAlias", Kind: "function", Scope: "Client"})
+	catalog.add(Definition{Name: "serverAlias", Kind: "function", Scope: "SERVER-SIDE"})
+
+	client, ok := catalog.lookup("clientAlias")
+	if !ok || client.Scope != "clientside" {
+		t.Fatalf("client alias = %#v, found=%v; want clientside", client, ok)
+	}
+	server, ok := catalog.lookup("serverAlias")
+	if !ok || server.Scope != "serverside" {
+		t.Fatalf("server alias = %#v, found=%v; want serverside", server, ok)
+	}
+	if !definitionAvailableInSide(client, "Client") || definitionAvailableInSide(client, "SERVER") {
+		t.Fatalf("client scope filtering is case-sensitive: %#v", client)
+	}
+	if !definitionAvailableInSide(server, "SERVER") || definitionAvailableInSide(server, "CLIENT") {
+		t.Fatalf("server scope filtering is case-sensitive: %#v", server)
+	}
+}
+
+func TestRefreshDefinitionsReplacesScriptHelpCache(t *testing.T) {
+	oldClient := scriptHelpHTTPClient
+	scriptHelpCache.Lock()
+	oldLoaded := scriptHelpCache.loaded
+	oldEntries := append([]Definition(nil), scriptHelpCache.entries...)
+	scriptHelpCache.loaded = false
+	scriptHelpCache.entries = nil
+	scriptHelpCache.Unlock()
+	t.Cleanup(func() {
+		scriptHelpHTTPClient = oldClient
+		scriptHelpCache.Lock()
+		scriptHelpCache.loaded = oldLoaded
+		scriptHelpCache.entries = oldEntries
+		scriptHelpCache.Unlock()
+	})
+
+	responses := []string{
+		`{"oldApiFunction":{"name":"oldApiFunction","type":"function","scope":"global"}}`,
+		`{"newApiFunction":{"name":"newApiFunction","type":"function","scope":"global"}}`,
+	}
+	calls := 0
+	scriptHelpHTTPClient = &http.Client{Transport: scriptHelpRoundTripper(func(request *http.Request) (*http.Response, error) {
+		payload := responses[calls]
+		calls++
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(payload)),
+			Header:     make(http.Header),
+			Request:    request,
+		}, nil
+	})}
+
+	server := NewLanguageServer()
+	if err := server.RefreshDefinitions(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := server.catalog.lookup("oldApiFunction"); !ok {
+		t.Fatal("first API response was not loaded")
+	}
+	if err := server.RefreshDefinitions(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := server.catalog.lookup("newApiFunction"); !ok {
+		t.Fatal("refreshed API response was not loaded")
+	}
+	if _, ok := server.catalog.lookup("oldApiFunction"); ok {
+		t.Fatal("old API response remained after refresh")
+	}
+	if calls != 2 {
+		t.Fatalf("API calls = %d, want 2", calls)
+	}
+}
+
+func TestCatalogPreservesGuiControlTypeAndScope(t *testing.T) {
+	data := `{
+        "GuiControl": {"name":"GuiControl", "type":"function", "params":["name"], "returns":"GuiControl", "scope":"clientside"},
+        "GuiControlProfile": {"name":"GuiControlProfile", "type":"variable", "params":[], "returns":"object", "scope":"clientside"}
+    }`
+	entries, err := parseDefinitions([]byte(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog := newCatalog()
+	for _, entry := range entries {
+		catalog.add(entry)
+	}
+
+	control, ok := catalog.lookup("GuiControl")
+	if !ok || control.Kind != "function" || control.Scope != "clientside" || !sameStrings(control.Params, []string{"name"}) {
+		t.Fatalf("GuiControl = %#v, found=%v; want clientside function(name)", control, ok)
+	}
+	profile, ok := catalog.lookup("GuiControlProfile")
+	if !ok || profile.Kind != "variable" || profile.Scope != "clientside" {
+		t.Fatalf("GuiControlProfile = %#v, found=%v; want clientside variable", profile, ok)
+	}
+}
+
+func TestClientCompletionIncludesGuiControlConstructor(t *testing.T) {
+	server := NewLanguageServer()
+	list := completionAtText(server, "memory://gui-constructor", "//#CLIENTSIDE\nnew GuiC", "GuiC")
+	if !hasCompletion(list.Items, "GuiControl") {
+		t.Fatalf("clientside new completion is missing GuiControl: %#v", list.Items)
+	}
+	if !hasCompletion(list.Items, "GuiControlProfile") {
+		t.Fatalf("clientside new completion is missing GuiControlProfile: %#v", list.Items)
+	}
+
+	list = completionAtText(server, "memory://gui-constructor", "//#CLIENTSIDE\nnew GuiContro", "GuiContro")
+	if !hasCompletion(list.Items, "GuiControl") {
+		t.Fatalf("clientside completion for the incomplete GuiControl prefix is missing GuiControl: %#v", list.Items)
+	}
+}
+
+func TestCompletionMarksTruncatedListsIncomplete(t *testing.T) {
+	server := NewLanguageServer()
+	for i := 0; i < 200; i++ {
+		server.catalog.add(Definition{
+			Name:  fmt.Sprintf("localCompletion%03d", i),
+			Kind:  "variable",
+			Scope: "clientside",
+		})
+	}
+
+	list := completionAtText(server, "memory://incomplete-completion", "//#CLIENTSIDE\nnew ", "")
+	if !list.IsIncomplete {
+		t.Fatalf("truncated completion list was not marked incomplete: %d items", len(list.Items))
+	}
+
+	list = completionAtText(server, "memory://incomplete-completion", "//#CLIENTSIDE\nnew GuiContro", "GuiContro")
+	if list.IsIncomplete {
+		t.Fatalf("narrow completion list was unexpectedly marked incomplete: %d items", len(list.Items))
+	}
+	if !hasCompletion(list.Items, "GuiControl") {
+		t.Fatalf("narrow completion list is missing GuiControl: %#v", list.Items)
+	}
+}
+
+func TestGUIInheritanceAndProfileCompletions(t *testing.T) {
+	server := NewLanguageServer()
+	controlURI := "memory://gui-inheritance"
+	controlText := `//#CLIENTSIDE
+new GuiButton("Button") {
+  wid
+}`
+	list := completionAtText(server, controlURI, controlText, "wid")
+	if !hasCompletion(list.Items, "width") {
+		t.Fatalf("GuiButton did not inherit GuiControl members: %#v", list.Items)
+	}
+
+	profileText := `//#CLIENTSIDE
+new GuiControl("Control") {
+  profile.
+}`
+	list = completionAtText(server, controlURI, profileText, "profile.")
+	if !hasCompletion(list.Items, "border") || !hasCompletion(list.Items, "fontColor") {
+		t.Fatalf("profile members are missing from a GUI control: %#v", list.Items)
+	}
+	if hasCompletion(list.Items, "width") {
+		t.Fatalf("profile completion leaked GuiControl members: %#v", list.Items)
+	}
+
+	thisProfileText := `//#CLIENTSIDE
+new GuiControl("Control") {
+  this.profile.
+}`
+	list = completionAtText(server, controlURI, thisProfileText, "this.profile.")
+	if !hasCompletion(list.Items, "border") {
+		t.Fatalf("this.profile did not resolve to GuiControlProfile: %#v", list.Items)
+	}
+
+	profileURI := "memory://gui-profile"
+	profileBlockText := `//#CLIENTSIDE
+new GuiControlProfile("Profile") {
+  bor
+}`
+	list = completionAtText(server, profileURI, profileBlockText, "bor")
+	if !hasCompletion(list.Items, "border") || hasCompletion(list.Items, "width") {
+		t.Fatalf("GuiControlProfile inheritance is incorrect: %#v", list.Items)
+	}
+}
+
+func TestGUICompletionUsesConstructorReturnTypeMembers(t *testing.T) {
+	server := NewLanguageServer()
+	server.catalog.add(Definition{
+		Name: "GuiAlias", Kind: "function", Returns: "GuiButton", Scope: "clientside",
+	})
+	server.catalog.add(Definition{
+		Name: "GuiButton.someAction", Kind: "function", Params: []string{"value"}, Scope: "clientside",
+	})
+
+	text := `//#CLIENTSIDE
+new GuiAlias("Button") {
+  someA
+}`
+	list := completionAtText(server, "memory://gui-return-type", text, "someA")
+	if !hasCompletion(list.Items, "someAction") {
+		t.Fatalf("GUI constructor return type did not provide concrete members: %#v", list.Items)
 	}
 }
 
@@ -673,12 +878,200 @@ function implicitClient() {}
 	if hasCompletion(list.Items, "privateServer") || hasCompletion(list.Items, "implicitServer") {
 		t.Fatalf("unexpected class completion for prefix pub: %#v", list.Items)
 	}
+	if got := completionDetail(list.Items, "publicServer"); got != "publicServer() · Class CombatHelpers" {
+		t.Fatalf("class completion detail = %q, want %q", got, "publicServer() · Class CombatHelpers")
+	}
 
 	text = "join(\"CombatHelpers\");\n//#CLIENTSIDE\npublicC"
 	server.workspace.upsert(uri, parseDocument(uri, text, 2))
 	list = server.completion(CompletionParams{TextDocument: TextDocumentIdentifier{URI: uri}, Position: Position{Line: 2, Character: len("publicC")}})
 	if !hasCompletion(list.Items, "publicClient") || hasCompletion(list.Items, "publicServer") {
 		t.Fatalf("client-side class filtering is incorrect: %#v", list.Items)
+	}
+}
+
+func TestJoinedClassesRespectVariableWithAndGUIScopes(t *testing.T) {
+	root := t.TempDir()
+	classDir := filepath.Join(root, "classes")
+	if err := os.MkdirAll(classDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	classes := map[string]string{
+		"VariableClass": `public function onTestThis() {}`,
+		"DynamicClass":  `public function onDynamicThis() {}`,
+		"WithClass":     `public function onWithThis() {}`,
+		"ScriptClass": `public function onScriptThis() {}
+//#CLIENTSIDE
+public function onScriptThis() {}`,
+		"GuiClass": `//#CLIENTSIDE
+public function onGuiThis() {}`,
+		"OuterGuiClass": `//#CLIENTSIDE
+public function onOuterGuiThis() {}`,
+		"ChildGuiClass": `//#CLIENTSIDE
+public function onChildGuiThis() {}`,
+	}
+	for name, source := range classes {
+		if err := os.WriteFile(filepath.Join(classDir, name+".gs2"), []byte(source), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	server := NewLanguageServer()
+	if err := server.workspace.setRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	uri := "memory://scoped-joins"
+	variableText := `function onCreated() {
+  temp.obj = new IStaticVar();
+  temp.obj.join("VariableClass");
+  onTest
+}`
+	list := completionAtText(server, uri, variableText, "onTest")
+	if hasCompletion(list.Items, "onTestThis") {
+		t.Fatalf("variable join leaked into the script scope: %#v", list.Items)
+	}
+	variableText = `function onCreated() {
+  temp.obj = new IStaticVar();
+  temp.obj.join("VariableClass");
+  temp.obj.onTest
+}`
+	list = completionAtText(server, uri, variableText, "temp.obj.onTest")
+	if !hasCompletion(list.Items, "onTestThis") || completionDetail(list.Items, "onTestThis") != "onTestThis() · Class VariableClass" {
+		t.Fatalf("variable join was not scoped to the variable: %#v", list.Items)
+	}
+	dynamicText := `function onCreated() {
+  temp.("obj") = new IStaticVar();
+  temp.("obj").join("DynamicClass");
+  temp.("obj").onDynamic
+}`
+	list = completionAtText(server, uri, dynamicText, "temp.(\"obj\").onDynamic")
+	if !hasCompletion(list.Items, "onDynamicThis") {
+		t.Fatalf("dynamic variable join was not scoped to the dynamic variable: %#v", list.Items)
+	}
+
+	text := `this.join("ScriptClass");
+function onCreated() {
+  with (temp.obj) {
+    this.join("WithClass");
+    onWith
+    this.onWith
+    thiso.onScript
+  }
+}
+//#CLIENTSIDE
+new GuiControl("Name") {
+  this.join("GuiClass");
+  onGui
+  onScript
+  thiso.onScript
+  wid
+}
+onScript`
+	list = completionAtText(server, uri, text, "onWith")
+	if !hasCompletion(list.Items, "onWithThis") || hasCompletion(list.Items, "onScriptThis") {
+		t.Fatalf("with join scope is incorrect: %#v", list.Items)
+	}
+	list = completionAtText(server, uri, text, "this.onWith")
+	if !hasCompletion(list.Items, "onWithThis") {
+		t.Fatalf("this inside with did not use the with object scope: %#v", list.Items)
+	}
+	list = completionAtText(server, uri, text, "thiso.onScript")
+	if !hasCompletion(list.Items, "onScriptThis") {
+		t.Fatalf("thiso inside with did not use the parent script scope: %#v", list.Items)
+	}
+	list = completionAtText(server, uri, text, "onGui")
+	if !hasCompletion(list.Items, "onGuiThis") || hasCompletion(list.Items, "onScriptThis") {
+		t.Fatalf("GUI join leaked or was not available in the GUI scope: %#v", list.Items)
+	}
+	list = completionAtText(server, uri, text, "onScript")
+	if !hasCompletion(list.Items, "onScriptThis") {
+		t.Fatalf("script join was not available after leaving the GUI scope: %#v", list.Items)
+	}
+	list = completionAtText(server, uri, text, "wid")
+	if !hasCompletion(list.Items, "width") {
+		t.Fatalf("GUI members were not available without this.: %#v", list.Items)
+	}
+
+	nestedText := text + `
+new GuiControl("Outer") {
+  this.join("OuterGuiClass");
+  new GuiButton("Child") {
+    this.join("ChildGuiClass");
+    onChildGui
+    onOuterGui
+    thiso.onScript
+    thiso.onOuterGui
+  }
+}`
+	list = completionAtText(server, uri, nestedText, "onChildGui")
+	if !hasCompletion(list.Items, "onChildGuiThis") || hasCompletion(list.Items, "onOuterGuiThis") || hasCompletion(list.Items, "onScriptThis") {
+		t.Fatalf("nested GUI did not isolate the child join: %#v", list.Items)
+	}
+	list = completionAtText(server, uri, nestedText, "onOuterGui")
+	if hasCompletion(list.Items, "onOuterGuiThis") {
+		t.Fatalf("nested GUI leaked the outer GUI join into the child scope: %#v", list.Items)
+	}
+	list = completionAtText(server, uri, nestedText, "thiso.onScript")
+	if !hasCompletion(list.Items, "onScriptThis") || hasCompletion(list.Items, "onOuterGuiThis") {
+		t.Fatalf("thiso did not resolve directly to the script owner: %#v", list.Items)
+	}
+	list = completionAtText(server, uri, nestedText, "thiso.onOuterGui")
+	if hasCompletion(list.Items, "onOuterGuiThis") {
+		t.Fatalf("thiso exposed the enclosing GUI instead of the script owner: %#v", list.Items)
+	}
+}
+
+func TestMemberVariablesRespectThisThisoAndGUIScopes(t *testing.T) {
+	server := NewLanguageServer()
+	uri := "memory://member-scopes"
+	text := `function onCreated() {
+  this.serverParentValue = 1;
+  with (temp.obj) {
+    this.withScopeValue = 2;
+    this.withScope
+    serverParent
+    this.serverParent
+    thiso.serverParent
+  }
+  serverParent
+}
+//#CLIENTSIDE
+this.clientParentValue = 3;
+new GuiControl("Name") {
+  this.guiScopeValue = 4;
+  guiScope
+  clientParent
+  this.clientParent
+  thiso.clientParent
+}`
+
+	list := completionAtText(server, uri, text, "this.withScope")
+	if !hasCompletion(list.Items, "withScopeValue") || hasCompletion(list.Items, "serverParentValue") {
+		t.Fatalf("this inside with did not stay in the with scope: %#v", list.Items)
+	}
+	list = completionAtText(server, uri, text, "    serverParent")
+	if hasCompletion(list.Items, "serverParentValue") {
+		t.Fatalf("bare members leaked into the with scope: %#v", list.Items)
+	}
+	list = completionAtText(server, uri, text, "this.serverParent")
+	if hasCompletion(list.Items, "serverParentValue") {
+		t.Fatalf("this inside with resolved the parent script scope: %#v", list.Items)
+	}
+	list = completionAtText(server, uri, text, "thiso.serverParent")
+	if !hasCompletion(list.Items, "serverParentValue") {
+		t.Fatalf("thiso inside with did not resolve the parent script scope: %#v", list.Items)
+	}
+	list = completionAtText(server, uri, text, "  guiScope")
+	if !hasCompletion(list.Items, "guiScopeValue") || hasCompletion(list.Items, "clientParentValue") {
+		t.Fatalf("bare members did not stay in the GUI scope: %#v", list.Items)
+	}
+	list = completionAtText(server, uri, text, "this.clientParent")
+	if hasCompletion(list.Items, "clientParentValue") {
+		t.Fatalf("this inside GUI resolved the parent script scope: %#v", list.Items)
+	}
+	list = completionAtText(server, uri, text, "thiso.clientParent")
+	if !hasCompletion(list.Items, "clientParentValue") {
+		t.Fatalf("thiso inside GUI did not resolve the parent script scope: %#v", list.Items)
 	}
 }
 
@@ -702,6 +1095,35 @@ func hasCompletion(items []CompletionItem, name string) bool {
 		}
 	}
 	return false
+}
+
+func completionDetail(items []CompletionItem, name string) string {
+	for _, item := range items {
+		if strings.EqualFold(item.Label, name) {
+			return item.Detail
+		}
+	}
+	return ""
+}
+
+func completionAtText(server *LanguageServer, uri, text, needle string) CompletionList {
+	server.workspace.upsert(uri, parseDocument(uri, text, 1))
+	offset := strings.LastIndex(text, needle)
+	if offset < 0 {
+		return CompletionList{}
+	}
+	offset += len(needle)
+	doc := server.workspace.document(uri)
+	return server.completion(CompletionParams{
+		TextDocument: TextDocumentIdentifier{URI: uri},
+		Position:     positionAt(doc.Text, offset),
+	})
+}
+
+type scriptHelpRoundTripper func(*http.Request) (*http.Response, error)
+
+func (roundTripper scriptHelpRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	return roundTripper(request)
 }
 
 func sameStrings(left, right []string) bool {

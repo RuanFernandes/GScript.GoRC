@@ -23,6 +23,8 @@ const (
 	scriptSideClient = "client"
 )
 
+const scriptScopeKey = "script"
+
 // ASTNode is intentionally small in v1. The parser keeps enough structure for
 // semantic queries while accepting incomplete code typed in an editor.
 type ASTNode struct {
@@ -49,6 +51,7 @@ type FunctionSymbol struct {
 type VariableSymbol struct {
 	Name               string
 	Scope              string
+	OwnerKey           string
 	Side               string
 	Type               string
 	Value              string
@@ -60,9 +63,22 @@ type VariableSymbol struct {
 	FunctionRange      Range
 }
 
+type JoinBinding struct {
+	ClassName     string
+	Receiver      string
+	OwnerKey      string
+	Range         Range
+	FunctionRange Range
+}
+
 type WithBlock struct {
 	Range    Range
 	Receiver string
+}
+
+type GUIBlock struct {
+	Range       Range
+	ControlType string
 }
 
 type Document struct {
@@ -75,8 +91,10 @@ type Document struct {
 	Variables    []VariableSymbol
 	Members      []VariableSymbol
 	Joins        []string
+	JoinBindings []JoinBinding
 	Imports      []string
 	With         []WithBlock
+	GUIs         []GUIBlock
 	LineStarts   []int
 	ClientOffset int
 }
@@ -89,12 +107,13 @@ func parseDocument(uri, text string, version int) *Document {
 		ClientOffset: clientSideOffset(text),
 	}
 	doc.parseFunctions()
+	doc.parseWithBlocks()
+	doc.parseGUIBlocks()
 	doc.parseJoinsAndVariables()
 	doc.parseAssignments()
 	doc.parseForEachVariables()
 	doc.parseDynamicAccesses()
 	doc.parseDynamicAssignments()
-	doc.parseWithBlocks()
 	doc.parseCalls()
 	return doc
 }
@@ -172,6 +191,17 @@ func (d *Document) parseJoinsAndVariables() {
 				if value >= 0 && (d.Tokens[value].kind == tokenString || d.Tokens[value].kind == tokenIdentifier) {
 					className := tokenStringValue(d.Tokens[value])
 					if className != "" {
+						receiver := d.joinReceiverBefore(i)
+						binding := JoinBinding{
+							ClassName: className,
+							Receiver:  receiver,
+							OwnerKey:  d.joinOwnerKey(receiver, tok.startPos),
+							Range:     Range{Start: tok.startPos, End: d.Tokens[value].endPos},
+						}
+						if fn := functionAt(d, tok.startPos); fn != nil && strings.HasPrefix(binding.OwnerKey, "receiver:") {
+							binding.FunctionRange = fn.BodyRange
+						}
+						d.JoinBindings = append(d.JoinBindings, binding)
 						d.Joins = appendUnique(d.Joins, className)
 						d.AST.Children = append(d.AST.Children, ASTNode{Kind: nodeJoin, Name: className, Range: Range{Start: tok.startPos, End: d.Tokens[value].endPos}})
 					}
@@ -241,6 +271,7 @@ func (d *Document) addVariableSymbol(scope, name string, symbolRange, selectionR
 		return
 	}
 	side := d.sideAtOffset(offsetAt(d.Text, symbolRange.Start))
+	ownerKey := d.memberOwnerKey(scope, symbolRange.Start)
 	if scope == "temp" {
 		functionRange := Range{}
 		if fn := functionAt(d, symbolRange.Start); fn != nil {
@@ -261,14 +292,15 @@ func (d *Document) addVariableSymbol(scope, name string, symbolRange, selectionR
 		return
 	}
 	for _, member := range d.Members {
-		if strings.EqualFold(member.Scope, scope) &&
+		if memberScopeMatches(member.Scope, scope) &&
 			strings.EqualFold(member.Name, name) &&
+			member.OwnerKey == ownerKey &&
 			memberAvailableInSide(member, side) {
 			return
 		}
 	}
 	d.Members = append(d.Members, VariableSymbol{
-		Name: name, Scope: scope, Side: side,
+		Name: name, Scope: scope, OwnerKey: ownerKey, Side: side,
 		Range: symbolRange, SelectionRange: selectionRange,
 		Detail: detail,
 	})
@@ -909,13 +941,33 @@ func (d *Document) symbolFor(scope, name string, position Position) *VariableSym
 		return nil
 	}
 	side := d.sideAtOffset(offsetAt(d.Text, position))
+	ownerKey := d.memberOwnerKey(scope, position)
 	for i := range d.Members {
 		member := &d.Members[i]
-		if strings.EqualFold(member.Scope, scope) && strings.EqualFold(member.Name, name) && memberAvailableInSide(*member, side) {
+		if memberScopeMatches(member.Scope, scope) &&
+			strings.EqualFold(member.Name, name) &&
+			member.OwnerKey == ownerKey &&
+			memberAvailableInSide(*member, side) {
 			return member
 		}
 	}
 	return nil
+}
+
+func memberScopeMatches(memberScope, receiverScope string) bool {
+	if strings.EqualFold(receiverScope, "thiso") {
+		return strings.EqualFold(memberScope, "this") || strings.EqualFold(memberScope, "thiso")
+	}
+	return strings.EqualFold(memberScope, receiverScope)
+}
+
+func (d *Document) memberOwnerKey(scope string, position Position) string {
+	switch strings.ToLower(strings.TrimSpace(scope)) {
+	case "this", "thiso":
+		return d.joinOwnerKey(scope, position)
+	default:
+		return ""
+	}
 }
 
 func (d *Document) parseWithBlocks() {
@@ -947,6 +999,226 @@ func (d *Document) parseWithBlocks() {
 		d.With = append(d.With, block)
 		d.AST.Children = append(d.AST.Children, ASTNode{Kind: nodeWith, Name: block.Receiver, Range: block.Range})
 	}
+}
+
+func (d *Document) parseGUIBlocks() {
+	for i := 0; i < len(d.Tokens); i++ {
+		if !isIdentifier(d.Tokens[i], "new") {
+			continue
+		}
+		control := nextSignificant(d.Tokens, i+1)
+		if control < 0 || d.Tokens[control].kind != tokenIdentifier || !strings.HasPrefix(strings.ToLower(d.Tokens[control].text), "gui") {
+			continue
+		}
+		open := nextSignificant(d.Tokens, control+1)
+		if open < 0 || d.Tokens[open].text != "(" {
+			continue
+		}
+		close := matchingToken(d.Tokens, open, "(", ")")
+		if close < 0 {
+			continue
+		}
+		bodyOpen := nextSignificant(d.Tokens, close+1)
+		if bodyOpen < 0 || d.Tokens[bodyOpen].text != "{" {
+			continue
+		}
+		bodyClose := matchingToken(d.Tokens, bodyOpen, "{", "}")
+		if bodyClose < 0 {
+			bodyClose = len(d.Tokens) - 1
+		}
+		block := GUIBlock{
+			Range:       Range{Start: d.Tokens[bodyOpen].startPos, End: d.Tokens[bodyClose].endPos},
+			ControlType: d.Tokens[control].text,
+		}
+		d.GUIs = append(d.GUIs, block)
+	}
+}
+
+func isGUIProfileType(controlType string) bool {
+	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(controlType)), "profile")
+}
+
+func isGUITypeName(name string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(name)), "gui")
+}
+
+type semanticScope struct {
+	kind        string
+	key         string
+	receiver    string
+	controlType string
+	rangeValue  Range
+}
+
+func scopeKey(kind string, value Range) string {
+	return kind + ":" + strconv.Itoa(value.Start.Line) + ":" + strconv.Itoa(value.Start.Character)
+}
+
+func (d *Document) semanticScopeAt(position Position) semanticScope {
+	scope := semanticScope{kind: "script", key: scriptScopeKey}
+	bestSpan := 0
+	found := false
+	consider := func(candidate semanticScope) {
+		if !positionInRange(position, candidate.rangeValue) {
+			return
+		}
+		span := d.scopeSpan(candidate.rangeValue)
+		if !found || span < bestSpan {
+			scope = candidate
+			bestSpan = span
+			found = true
+		}
+	}
+	for _, block := range d.With {
+		consider(semanticScope{
+			kind:       "with",
+			key:        scopeKey("with", block.Range),
+			receiver:   block.Receiver,
+			rangeValue: block.Range,
+		})
+	}
+	for _, block := range d.GUIs {
+		consider(semanticScope{
+			kind:        "gui",
+			key:         scopeKey("gui", block.Range),
+			controlType: block.ControlType,
+			rangeValue:  block.Range,
+		})
+	}
+	return scope
+}
+
+func (d *Document) scopeSpan(value Range) int {
+	start := offsetAt(d.Text, value.Start)
+	end := offsetAt(d.Text, value.End)
+	if end < start {
+		return 0
+	}
+	return end - start
+}
+
+func (d *Document) joinReceiverBefore(joinIndex int) string {
+	dot := previousSignificant(d.Tokens, joinIndex-1)
+	if dot < 0 || d.Tokens[dot].text != "." {
+		return ""
+	}
+	end := previousSignificant(d.Tokens, dot-1)
+	if end < 0 {
+		return ""
+	}
+	start := d.receiverStartBefore(end)
+	if start < 0 {
+		return ""
+	}
+	return strings.TrimSpace(d.Text[d.Tokens[start].start:d.Tokens[end].end])
+}
+
+func (d *Document) receiverStartBefore(end int) int {
+	if end < 0 || end >= len(d.Tokens) {
+		return -1
+	}
+	if d.Tokens[end].kind == tokenIdentifier {
+		start := end
+		for {
+			previousDot := previousSignificant(d.Tokens, start-1)
+			if previousDot < 0 || d.Tokens[previousDot].text != "." {
+				break
+			}
+			previous := previousSignificant(d.Tokens, previousDot-1)
+			if previous < 0 || d.Tokens[previous].kind != tokenIdentifier {
+				break
+			}
+			start = previous
+		}
+		return start
+	}
+	if d.Tokens[end].text != ")" {
+		return -1
+	}
+	open := matchingOpenBefore(d.Tokens, end, "(", ")")
+	if open < 2 {
+		return -1
+	}
+	qualifier := previousSignificant(d.Tokens, open-1)
+	if qualifier < 0 || d.Tokens[qualifier].text != "." {
+		return -1
+	}
+	scope := previousSignificant(d.Tokens, qualifier-1)
+	if scope < 0 || d.Tokens[scope].kind != tokenIdentifier {
+		return -1
+	}
+	start := scope
+	for {
+		previousDot := previousSignificant(d.Tokens, start-1)
+		if previousDot < 0 || d.Tokens[previousDot].text != "." {
+			break
+		}
+		previous := previousSignificant(d.Tokens, previousDot-1)
+		if previous < 0 || d.Tokens[previous].kind != tokenIdentifier {
+			break
+		}
+		start = previous
+	}
+	return start
+}
+
+func normalizeJoinReceiver(receiver string) string {
+	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(receiver)), " "))
+}
+
+func (d *Document) joinOwnerKey(receiver string, position Position) string {
+	receiver = strings.TrimSpace(receiver)
+	current := d.semanticScopeAt(position)
+	switch strings.ToLower(receiver) {
+	case "", "this":
+		return current.key
+	case "thiso":
+		return scriptScopeKey
+	default:
+		return "receiver:" + normalizeJoinReceiver(receiver)
+	}
+}
+
+func (d *Document) joinedClassesForOwner(ownerKey string, position Position) []string {
+	classes := []string{}
+	for _, binding := range d.JoinBindings {
+		if binding.OwnerKey != ownerKey || binding.ClassName == "" {
+			continue
+		}
+		if binding.FunctionRange != (Range{}) {
+			fn := functionAt(d, position)
+			if fn == nil || fn.BodyRange != binding.FunctionRange {
+				continue
+			}
+		}
+		classes = appendUnique(classes, binding.ClassName)
+	}
+	return classes
+}
+
+func (d *Document) joinedClassesForReceiver(receiver string, position Position) []string {
+	return d.joinedClassesForOwner("receiver:"+normalizeJoinReceiver(receiver), position)
+}
+
+func (d *Document) joinedClassesForNamedReceiver(receiver string, position Position) []string {
+	scope := d.semanticScopeAt(position)
+	switch strings.ToLower(strings.TrimSpace(receiver)) {
+	case "this":
+		return d.joinedClassesForOwner(scope.key, position)
+	case "thiso":
+		return d.joinedClassesForOwner(scriptScopeKey, position)
+	default:
+		return d.joinedClassesForReceiver(receiver, position)
+	}
+}
+
+func (d *Document) currentClassNames(position Position) []string {
+	classes := append([]string(nil), d.Imports...)
+	scope := d.semanticScopeAt(position)
+	for _, className := range d.joinedClassesForOwner(scope.key, position) {
+		classes = appendUnique(classes, className)
+	}
+	return classes
 }
 
 func (d *Document) parseCalls() {

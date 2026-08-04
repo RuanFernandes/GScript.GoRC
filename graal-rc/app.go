@@ -1758,6 +1758,12 @@ func (a *App) GraalScriptLSPRequest(message string) (string, error) {
 	return string(response), nil
 }
 
+// RefreshGraalScriptDocAPI refetches the GScript reference used by the embedded
+// GraalScript LSP and rebuilds its catalog for already-open editors.
+func (a *App) RefreshGraalScriptDocAPI() error {
+	return a.graalScriptLSP.RefreshDefinitions()
+}
+
 // CodingSettings are the Monaco editor appearance prefs, persisted to a file so
 // every editor window (its own webview) reads the same values — localStorage is
 // not reliably shared across Wails v3 windows.

@@ -118,6 +118,7 @@ export interface RcService {
   setEditorDirty(scriptType: string, key: string, dirty: boolean): Promise<void>
   closeScriptEditor(scriptType: string, key: string): Promise<void>
   graalScriptLspRequest(message: string): Promise<string>
+  refreshGraalScriptDocApi(): Promise<void>
   listFonts(): Promise<string[] | null>
   getCodingSettings(): Promise<CodingSettings>
   setCodingSettings(theme: string, fontFamily: string, fontSize: number): Promise<void>
@@ -274,6 +275,7 @@ export const rcService: RcService = {
   setEditorDirty: (scriptType, key, dirty) => App.SetEditorDirty(scriptType, key, dirty),
   closeScriptEditor: (scriptType, key) => App.CloseScriptEditor(scriptType, key),
   graalScriptLspRequest: (message) => App.GraalScriptLSPRequest(message),
+  refreshGraalScriptDocApi: () => App.RefreshGraalScriptDocAPI(),
   listFonts: () => App.ListFonts(),
   getCodingSettings: () => App.GetCodingSettings(),
   setCodingSettings: (theme, fontFamily, fontSize) => App.SetCodingSettings(theme, fontFamily, fontSize),

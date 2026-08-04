@@ -52,6 +52,16 @@ func (s *LanguageServer) RefreshWorkspace() error {
 	return nil
 }
 
+func (s *LanguageServer) RefreshDefinitions() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := refreshScriptHelpDefinitions(); err != nil {
+		return err
+	}
+	s.catalog = loadCatalog()
+	return nil
+}
+
 // HandleJSON accepts a complete JSON-RPC 2.0 message and returns the complete
 // response message. Wails transports the same payload; a future stdio adapter
 // can reuse this method without changing the semantic engine.
@@ -269,7 +279,7 @@ func (s *LanguageServer) completion(params CompletionParams) CompletionList {
 	} else if len(sig) > 0 && sig[len(sig)-1].text == "::" {
 		className := previousIdentifier(sig, len(sig)-2)
 		for _, fn := range s.workspace.classSymbols([]string{className}, doc.sideAtOffset(offset)) {
-			definitions = append(definitions, definitionFromFunctionInScope(fn, "joined class"))
+			definitions = append(definitions, definitionFromFunctionInScope(fn, classScope(className)))
 		}
 	} else {
 		definitions = append(definitions, s.localDefinitions(doc, params.Position)...)
@@ -313,10 +323,11 @@ func (s *LanguageServer) completion(params CompletionParams) CompletionList {
 		}
 		return strings.ToLower(items[i].Label) < strings.ToLower(items[j].Label)
 	})
+	isIncomplete := len(items) > 150
 	if len(items) > 150 {
 		items = items[:150]
 	}
-	return CompletionList{IsIncomplete: false, Items: items}
+	return CompletionList{IsIncomplete: isIncomplete, Items: items}
 }
 
 func isFunctionDeclarationContext(text string, offset int) bool {
@@ -333,6 +344,10 @@ func isFunctionDeclarationContext(text string, offset int) bool {
 
 func (s *LanguageServer) memberDefinitions(receiver string, doc *Document, side string, position Position) []Definition {
 	receiver = strings.TrimSpace(receiver)
+	return s.memberDefinitionsAtOwner(receiver, doc, side, position, doc.memberOwnerKey(receiver, position))
+}
+
+func (s *LanguageServer) memberDefinitionsAtOwner(receiver string, doc *Document, side string, position Position, ownerKey string) []Definition {
 	definitions := []Definition{}
 	for _, entry := range s.catalog.members(receiver) {
 		if definitionAvailableInSide(entry, side) {
@@ -356,7 +371,7 @@ func (s *LanguageServer) memberDefinitions(receiver string, doc *Document, side 
 		}
 	}
 	for _, member := range doc.Members {
-		if !strings.EqualFold(member.Scope, receiver) || !memberAvailableInSide(member, side) {
+		if !memberScopeMatches(member.Scope, receiver) || member.OwnerKey != ownerKey || !memberAvailableInSide(member, side) {
 			continue
 		}
 		definitions = append(definitions, Definition{
@@ -391,6 +406,32 @@ func dynamicVariableCompletionText(name, expression string) string {
 
 func (s *LanguageServer) memberDefinitionsForContext(receiver receiverContext, doc *Document, side string, position Position) []Definition {
 	switch receiver.kind {
+	case "joined":
+		definitions := []Definition{}
+		seen := map[string]bool{}
+		for _, className := range receiver.objectNames() {
+			for _, fn := range s.workspace.classSymbols([]string{className}, side) {
+				key := normalizeName(fn.Name)
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+				definitions = append(definitions, definitionFromFunctionInScope(fn, classScope(className)))
+			}
+		}
+		if receiver.baseKind != "" {
+			definitions = append(definitions, s.memberDefinitionsForContext(receiverContext{
+				kind:     receiver.baseKind,
+				name:     receiver.baseName,
+				names:    receiver.baseNames,
+				ownerKey: receiver.baseOwnerKey,
+			}, doc, side, position)...)
+		}
+		return definitions
+	case "gui":
+		return s.guiDefinitions(receiver.name, receiver.ownerKey, doc, side)
+	case "gui-profile":
+		return s.memberDefinitions("GuiControlProfile", doc, side, position)
 	case "npc":
 		definitions := []Definition{}
 		seen := map[string]bool{}
@@ -428,8 +469,10 @@ func (s *LanguageServer) memberDefinitionsForContext(receiver receiverContext, d
 			return result
 		}
 		return s.memberDefinitions("string", doc, side, position)
+	case "static":
+		return s.memberDefinitionsAtOwner(receiver.name, doc, side, position, receiver.ownerKey)
 	default:
-		return s.memberDefinitions(receiver.name, doc, side, position)
+		return s.memberDefinitionsAtOwner(receiver.name, doc, side, position, receiver.ownerKey)
 	}
 }
 
@@ -457,28 +500,79 @@ func (s *LanguageServer) localDefinitions(doc *Document, position Position) []De
 		}
 		definitions = append(definitions, Definition{Name: variable.Name, Kind: "variable", Scope: variable.Scope, Description: variable.Detail})
 	}
+	scope := doc.semanticScopeAt(position)
+	if scope.kind == "gui" {
+		definitions = append(definitions, s.guiDefinitions(scope.controlType, scope.key, doc, side)...)
+	}
 	for _, member := range doc.Members {
-		if !memberAvailableInSide(member, side) {
+		if !strings.EqualFold(member.Scope, "this") || member.OwnerKey != scope.key || !memberAvailableInSide(member, side) {
 			continue
 		}
 		definitions = append(definitions, Definition{Name: member.Name, Kind: "variable", Scope: member.Scope, Description: member.Detail})
 	}
-	classNames := append(append([]string{}, doc.Joins...), doc.Imports...)
-	for _, fn := range s.workspace.classSymbols(classNames, side) {
-		definitions = append(definitions, definitionFromFunctionInScope(fn, "joined class"))
+	classNames := doc.currentClassNames(position)
+	for _, className := range classNames {
+		for _, fn := range s.workspace.classSymbols([]string{className}, side) {
+			definitions = append(definitions, definitionFromFunctionInScope(fn, classScope(className)))
+		}
+	}
+	return definitions
+}
+
+func (s *LanguageServer) guiDefinitions(controlType, ownerKey string, doc *Document, side string) []Definition {
+	definitions := []Definition{}
+	seen := map[string]bool{}
+	appendMembers := func(receiver string) {
+		for _, definition := range s.catalog.members(receiver) {
+			if !definitionAvailableInSide(definition, side) {
+				continue
+			}
+			key := normalizeName(definition.Name)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			definitions = append(definitions, definition)
+		}
+	}
+	controlType = strings.TrimSpace(controlType)
+	for _, guiType := range s.catalog.guiTypeNames(controlType) {
+		appendMembers(guiType)
+	}
+	if isGUIProfileType(controlType) {
+		appendMembers("GuiControlProfile")
+	} else {
+		// The API describes concrete GUI controls independently, but GS2 GUI
+		// objects all inherit the common GuiControl surface.
+		appendMembers("GuiControl")
+	}
+	for _, member := range doc.Members {
+		if !strings.EqualFold(member.Scope, "this") || member.OwnerKey != ownerKey || !memberAvailableInSide(member, side) {
+			continue
+		}
+		key := normalizeName(member.Name)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		definitions = append(definitions, Definition{
+			Name:              member.Name,
+			Kind:              "variable",
+			Scope:             member.Scope,
+			Description:       member.Detail,
+			Dynamic:           len(member.DynamicExpressions) > 0 || isDynamicVariableDetail(member.Detail),
+			DynamicExpression: firstString(member.DynamicExpressions),
+		})
 	}
 	return definitions
 }
 
 func (s *LanguageServer) withDefinitions(receiver string, doc *Document, side string, position Position) []Definition {
-	lower := strings.ToLower(receiver)
-	if strings.Contains(lower, "findplayer") || strings.Contains(lower, "player") {
-		return s.memberDefinitions("player", doc, side, position)
+	context := withReceiverContext(doc, receiver, position)
+	if context.kind == "static" {
+		context.ownerKey = doc.semanticScopeAt(position).key
 	}
-	if strings.Contains(lower, "findnpc") || strings.Contains(lower, "npc") {
-		return s.memberDefinitions("this", doc, side, position)
-	}
-	return s.memberDefinitions("this", doc, side, position)
+	return s.memberDefinitionsForContext(context, doc, side, position)
 }
 
 func tempVariableVisible(variable VariableSymbol, currentFunction *FunctionSymbol) bool {
@@ -535,13 +629,11 @@ func (s *LanguageServer) hover(params TextDocumentPositionParams) *Hover {
 		}
 	}
 	if !ok {
-		for _, fn := range s.workspace.classSymbols(append(append([]string{}, doc.Joins...), doc.Imports...), doc.sideAtOffset(offset)) {
-			if strings.EqualFold(fn.Name, word) {
-				definition = definitionFromFunctionInScope(fn, "joined class")
-				ok = true
-				break
-			}
-		}
+		definition, ok = s.classFunctionDefinition(
+			doc.currentClassNames(params.Position),
+			word,
+			doc.sideAtOffset(offset),
+		)
 	}
 	if !ok {
 		currentFunction := functionAt(doc, params.Position)
@@ -578,13 +670,11 @@ func (s *LanguageServer) signatureHelp(params TextDocumentPositionParams) *Signa
 	if receiver.kind == "npc" {
 		definition, found = s.externalFunctionDefinition("npc", receiver.name, name, doc.sideAtOffset(offsetAt(doc.Text, params.Position)))
 	} else if receiver.kind == "class" {
-		for _, fn := range s.workspace.classSymbols([]string{receiver.name}, doc.sideAtOffset(offsetAt(doc.Text, params.Position))) {
-			if strings.EqualFold(fn.Name, name) {
-				definition = definitionFromFunctionInScope(fn, "joined class")
-				found = true
-				break
-			}
-		}
+		definition, found = s.classFunctionDefinition(
+			[]string{receiver.name},
+			name,
+			doc.sideAtOffset(offsetAt(doc.Text, params.Position)),
+		)
 	}
 	if !found {
 		definition, found = s.catalog.lookup(name)
@@ -603,13 +693,11 @@ func (s *LanguageServer) signatureHelp(params TextDocumentPositionParams) *Signa
 		}
 	}
 	if !found {
-		for _, fn := range s.workspace.classSymbols(append(append([]string{}, doc.Joins...), doc.Imports...), doc.sideAtOffset(offsetAt(doc.Text, params.Position))) {
-			if strings.EqualFold(fn.Name, name) {
-				definition = definitionFromFunctionInScope(fn, "joined class")
-				found = true
-				break
-			}
-		}
+		definition, found = s.classFunctionDefinition(
+			doc.currentClassNames(params.Position),
+			name,
+			doc.sideAtOffset(offsetAt(doc.Text, params.Position)),
+		)
 	}
 	if !found || definition.Kind != "function" {
 		return nil
@@ -669,6 +757,9 @@ func completionItem(definition Definition) CompletionItem {
 	detail := definition.Scope
 	if signature := formatSignature(definition); signature != "" {
 		detail = signature
+		if scope := completionScope(definition); scope != "" {
+			detail += " · " + scope
+		}
 	}
 	if definition.Scope != "" && definition.Kind != "function" {
 		detail = definition.Kind + " · " + definition.Scope
@@ -680,6 +771,16 @@ func completionItem(definition Definition) CompletionItem {
 		Documentation: MarkupContent{Kind: "markdown", Value: formatDefinition(definition)},
 		SortText:      completionSortText(definition),
 		InsertText:    definition.Name,
+	}
+}
+
+func completionScope(definition Definition) string {
+	scope := strings.TrimSpace(definition.Scope)
+	switch strings.ToLower(scope) {
+	case "", "global", "local", "parameter":
+		return ""
+	default:
+		return scope
 	}
 }
 
@@ -753,14 +854,38 @@ func definitionFromFunction(fn FunctionSymbol) Definition {
 	return definitionFromFunctionInScope(fn, "local")
 }
 
+func classScope(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "Class"
+	}
+	return "Class " + name
+}
+
+func (s *LanguageServer) classFunctionDefinition(classNames []string, functionName, side string) (Definition, bool) {
+	for _, className := range classNames {
+		for _, fn := range s.workspace.classSymbols([]string{className}, side) {
+			if strings.EqualFold(fn.Name, functionName) {
+				return definitionFromFunctionInScope(fn, classScope(className)), true
+			}
+		}
+	}
+	return Definition{}, false
+}
+
 func definitionFromFunctionInScope(fn FunctionSymbol, scope string) Definition {
 	return Definition{Name: fn.Name, Kind: "function", Params: append([]string(nil), fn.Params...), Returns: fn.ReturnType, Scope: scope, Description: fn.Documentation}
 }
 
 type receiverContext struct {
-	kind  string
-	name  string
-	names []string
+	kind         string
+	name         string
+	names        []string
+	ownerKey     string
+	baseKind     string
+	baseName     string
+	baseNames    []string
+	baseOwnerKey string
 }
 
 func (receiver receiverContext) objectNames() []string {
@@ -784,7 +909,8 @@ func (s *LanguageServer) externalFunctionDefinition(kind, objectName, functionNa
 }
 
 func definitionAvailableInSide(definition Definition, side string) bool {
-	scope := strings.ToLower(strings.TrimSpace(definition.Scope))
+	scope := strings.ToLower(normalizeDefinitionScope(definition.Scope))
+	side = strings.ToLower(strings.TrimSpace(side))
 	if scope == "" || side == "" || scope == "global" || scope == "local" || scope == "parameter" {
 		return true
 	}
@@ -861,7 +987,7 @@ func receiverContextAtDot(doc *Document, tokens []token, dotIndex int, position 
 		return receiver
 	}
 	if receiver := previousIdentifier(tokens, dotIndex-1); receiver != "" {
-		return receiverContext{kind: "static", name: receiver}
+		return receiverContextForNamedReceiver(doc, receiver, position)
 	}
 	if tokens[dotIndex-1].text != ")" {
 		return receiverContext{}
@@ -896,7 +1022,8 @@ func dynamicVariableReceiverContext(doc *Document, tokens []token, dotIndex int,
 	if open < 2 || tokens[open-1].text != "." {
 		return receiverContext{}
 	}
-	scope := tokens[open-2]
+	scopeIndex := open - 2
+	scope := tokens[scopeIndex]
 	if scope.kind != tokenIdentifier || !isDynamicVariableScope(scope.text) {
 		return receiverContext{}
 	}
@@ -915,6 +1042,10 @@ func dynamicVariableReceiverContext(doc *Document, tokens []token, dotIndex int,
 	if len(symbols) == 0 {
 		return receiverContext{}
 	}
+	receiverName := strings.TrimSpace(doc.Text[tokens[scopeIndex].start:tokens[dotIndex-1].end])
+	if classes := doc.joinedClassesForReceiver(receiverName, position); len(classes) > 0 {
+		return receiverContext{kind: "joined", names: classes}
+	}
 	return receiverContextFromSymbols(symbols)
 }
 
@@ -922,8 +1053,10 @@ func variableReceiverContext(doc *Document, tokens []token, dotIndex int, positi
 	if dotIndex < 3 || tokens[dotIndex-2].text != "." {
 		return receiverContext{}
 	}
-	scope := tokens[dotIndex-3]
-	member := tokens[dotIndex-1]
+	scopeIndex := dotIndex - 3
+	memberIndex := dotIndex - 1
+	scope := tokens[scopeIndex]
+	member := tokens[memberIndex]
 	if scope.kind != tokenIdentifier || member.kind != tokenIdentifier {
 		return receiverContext{}
 	}
@@ -931,11 +1064,102 @@ func variableReceiverContext(doc *Document, tokens []token, dotIndex int, positi
 	if !isDynamicVariableScope(scopeName) {
 		return receiverContext{}
 	}
+	if scopeName == "this" && strings.EqualFold(member.text, "profile") {
+		if receiver := guiProfileReceiverContext(doc, position); receiver.kind != "" {
+			return receiver
+		}
+	}
 	symbol := doc.symbolFor(scopeName, member.text, position)
 	if symbol == nil {
 		return receiverContext{}
 	}
+	receiverName := strings.TrimSpace(doc.Text[tokens[scopeIndex].start:tokens[memberIndex].end])
+	if classes := doc.joinedClassesForReceiver(receiverName, position); len(classes) > 0 {
+		return receiverContext{kind: "joined", names: classes}
+	}
 	return receiverContextFromSymbol(*symbol)
+}
+
+func receiverContextForNamedReceiver(doc *Document, receiver string, position Position) receiverContext {
+	lower := strings.ToLower(strings.TrimSpace(receiver))
+	if lower == "profile" {
+		if context := guiProfileReceiverContext(doc, position); context.kind != "" {
+			return context
+		}
+	}
+	if lower != "this" && lower != "thiso" {
+		return receiverContext{kind: "static", name: receiver}
+	}
+
+	scope := doc.semanticScopeAt(position)
+	if lower == "thiso" {
+		scope = semanticScope{kind: "script", key: scriptScopeKey}
+	}
+	base := receiverContext{kind: "static", name: lower, ownerKey: scope.key}
+	switch scope.kind {
+	case "gui":
+		base = receiverContext{kind: "gui", name: scope.controlType, ownerKey: scope.key}
+	case "with":
+		base = withReceiverContext(doc, scope.receiver, position)
+		if base.kind == "static" {
+			base.ownerKey = scope.key
+		}
+	}
+	classes := doc.joinedClassesForNamedReceiver(receiver, position)
+	if len(classes) > 0 {
+		return receiverContext{
+			kind:         "joined",
+			names:        classes,
+			baseKind:     base.kind,
+			baseName:     base.name,
+			baseNames:    append([]string(nil), base.names...),
+			baseOwnerKey: base.ownerKey,
+		}
+	}
+	return base
+}
+
+func guiProfileReceiverContext(doc *Document, position Position) receiverContext {
+	scope := doc.semanticScopeAt(position)
+	if scope.kind != "gui" || isGUIProfileType(scope.controlType) {
+		return receiverContext{}
+	}
+	return receiverContext{
+		kind:     "gui-profile",
+		name:     "GuiControlProfile",
+		ownerKey: scope.key,
+	}
+}
+
+func withReceiverContext(doc *Document, receiver string, position Position) receiverContext {
+	lower := strings.ToLower(strings.TrimSpace(receiver))
+	switch {
+	case strings.Contains(lower, "findnpc"):
+		return receiverContext{kind: "npc", name: callArgumentValue(receiver)}
+	case strings.Contains(lower, "findweapon"):
+		return receiverContext{kind: "weapon", name: callArgumentValue(receiver)}
+	case strings.Contains(lower, "findplayer"):
+		return receiverContext{kind: "player", name: "player"}
+	case strings.Contains(lower, "findlevel"):
+		return receiverContext{kind: "level", name: "level"}
+	}
+	if classes := doc.joinedClassesForReceiver(receiver, position); len(classes) > 0 {
+		return receiverContext{kind: "joined", names: classes}
+	}
+	return receiverContext{kind: "static", name: "this"}
+}
+
+func callArgumentValue(expression string) string {
+	open := strings.IndexByte(expression, '(')
+	close := strings.LastIndexByte(expression, ')')
+	if open < 0 || close <= open {
+		return ""
+	}
+	argument := strings.TrimSpace(expression[open+1 : close])
+	if len(argument) >= 2 && argument[0] == '"' && argument[len(argument)-1] == '"' {
+		return strings.Trim(argument[1:len(argument)-1], " ")
+	}
+	return ""
 }
 
 func receiverContextFromSymbol(symbol VariableSymbol) receiverContext {

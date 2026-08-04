@@ -51,3 +51,20 @@ func TestDiagnosticsReportMissingSemicolonsWithoutFlaggingControlBlocks(t *testi
 		}
 	}
 }
+
+func TestDiagnosticsAllowNestedGUIObjectBlocksWithoutSemicolons(t *testing.T) {
+	text := `new GuiControl("Name") {
+  this.width = 10;
+  this.join("Test");
+  new GuiButton("Child") {
+    this.text = "Hello";
+    new GuiText("Nested") {
+      this.text = "World";
+    }
+  }
+}`
+
+	if diagnostics := parseDocument("memory://nested-guis", text, 1).diagnostics(); len(diagnostics) != 0 {
+		t.Fatalf("GUI object blocks produced diagnostics: %#v", diagnostics)
+	}
+}

@@ -51,6 +51,7 @@ interface LspCompletionItem {
   kind?: number
   detail?: string
   documentation?: string | {kind: string; value: string}
+  sortText?: string
   insertText?: string
   textEdit?: {range: LspRange; newText: string}
 }
@@ -242,6 +243,8 @@ export function registerGraalScriptLsp(monaco: unknown, client: GraalScriptLspCl
             kind: completionKind(item.kind),
             detail: item.detail,
             documentation: documentationMarkdown(item.documentation),
+            filterText: item.label,
+            sortText: item.sortText,
             insertText: item.textEdit?.newText ?? item.insertText ?? item.label,
             range: item.textEdit ? toMonacoRange(item.textEdit.range) : undefined,
           })),

@@ -24,7 +24,7 @@ import {Events} from "@wailsio/runtime"
 
 import type {RcService} from "@/services/rcService"
 import type {ChatMessage, ChatTab, GsFunction} from "@/types"
-import {loadGsFunctions, searchFunctions} from "@/lib/gscriptApi"
+import {loadGsFunctions, refreshGsFunctions, searchFunctions} from "@/lib/gscriptApi"
 
 const SERVER_CHANNEL = ""
 const MAX_LINES_PER_TAB = 1000
@@ -267,6 +267,19 @@ export function useChat(service: RcService): UseChatResult {
     [pushScriptHelp, push]
   )
 
+  const handleRefreshGsDocApi = useCallback(
+    async (channel: string) => {
+      try {
+        await service.refreshGraalScriptDocApi()
+        const entries = await refreshGsFunctions()
+        push(channel, `GraalScript doc API atualizada (${entries.length} definições).`, "system")
+      } catch (err) {
+        push(channel, `refreshgsdocapi falhou: ${err instanceof Error ? err.message : String(err)}`, "system")
+      }
+    },
+    [service, push]
+  )
+
   const send = useCallback(
     async (channel: string, text: string): Promise<boolean> => {
       const trimmed = text.trim()
@@ -275,6 +288,10 @@ export function useChat(service: RcService): UseChatResult {
       // without sending anything to the server.
       if (trimmed === "/clear") {
         clearChannel(channel)
+        return true
+      }
+      if (trimmed.toLowerCase() === "/refreshgsdocapi") {
+        void handleRefreshGsDocApi(channel)
         return true
       }
       // /openrights, /openaccess, /open {account} open a client-side editor
@@ -338,7 +355,7 @@ export function useChat(service: RcService): UseChatResult {
         return false
       }
     },
-    [service, clearChannel, handleScriptHelp]
+    [service, clearChannel, handleScriptHelp, handleRefreshGsDocApi]
   )
 
   // reorderTabs moves a tab (drag-and-drop reorder). The server tab stays in

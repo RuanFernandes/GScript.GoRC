@@ -177,6 +177,9 @@ func (p *semicolonParser) parseStatement(start, end int) int {
 	if p.isFunctionDeclarationStart(start) {
 		return p.parseFunctionDeclaration(start, end)
 	}
+	if p.isGUIDeclarationStart(start) {
+		return p.parseGUIDeclaration(start, end)
+	}
 	if p.isControlKeyword(start) {
 		return p.parseControl(start, end)
 	}
@@ -202,6 +205,9 @@ func (p *semicolonParser) parseExpressionStatement(start, end int) (int, int, bo
 			return index + 1, last, true
 		}
 		if current.text == "}" || (current.text == "{" && p.blockOpen[index]) {
+			if current.text == "{" && p.blockOpen[index] && p.isGUIBlockOpen(index) {
+				return p.parseBlock(index, end), last, true
+			}
 			return index, last, false
 		}
 		if index > start && p.hasLineBreak(last, index) && p.canEndExpression(last) && p.startsNewStatement(index) {
@@ -241,6 +247,59 @@ func (p *semicolonParser) parseFunctionDeclaration(start, end int) int {
 		return p.parseBlock(bodyOpen, end)
 	}
 	return bodyOpen
+}
+
+func (p *semicolonParser) isGUIDeclarationStart(index int) bool {
+	if index < 0 || index >= len(p.tokens) || !isIdentifierText(p.tokens[index], "new") {
+		return false
+	}
+	control := index + 1
+	if control >= len(p.tokens) || p.tokens[control].kind != tokenIdentifier || !strings.HasPrefix(strings.ToLower(p.tokens[control].text), "gui") {
+		return false
+	}
+	open := control + 1
+	if open >= len(p.tokens) || p.tokens[open].text != "(" {
+		return false
+	}
+	close, ok := p.pairs[open]
+	if !ok || close <= open {
+		return false
+	}
+	bodyOpen := close + 1
+	return bodyOpen < len(p.tokens) && p.tokens[bodyOpen].text == "{" && p.blockOpen[bodyOpen]
+}
+
+func (p *semicolonParser) parseGUIDeclaration(start, end int) int {
+	control := start + 1
+	open := control + 1
+	close, ok := p.pairs[open]
+	if !ok || close <= open {
+		return end
+	}
+	bodyOpen := close + 1
+	if bodyOpen < end && p.tokens[bodyOpen].text == "{" && p.blockOpen[bodyOpen] {
+		return p.parseBlock(bodyOpen, end)
+	}
+	return bodyOpen
+}
+
+func (p *semicolonParser) isGUIBlockOpen(index int) bool {
+	if index <= 0 || index >= len(p.tokens) || p.tokens[index].text != "{" || !p.blockOpen[index] {
+		return false
+	}
+	close := index - 1
+	if p.tokens[close].text != ")" {
+		return false
+	}
+	open, ok := p.pairs[close]
+	if !ok || open <= 1 {
+		return false
+	}
+	control := open - 1
+	newIndex := control - 1
+	return p.tokens[control].kind == tokenIdentifier &&
+		strings.HasPrefix(strings.ToLower(p.tokens[control].text), "gui") &&
+		isIdentifierText(p.tokens[newIndex], "new")
 }
 
 func (p *semicolonParser) parseControl(start, end int) int {
