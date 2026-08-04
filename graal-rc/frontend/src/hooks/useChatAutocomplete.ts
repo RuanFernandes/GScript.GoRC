@@ -29,6 +29,7 @@ interface CmdDef {
 // registry is all the completer needs.
 const COMMANDS: CmdDef[] = [
 	{name: "clear", arg: "none"},
+	{name: "refreshgsdocapi", arg: "none"},
 	{name: "help", arg: "none"},
 	{name: "optionshelp", arg: "none"},
 	{name: "stats", arg: "none"},

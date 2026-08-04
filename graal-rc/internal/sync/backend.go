@@ -19,10 +19,20 @@ type ScriptBackend interface {
 	// IsNCConnected reports whether the NC (script) socket is up. Every
 	// reconcile path gates on this — no server I/O happens while NC is down.
 	IsNCConnected() bool
+	// IsNCAuthenticated reports whether the NC handshake completed and its
+	// script-list caches are safe to read.
+	IsNCAuthenticated() bool
 
 	GetWeapons() ([]rclib.Weapon, error)
 	GetClasses() ([]rclib.Class, error)
 	GetNPCs() ([]rclib.NPC, error)
+
+	// RefreshSelfFolderRights refreshes the current account's folder rights for
+	// the active server. CanReadScript/CanWriteScript use that cached snapshot
+	// and fail closed until a refresh succeeds.
+	RefreshSelfFolderRights() error
+	CanReadScript(scriptType, name string) bool
+	CanWriteScript(scriptType, name string) bool
 
 	// OpenScript fetches one script body (correlated via the pending map).
 	// For weapon/class key is the name; for npc key is the stringified id.
@@ -45,5 +55,5 @@ type ScriptBackend interface {
 	RefreshWeapons() error
 
 	// FetchAllScripts pulls every script body (loops the lists + OpenScript).
-	FetchAllScripts(ctx context.Context, progress func(done, total int)) ([]rclib.ScriptReply, error)
+	FetchAllScripts(ctx context.Context, allowed func(scriptType, name string) bool, progress func(done, total int)) ([]rclib.ScriptReply, error)
 }

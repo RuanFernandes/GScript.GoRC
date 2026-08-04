@@ -97,6 +97,93 @@ func TestApplyChannelDelta_EmptyChannel(t *testing.T) {
 	}
 }
 
+func TestRightsChangedMessageDetection(t *testing.T) {
+	for _, text := range []string{
+		"[08:51] ruanf has set rights of (offline) player ruanf",
+		"ADMIN HAS SET RIGHTS OF (offline) player Test",
+	} {
+		if !isRightsChangedMessage(text) {
+			t.Fatalf("rights notification was not detected: %q", text)
+		}
+	}
+	if got := rightsChangedTarget("[08:51] ruanf has set rights of (offline) player ruanf"); got != "ruanf" {
+		t.Fatalf("rights target = %q, want ruanf", got)
+	}
+	if got := rightsChangedTarget("ADMIN HAS SET RIGHTS OF (online) player Test"); got != "Test" {
+		t.Fatalf("online rights target = %q, want Test", got)
+	}
+	if isRightsChangedMessage("ruanf changed the player rights") {
+		t.Fatal("unrelated rights message matched the notification marker")
+	}
+}
+
+func TestParseLoadedRightsMessage(t *testing.T) {
+	withCommunity, ok := parseLoadedRightsMessage("[08:56 ] Repinho loaded the rights of Repinho (Graal5766947)")
+	if !ok {
+		t.Fatal("community identity message was not parsed")
+	}
+	if withCommunity.Actor != "Repinho" || withCommunity.Target != "Repinho" || withCommunity.Account != "Graal5766947" || withCommunity.CommunityName != "Repinho" || !withCommunity.ExplicitAccount {
+		t.Fatalf("unexpected community identity: %+v", withCommunity)
+	}
+
+	withoutCommunity, ok := parseLoadedRightsMessage("[08:57 ] ruanf loaded the rights of ruanf")
+	if !ok {
+		t.Fatal("account-only identity message was not parsed")
+	}
+	if withoutCommunity.Actor != "ruanf" || withoutCommunity.Target != "ruanf" || withoutCommunity.Account != "ruanf" || withoutCommunity.CommunityName != "" || withoutCommunity.ExplicitAccount {
+		t.Fatalf("unexpected account-only identity: %+v", withoutCommunity)
+	}
+}
+
+func TestCaptureSelfRightsIdentityIgnoresOtherTarget(t *testing.T) {
+	s := NewService()
+	s.creds = Credentials{Account: "Repinho", Nickname: "Repinho"}
+
+	self, ok := parseLoadedRightsMessage("Repinho loaded the rights of Repinho (Graal5766947)")
+	if !ok {
+		t.Fatal("self identity message was not parsed")
+	}
+	s.captureSelfRightsIdentity(self)
+
+	s.rightsMu.RLock()
+	account, community := s.selfRightsAccount, s.selfRightsCommunityName
+	s.rightsMu.RUnlock()
+	if account != "Graal5766947" || community != "Repinho" {
+		t.Fatalf("captured identity = community %q account %q", community, account)
+	}
+
+	other, ok := parseLoadedRightsMessage("ruanf loaded the rights of ruanf")
+	if !ok {
+		t.Fatal("other identity message was not parsed")
+	}
+	s.captureSelfRightsIdentity(other)
+
+	s.rightsMu.RLock()
+	account, community = s.selfRightsAccount, s.selfRightsCommunityName
+	s.rightsMu.RUnlock()
+	if account != "Graal5766947" || community != "Repinho" {
+		t.Fatalf("other player's identity replaced self identity: community %q account %q", community, account)
+	}
+}
+
+func TestCaptureSelfRightsIdentityWithoutCommunity(t *testing.T) {
+	s := NewService()
+	s.creds = Credentials{Account: "ruanf", Nickname: "ruanf"}
+
+	message, ok := parseLoadedRightsMessage("ruanf loaded the rights of ruanf")
+	if !ok {
+		t.Fatal("account-only identity message was not parsed")
+	}
+	s.captureSelfRightsIdentity(message)
+
+	s.rightsMu.RLock()
+	account, community := s.selfRightsAccount, s.selfRightsCommunityName
+	s.rightsMu.RUnlock()
+	if account != "ruanf" || community != "" {
+		t.Fatalf("captured account-only identity = community %q account %q", community, account)
+	}
+}
+
 func eq(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

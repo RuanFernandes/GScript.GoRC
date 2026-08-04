@@ -15,6 +15,7 @@ import {Button} from "@/components/ui/button"
 import {useCodingSettings} from "@/hooks/useCodingSettings"
 import {ensureTheme, toMonacoThemeName} from "@/lib/monacoThemes"
 import {registerGraalScript} from "@/lib/monacoGraalScript"
+import {GraalScriptLspClient, graalScriptDocumentUri, registerGraalScriptLsp, type GraalScriptDiagnostic} from "@/lib/graalScriptLsp"
 import {registerServerConfig} from "@/lib/monacoServerConfig"
 import {adaptMonacoTheme} from "@/lib/adaptTheme"
 import {rcService} from "@/services/rcService"
@@ -29,18 +30,35 @@ interface MonacoInstance {
   editor: {
     defineTheme(name: string, data: unknown): void
     setTheme(name: string): void
+    setModelMarkers(model: unknown, owner: string, markers: MonacoMarker[]): void
   }
   languages: {
     register(language: {id: string}): void
     setMonarchTokensProvider(languageId: string, provider: unknown): void
     setLanguageConfiguration(languageId: string, config: unknown): void
+    registerCompletionItemProvider(languageId: string, provider: unknown): {dispose(): void}
+    registerHoverProvider(languageId: string, provider: unknown): {dispose(): void}
+    registerSignatureHelpProvider(languageId: string, provider: unknown): {dispose(): void}
   }
+}
+
+interface MonacoMarker {
+  startLineNumber: number
+  startColumn: number
+  endLineNumber: number
+  endColumn: number
+  severity: number
+  message: string
+  source?: string
 }
 interface EditorInstance {
   addCommand(keybinding: number, handler: () => void): void
   updateOptions(opts: {fontFamily?: string; fontSize?: number; readOnly?: boolean}): void
   getValue(): string
+  getModel(): {uri: {toString(): string}; getValue(): string} | null
 }
+
+type SaveAction = "save" | "saveAndClose"
 
 function parseEditorParams(): {kind: EditorKind; key: string} | null {
   const hash = typeof window !== "undefined" ? window.location.hash : ""
@@ -66,6 +84,13 @@ export function ScriptEditorWindowScreen() {
   const [saving, setSaving] = useState(false)
   const editorRef = useRef<EditorInstance | null>(null)
   const monacoRef = useRef<MonacoInstance | null>(null)
+  const lspClientRef = useRef<GraalScriptLspClient | null>(null)
+  const lspRegistrationRef = useRef<{dispose(): void} | null>(null)
+  const applyDiagnosticsRef = useRef<(diagnostics: GraalScriptDiagnostic[]) => void>(() => {})
+  const diagnosticsRef = useRef<GraalScriptDiagnostic[]>([])
+  const pendingLspUpdateRef = useRef<Promise<void>>(Promise.resolve())
+  const lspReadyRef = useRef<Promise<void>>(Promise.resolve())
+  const pendingSaveActionRef = useRef<SaveAction | null>(null)
   // contentRef mirrors `content` so the Ctrl+S handler (registered once at mount
   // with a stale closure) always saves the LATEST text — without this, the mount-
   // time doSave closure captures an empty/stale content and saves nothing.
@@ -77,6 +102,8 @@ export function ScriptEditorWindowScreen() {
   const {kind, key} = parsed.current ?? {kind: "weapon" as EditorKind, key: ""}
   const readOnly = kind === "npcattr"
   const [confirmClose, setConfirmClose] = useState(false)
+  const [confirmSaveWithErrors, setConfirmSaveWithErrors] = useState(false)
+  const [saveDiagnostics, setSaveDiagnostics] = useState<GraalScriptDiagnostic[]>([])
   const [closingAfterSave, setClosingAfterSave] = useState(false)
 
   // The script payload was already fetched by OpenScriptEditor before this
@@ -134,8 +161,43 @@ export function ScriptEditorWindowScreen() {
     }
   }, [closingAfterSave, dirty, kind, key])
 
-  const doSave = useCallback(async () => {
-    if (readOnly) return
+  const diagnosticsBeforeSave = useCallback(async (): Promise<GraalScriptDiagnostic[]> => {
+    const client = lspClientRef.current
+    if (!client) return diagnosticsRef.current
+
+    await lspReadyRef.current
+    const pendingUpdate = pendingLspUpdateRef.current
+    await pendingUpdate
+    if (pendingUpdate !== pendingLspUpdateRef.current) {
+      await pendingLspUpdateRef.current
+    }
+
+    if (lspClientRef.current !== client) return diagnosticsRef.current
+    try {
+      const diagnostics = await client.diagnostics()
+      if (lspClientRef.current === client) {
+        diagnosticsRef.current = diagnostics
+        applyDiagnosticsRef.current(diagnostics)
+      }
+      return diagnostics
+    } catch {
+      return diagnosticsRef.current
+    }
+  }, [])
+
+  const doSave = useCallback(async (action: SaveAction = "save", allowErrors = false): Promise<boolean> => {
+    if (readOnly) return false
+    if (!allowErrors) {
+      const diagnostics = await diagnosticsBeforeSave()
+      const blockingDiagnostics = diagnostics.filter(isSaveBlockingDiagnostic)
+      if (blockingDiagnostics.length > 0) {
+        pendingSaveActionRef.current = action
+        setSaveDiagnostics(blockingDiagnostics)
+        setConfirmSaveWithErrors(true)
+        return false
+      }
+    }
+
     const text = contentRef.current
     setSaving(true)
     try {
@@ -153,12 +215,14 @@ export function ScriptEditorWindowScreen() {
       setOriginal(text)
       setDirty(false)
       toast.success(t("editor.saved"))
+      return true
     } catch (err) {
       toast.error(t("editor.saveFailed"), {description: String(err)})
+      return false
     } finally {
       setSaving(false)
     }
-  }, [kind, key, readOnly, t])
+  }, [diagnosticsBeforeSave, kind, key, readOnly, t])
 
   const handleBeforeMount: BeforeMount = useCallback(
     (monaco) => {
@@ -179,9 +243,55 @@ export function ScriptEditorWindowScreen() {
       editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
         void doSave()
       })
+
+      const m = monaco as unknown as MonacoInstance
+      const model = (editor as unknown as EditorInstance).getModel()
+      const supportsGraalScriptLsp = kind === "weapon" || kind === "class" || kind === "npc"
+      if (model && supportsGraalScriptLsp) {
+        const client = new GraalScriptLspClient()
+        lspClientRef.current = client
+        lspRegistrationRef.current = registerGraalScriptLsp(m, client)
+        const applyDiagnostics = (diagnostics: GraalScriptDiagnostic[]) => {
+          diagnosticsRef.current = diagnostics
+          m.editor.setModelMarkers(model, "graalscript-lsp", diagnostics.map(toMonacoMarker))
+        }
+        applyDiagnosticsRef.current = applyDiagnostics
+        lspReadyRef.current = (async () => {
+          try {
+            const syncConfig = await rcService.getSyncConfig()
+            if (!syncConfig?.enabled || !syncConfig.outputDir?.trim()) {
+              throw new Error("GraalScript LSP requires Local Sync to be enabled with an output folder")
+            }
+            await client.initialize(syncConfig.outputDir)
+            const diagnostics = await client.open(model, graalScriptDocumentUri(kind, key))
+            if (lspClientRef.current === client) {
+              pendingLspUpdateRef.current = Promise.resolve()
+              applyDiagnostics(diagnostics)
+            }
+          } catch (err) {
+            // LSP assistance is optional. A missing sync workspace or a
+            // malformed local definitions file must never prevent editing.
+            console.warn("GraalScript LSP unavailable", err)
+          }
+        })()
+      }
     },
-    [doSave],
+    [doSave, key, kind],
   )
+
+  useEffect(() => {
+    return () => {
+      applyDiagnosticsRef.current([])
+      applyDiagnosticsRef.current = () => {}
+      lspRegistrationRef.current?.dispose()
+      lspRegistrationRef.current = null
+      const client = lspClientRef.current
+      lspClientRef.current = null
+      diagnosticsRef.current = []
+      pendingLspUpdateRef.current = Promise.resolve()
+      void client?.close()
+    }
+  }, [])
 
   // Keep font options in sync as coding settings change.
   useEffect(() => {
@@ -271,9 +381,23 @@ export function ScriptEditorWindowScreen() {
   // re-prompt. If the save fails, dirty stays true and the window stays open.
   const saveAndClose = useCallback(async () => {
     setConfirmClose(false)
-    await doSave()
-    setClosingAfterSave(true)
+    if (await doSave("saveAndClose")) setClosingAfterSave(true)
   }, [doSave])
+
+  const saveWithErrors = useCallback(async () => {
+    const action = pendingSaveActionRef.current ?? "save"
+    pendingSaveActionRef.current = null
+    setConfirmSaveWithErrors(false)
+    if (await doSave(action, true) && action === "saveAndClose") {
+      setClosingAfterSave(true)
+    }
+  }, [doSave])
+
+  const cancelSaveWithErrors = useCallback(() => {
+    pendingSaveActionRef.current = null
+    setSaveDiagnostics([])
+    setConfirmSaveWithErrors(false)
+  }, [])
 
   const discardAndClose = useCallback(() => {
     setConfirmClose(false)
@@ -321,6 +445,15 @@ export function ScriptEditorWindowScreen() {
               setContent(v)
               contentRef.current = v
               setDirty(v !== original)
+              const lspClient = lspClientRef.current
+              if (lspClient) {
+                pendingLspUpdateRef.current = lspClient
+                  .change(v)
+                  .then((diagnostics) => {
+                    if (lspClientRef.current === lspClient) applyDiagnosticsRef.current(diagnostics)
+                  })
+                  .catch(() => {})
+              }
             }}
             options={{
               fontFamily: settings.fontFamily,
@@ -330,6 +463,11 @@ export function ScriptEditorWindowScreen() {
               minimap: {enabled: false},
               scrollBeyondLastLine: false,
               automaticLayout: true,
+              // Keep marker hover cards inside the visible editor window. In
+              // particular, diagnostics on the first line must open below
+              // the marker instead of being clipped by the window header.
+              fixedOverflowWidgets: true,
+              hover: {above: false},
             }}
           />
         )}
@@ -354,6 +492,57 @@ export function ScriptEditorWindowScreen() {
           </div>
         </AlertDialogContent>
       </AlertDialog>
+
+      <AlertDialog open={confirmSaveWithErrors} onOpenChange={(open) => !open && cancelSaveWithErrors()}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("editor.saveWithErrors")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("editor.saveWithErrorsDescription", {count: saveDiagnostics.length})}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="max-h-32 overflow-y-auto rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+            {saveDiagnostics.slice(0, 5).map((diagnostic, index) => (
+              <div key={`${diagnostic.range.start.line}:${diagnostic.range.start.character}:${index}`}>
+                {diagnostic.message}
+              </div>
+            ))}
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={cancelSaveWithErrors}>
+              {t("common.cancel")}
+            </Button>
+            <Button variant="destructive" onClick={saveWithErrors}>
+              {t("editor.saveAnyway")}
+            </Button>
+          </div>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
+}
+
+function isSaveBlockingDiagnostic(diagnostic: GraalScriptDiagnostic): boolean {
+  return diagnostic.severity === undefined || diagnostic.severity === 1
+}
+
+function toMonacoMarker(diagnostic: GraalScriptDiagnostic): MonacoMarker {
+  return {
+    startLineNumber: diagnostic.range.start.line + 1,
+    startColumn: diagnostic.range.start.character + 1,
+    endLineNumber: diagnostic.range.end.line + 1,
+    endColumn: diagnostic.range.end.character + 1,
+    severity: monacoMarkerSeverity(diagnostic.severity),
+    message: diagnostic.message,
+    source: diagnostic.source ?? "graalscript",
+  }
+}
+
+function monacoMarkerSeverity(severity: number | undefined): number {
+  switch (severity) {
+    case 2: return 4 // Warning
+    case 3: return 2 // Info
+    case 4: return 1 // Hint
+    default: return 8 // Error
+  }
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -138,6 +139,7 @@ func (a *App) SetSyncConfig(enabled bool, outputDir string, pollingMinutes int, 
 	// Apply live (only if the running engine belongs to this server).
 	wasEnabled := prev.Enabled && prev.OutputDir != ""
 	nowEnabled := cfg.Enabled && cfg.OutputDir != ""
+	a.graalScriptLSP.SetEnabled(nowEnabled)
 	switch {
 	case nowEnabled && a.hasSyncEngine():
 		a.applySyncConfig(cfg)
@@ -169,6 +171,14 @@ func (a *App) hasSyncEngine() bool {
 // JSON and emits a raw event (mirrors rc:fbConfig/rc:codingSettings).
 func (a *App) syncEmitter() func(string, ...any) {
 	return func(name string, data ...any) {
+		if name == "rc:syncStatus" && len(data) > 0 {
+			if status, ok := data[0].(sync.SyncStatus); ok && !status.Progress.Active {
+				// The sync engine writes server changes to disk asynchronously. Once
+				// a reconcile finishes, refresh the semantic summaries so a still-open
+				// editor sees the new NPC/class public API without reopening it.
+				go a.refreshGraalScriptWorkspace()
+			}
+		}
 		if a.app == nil || len(data) == 0 {
 			return
 		}
@@ -177,6 +187,16 @@ func (a *App) syncEmitter() func(string, ...any) {
 			return
 		}
 		a.app.Event.Emit(name, string(b))
+	}
+}
+
+func (a *App) refreshGraalScriptWorkspace() {
+	cfg := a.GetSyncConfig()
+	if !cfg.Enabled || cfg.OutputDir == "" {
+		return
+	}
+	if err := a.graalScriptLSP.RefreshWorkspace(); err != nil {
+		log.Printf("graalscript LSP workspace refresh: %v", err)
 	}
 }
 
@@ -193,10 +213,10 @@ func (a *App) startSyncEngine() {
 		oldCancel := a.syncCancel
 		a.syncCancel = nil
 		a.syncEngineMu.Unlock()
-		old.Stop()
 		if oldCancel != nil {
 			oldCancel()
 		}
+		old.Stop()
 	} else {
 		a.syncEngineMu.Unlock()
 	}
@@ -206,12 +226,14 @@ func (a *App) startSyncEngine() {
 	// status truthful, this lets the Enable Sync toggle start a fresh engine
 	// when the user enables it later in the session.
 	if !cfg.Enabled || cfg.OutputDir == "" {
+		a.graalScriptLSP.SetEnabled(false)
 		if a.app != nil {
 			b, _ := json.Marshal(cfg)
 			a.app.Event.Emit("rc:syncConfig", string(b))
 		}
 		return
 	}
+	a.graalScriptLSP.SetEnabled(true)
 	ctx, cancel := context.WithCancel(context.Background())
 	eng := sync.NewEngine(a.sessions, srv, a.syncEmitter())
 	eng.SetEditorChecker(func(kind, key string) bool {
@@ -240,17 +262,19 @@ func (a *App) startSyncEngine() {
 
 // stopSyncEngine tears the engine down.
 func (a *App) stopSyncEngine() {
+	a.graalScriptLSP.SetEnabled(false)
 	a.syncEngineMu.Lock()
 	eng := a.syncEngine
 	a.syncEngine = nil
+	a.syncCtx = nil
 	cancel := a.syncCancel
 	a.syncCancel = nil
 	a.syncEngineMu.Unlock()
-	if eng != nil {
-		eng.Stop()
-	}
 	if cancel != nil {
 		cancel()
+	}
+	if eng != nil {
+		eng.Stop()
 	}
 }
 
@@ -279,7 +303,13 @@ func (a *App) SyncNow() error {
 	// Sync Now runs the full reconcile in the background (refresh weapon list +
 	// pipelined bulk fetch + classify). NC is not reconnected — that drops the
 	// session on old servers; class/npc lists refresh via live *Changed pushes.
-	go eng.ReconcileAll(a.syncCtx)
+	a.syncEngineMu.Lock()
+	ctx := a.syncCtx
+	a.syncEngineMu.Unlock()
+	if ctx == nil {
+		return nil
+	}
+	go eng.ReconcileAll(ctx)
 	return nil
 }
 

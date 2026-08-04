@@ -4,7 +4,7 @@
 export type {Server, Player} from "../../bindings/graal-rc/rclib/models"
 export type {NCStatus} from "../../bindings/graal-rc/internal/connection/models"
 export type {Status as SessionStatus} from "../../bindings/graal-rc/internal/connection/models"
-export type {RightsData, AttrsData, BanData, CommentsData} from "../../bindings/graal-rc/internal/connection/models"
+export type {RightsData, AttrsData, BanData, CommentsData, ScriptLists} from "../../bindings/graal-rc/internal/connection/models"
 export type {AccountSummary, LoginRequest} from "../../bindings/graal-rc/models"
 export type {Weapon, Class, NPC, ScriptReply} from "../../bindings/graal-rc/rclib/models"
 export type {FileBrowserFolder, FileBrowserEntry} from "../../bindings/graal-rc/rclib/models"

@@ -4,6 +4,7 @@
 // panel, and a chat-color settings dialog. Mirrors the reference client's
 // TRemoteFrame.
 import {useEffect, useRef, useState} from "react"
+import {Events} from "@wailsio/runtime"
 import {Bell, LogOut, Send, Settings, UserRound} from "lucide-react"
 import {toast} from "sonner"
 
@@ -29,6 +30,11 @@ interface RcScreenProps {
   serverName: string
   accountName: string
   onDisconnect: () => void
+}
+
+interface RightsIdentityStatus {
+  realAccount?: string
+  communityName?: string
 }
 
 function ncLabel(s: NCStatus, playerCount: number, t: (key: string, vars?: Record<string, string | number>) => string): string {
@@ -226,6 +232,7 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
   const {settings} = useChatSettings()
   const [nc, setNc] = useState<NCStatus>({hasNc: false, connected: false, authenticated: false})
   const [profile, setProfile] = useState<AccountSummary | null>(null)
+  const [rightsIdentity, setRightsIdentity] = useState<RightsIdentityStatus>({})
   const {players} = usePlayers(rcService, true)
   const {state: pmState} = usePrivateMessages()
   const dragIndex = useRef<number>(-1)
@@ -264,8 +271,49 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
     }
   }, [accountName])
 
+  // The server's rights response is authoritative for the account label. It
+  // may arrive after this screen mounts, so refresh it on the identity/cache
+  // events as well as once during initial render.
+  useEffect(() => {
+    let cancelled = false
+    setRightsIdentity({})
+
+    const refreshIdentity = async () => {
+      try {
+        const value = await rcService.status()
+        if (cancelled || !value || typeof value !== "object") return
+        const status = value as RightsIdentityStatus
+        setRightsIdentity({
+          realAccount: typeof status.realAccount === "string" ? status.realAccount.trim() : "",
+          communityName: typeof status.communityName === "string" ? status.communityName.trim() : "",
+        })
+      } catch {
+        // The profile/account fallback remains usable while the session starts.
+      }
+    }
+
+    void refreshIdentity()
+    const off = Events.On("rc:evt", (event: {data: string}) => {
+      try {
+        const message = JSON.parse(event.data) as {name?: string}
+        if (message.name === "rc:scriptIdentityChanged" || message.name === "rc:scriptPermissionsChanged") {
+          void refreshIdentity()
+        }
+      } catch {
+        // Ignore unrelated or malformed event payloads.
+      }
+    })
+    return () => {
+      cancelled = true
+      off()
+    }
+  }, [accountName])
+
   const {label: displayServer} = serverDisplay(serverName)
-  const apelido = profile?.displayName || accountName
+  const realAccount = rightsIdentity.realAccount || ""
+  const communityName = rightsIdentity.communityName || ""
+  const rightsLabel = realAccount ? (communityName ? `${communityName} (${realAccount})` : realAccount) : ""
+  const apelido = rightsLabel || profile?.displayName || accountName
   const latestUnread = pmState.conversations.find((conversation) => conversation.unread > 0)
   const previousUnread = useRef(0)
   const pmSound = useRef<HTMLAudioElement | null>(null)

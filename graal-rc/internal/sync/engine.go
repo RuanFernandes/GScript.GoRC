@@ -37,6 +37,8 @@ type SyncStatus struct {
 	Items            []ReviewItem `json:"items"`
 	Progress         SyncProgress `json:"progress"`
 	NextSyncAt       int64        `json:"nextSyncAt"`
+	PermissionsReady bool         `json:"permissionsReady"`
+	PermissionsError string       `json:"permissionsError,omitempty"`
 }
 
 type SyncProgress struct {
@@ -68,27 +70,29 @@ type expectedServerUpdate struct {
 // the only baseline: a path is changed only when its current MD5 differs from
 // the last successful server/local operation.
 type Engine struct {
-	mu              sync.RWMutex
-	cfg             SyncConfig
-	backend         ScriptBackend
-	server          string
-	hashes          map[string]string
-	refs            map[string]scriptRef
-	recentDownloads map[string]time.Time
-	review          map[string]ReviewItem
-	lastSyncAt      int64
-	progress        SyncProgress
-	nextSyncAt      int64
-	running         bool
-	stop            chan struct{}
-	stopped         chan struct{}
-	watcher         *fsnotify.Watcher
-	emit            func(string, ...any)
-	now             func() time.Time
-	isEditing       func(string, string) bool
-	localActor      func() string
-	expectedUpdates map[string]expectedServerUpdate
-	workMu          sync.Mutex
+	mu               sync.RWMutex
+	cfg              SyncConfig
+	backend          ScriptBackend
+	server           string
+	hashes           map[string]string
+	refs             map[string]scriptRef
+	recentDownloads  map[string]time.Time
+	review           map[string]ReviewItem
+	lastSyncAt       int64
+	progress         SyncProgress
+	nextSyncAt       int64
+	permissionsReady bool
+	permissionsError string
+	running          bool
+	stop             chan struct{}
+	stopped          chan struct{}
+	watcher          *fsnotify.Watcher
+	emit             func(string, ...any)
+	now              func() time.Time
+	isEditing        func(string, string) bool
+	localActor       func() string
+	expectedUpdates  map[string]expectedServerUpdate
+	workMu           sync.Mutex
 }
 
 func NewEngine(backend ScriptBackend, server string, emit func(string, ...any)) *Engine {
@@ -181,6 +185,10 @@ func (e *Engine) retryBootstrap(ctx context.Context, dir string, stop <-chan str
 			return
 		case <-ticker.C:
 			if !e.backend.IsNCConnected() {
+				e.markPermissionsStale()
+				continue
+			}
+			if !e.backend.IsNCAuthenticated() {
 				continue
 			}
 			if err := e.bootstrap(ctx, dir); err != nil {
@@ -201,12 +209,10 @@ func (e *Engine) config() SyncConfig {
 
 func (e *Engine) Stop() {
 	e.mu.Lock()
-	if !e.running {
-		e.mu.Unlock()
-		return
+	if e.running {
+		e.running = false
+		close(e.stop)
 	}
-	e.running = false
-	close(e.stop)
 	w := e.watcher
 	stopped := e.stopped
 	e.mu.Unlock()
@@ -216,25 +222,48 @@ func (e *Engine) Stop() {
 	if stopped != nil {
 		<-stopped
 	}
+	// Polls, chat activity and list-change reconciles are serialized by
+	// workMu, but they may be running outside the loop goroutine. Wait for the
+	// active operation before the shared connection can be switched to another
+	// server, so its late replies cannot be applied to the new session.
+	e.workMu.Lock()
+	e.workMu.Unlock()
 }
 
 func (e *Engine) bootstrap(ctx context.Context, dir string) error {
 	if !e.backend.IsNCConnected() {
 		return fmt.Errorf("NC is not connected")
 	}
+	if !e.backend.IsNCAuthenticated() {
+		return fmt.Errorf("NC is not authenticated")
+	}
+	if !e.permissionsReadySnapshot() {
+		if err := e.refreshPermissions(); err != nil {
+			return err
+		}
+	} else {
+		log.Printf("[sync bootstrap] reusing already-loaded script permissions")
+	}
 	e.setProgress("Downloading", 0, 0, "")
 	// The NC socket can report connected before its cached script lists have
 	// arrived. Refreshing the weapon list here gives the first bootstrap a
 	// chance to populate those caches instead of treating 0/0 as success.
-	_ = e.backend.RefreshWeapons()
-	replies, err := e.backend.FetchAllScripts(ctx, func(done, total int) {
+	log.Printf("[sync bootstrap] fetching readable scripts after openrights")
+	replies, err := e.fetchScripts(ctx, func(done, total int) {
 		e.setProgress("Downloading", done, total, "")
 	})
+	log.Printf("[sync bootstrap] readable script fetch finished replies=%d err=%v", len(replies), err)
 	if err != nil && len(replies) == 0 {
 		return err
 	}
 	if len(replies) == 0 {
-		return fmt.Errorf("script lists are not ready")
+		// An account may legitimately have no readable scripts. Treat an empty
+		// permission-filtered result as a completed bootstrap; the next regular
+		// poll will pick up lists that were still warming up on the NC socket.
+		e.markSynced()
+		e.finishProgress(0)
+		e.emitStatus()
+		return nil
 	}
 	for i, r := range replies {
 		if ctx.Err() != nil {
@@ -246,17 +275,64 @@ func (e *Engine) bootstrap(ctx context.Context, dir string) error {
 		}
 		content := normalizeEOL(r.Script)
 		path := fullPath(dir, ref.kind, fileNameFor(ref.kind, ref.key, ref.name))
+		trace := traceCompareItem(i, len(replies))
+		started := time.Now()
+		if trace {
+			log.Printf("[sync bootstrap compare] start %d/%d kind=%s name=%q bytes=%d", i+1, len(replies), ref.kind, ref.name, len(content))
+		}
 		e.setProgress("Writing", i+1, len(replies), ref.name)
 		if err := writeFileAtomic(path, []byte(content)); err != nil {
 			return err
 		}
 		e.remember(ref, path, HashScript(content))
 		e.markDownload(path)
+		if trace {
+			log.Printf("[sync bootstrap compare] done %d/%d kind=%s name=%q elapsed=%s", i+1, len(replies), ref.kind, ref.name, time.Since(started))
+		}
 	}
 	e.markSynced()
 	e.finishProgress(len(replies))
 	e.emitStatus()
 	return err
+}
+
+func (e *Engine) permissionsReadySnapshot() bool {
+	e.mu.RLock()
+	ready := e.permissionsReady
+	e.mu.RUnlock()
+	return ready
+}
+
+func (e *Engine) markPermissionsStale() {
+	e.mu.Lock()
+	changed := e.permissionsReady
+	e.permissionsReady = false
+	e.mu.Unlock()
+	if changed {
+		e.emitStatus()
+	}
+}
+
+func (e *Engine) refreshPermissions() error {
+	started := time.Now()
+	log.Printf("[sync rights] refresh requested")
+	err := e.backend.RefreshSelfFolderRights()
+	e.mu.Lock()
+	if err != nil {
+		e.permissionsReady = false
+		e.permissionsError = err.Error()
+	} else {
+		e.permissionsReady = true
+		e.permissionsError = ""
+	}
+	e.mu.Unlock()
+	e.emitStatus()
+	if err != nil {
+		log.Printf("[sync rights] refresh failed after %s: %v", time.Since(started), err)
+		return fmt.Errorf("refresh script permissions: %w", err)
+	}
+	log.Printf("[sync rights] refresh succeeded after %s; continuing with script fetch", time.Since(started))
+	return nil
 }
 
 func refFromReply(r rclib.ScriptReply) scriptRef {
@@ -376,6 +452,9 @@ func (e *Engine) pushLocal(ctx context.Context, path string) {
 }
 
 func (e *Engine) upload(ref scriptRef, content string) error {
+	if !e.backend.CanWriteScript(ref.kind, ref.name) {
+		return fmt.Errorf("no write permission for %s %q", ref.kind, ref.name)
+	}
 	switch ref.kind {
 	case "weapon":
 		return e.backend.SaveWeapon(ref.key, content)
@@ -394,10 +473,12 @@ func (e *Engine) upload(ref scriptRef, content string) error {
 func (e *Engine) poll(ctx context.Context) {
 	e.workMu.Lock()
 	defer e.workMu.Unlock()
-	e.pollLocked(ctx)
+	// Scheduled polling deliberately reuses the permission snapshot. Rights
+	// refreshes are reserved for bootstrap and the explicit Sync Now action.
+	e.pollLocked(ctx, false)
 }
 
-func (e *Engine) pollLocked(ctx context.Context) {
+func (e *Engine) pollLocked(ctx context.Context, refreshRights bool) {
 	e.mu.RLock()
 	cfg := e.cfg
 	e.mu.RUnlock()
@@ -405,12 +486,32 @@ func (e *Engine) pollLocked(ctx context.Context) {
 		e.emitStatus()
 		return
 	}
+	if !e.backend.IsNCAuthenticated() {
+		e.emitStatus()
+		return
+	}
+	if refreshRights {
+		if err := e.refreshPermissions(); err != nil {
+			log.Printf("sync manual permissions: %v", err)
+			return
+		}
+	} else if !e.permissionsReadySnapshot() {
+		log.Printf("[sync poll] skipping: script permissions are not loaded")
+		e.emitStatus()
+		return
+	} else {
+		log.Printf("[sync poll] using cached script permissions")
+	}
 	e.setNextSyncAt(e.now().Add(pollDuration(cfg)))
 	e.setProgress("Downloading", 0, 0, "")
-	_ = e.backend.RefreshWeapons()
-	replies, err := e.backend.FetchAllScripts(ctx, func(done, total int) {
+	if err := e.backend.RefreshWeapons(); err != nil {
+		log.Printf("[sync poll] refresh weapons failed: %v", err)
+	}
+	log.Printf("[sync poll] fetching readable scripts after openrights")
+	replies, err := e.fetchScripts(ctx, func(done, total int) {
 		e.setProgress("Downloading", done, total, "")
 	})
+	log.Printf("[sync poll] readable script fetch finished replies=%d err=%v", len(replies), err)
 	if err != nil && len(replies) == 0 {
 		log.Printf("sync poll: %v", err)
 		return
@@ -429,6 +530,11 @@ func (e *Engine) pollLocked(ctx context.Context) {
 		}
 		content := normalizeEOL(r.Script)
 		path := fullPath(cfg.OutputDir, ref.kind, fileNameFor(ref.kind, ref.key, ref.name))
+		trace := traceCompareItem(i, len(replies))
+		started := time.Now()
+		if trace {
+			log.Printf("[sync poll compare] start %d/%d kind=%s name=%q bytes=%d", i+1, len(replies), ref.kind, ref.name, len(content))
+		}
 		e.setProgress("Comparing", i+1, len(replies), ref.name)
 		serverHash := HashScript(content)
 		e.remember(ref, path, serverHash)
@@ -439,6 +545,11 @@ func (e *Engine) pollLocked(ctx context.Context) {
 				e.mu.Lock()
 				e.hashes[path] = serverHash
 				e.mu.Unlock()
+			} else {
+				log.Printf("[sync poll compare] create failed %d/%d path=%q: %v", i+1, len(replies), path, err)
+			}
+			if trace {
+				log.Printf("[sync poll compare] done %d/%d kind=%s name=%q action=created elapsed=%s", i+1, len(replies), ref.kind, ref.name, time.Since(started))
 			}
 			continue
 		}
@@ -446,19 +557,68 @@ func (e *Engine) pollLocked(ctx context.Context) {
 			e.mu.Lock()
 			e.hashes[path] = serverHash
 			e.mu.Unlock()
+			if trace {
+				log.Printf("[sync poll compare] done %d/%d kind=%s name=%q action=unchanged elapsed=%s", i+1, len(replies), ref.kind, ref.name, time.Since(started))
+			}
 			continue
 		}
 		if cfg.AutoPullServer {
 			if e.editorIsOpen(ref) && !e.isExpectedServerUpdate(ref, serverHash) {
 				e.enqueueReview(ref, path, local, content, "server changed while editing")
+				if trace {
+					log.Printf("[sync poll compare] done %d/%d kind=%s name=%q action=review elapsed=%s", i+1, len(replies), ref.kind, ref.name, time.Since(started))
+				}
 				continue
 			}
 			e.writeServerVersion(ref, path, content, serverHash)
+		}
+		if trace {
+			log.Printf("[sync poll compare] done %d/%d kind=%s name=%q action=changed elapsed=%s", i+1, len(replies), ref.kind, ref.name, time.Since(started))
 		}
 	}
 	e.markSynced()
 	e.finishProgress(len(replies))
 	e.emitStatus()
+}
+
+func traceCompareItem(index, total int) bool {
+	return index%50 == 0 || index >= total-5
+}
+
+const (
+	scriptListWarmupAttempts = 5
+	scriptListWarmupDelay    = 250 * time.Millisecond
+)
+
+// fetchScripts gives the NC server a short warm-up window after authentication.
+// The socket can be authenticated before the initial weapon/class/NPC lists
+// have been copied into grclib's caches; treating that first empty snapshot as
+// a successful sync loses the initial bootstrap until the next poll.
+func (e *Engine) fetchScripts(ctx context.Context, progress func(done, total int)) ([]rclib.ScriptReply, error) {
+	var replies []rclib.ScriptReply
+	var err error
+	for attempt := 1; attempt <= scriptListWarmupAttempts; attempt++ {
+		if attempt > 1 {
+			timer := time.NewTimer(scriptListWarmupDelay)
+			select {
+			case <-ctx.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
+				return replies, ctx.Err()
+			case <-timer.C:
+			}
+		}
+		if refreshErr := e.backend.RefreshWeapons(); refreshErr != nil {
+			log.Printf("[sync fetch] refresh weapons attempt=%d/%d failed: %v", attempt, scriptListWarmupAttempts, refreshErr)
+		}
+		replies, err = e.backend.FetchAllScripts(ctx, e.backend.CanReadScript, progress)
+		if err != nil || len(replies) > 0 || attempt == scriptListWarmupAttempts {
+			return replies, err
+		}
+		log.Printf("[sync fetch] script lists returned no readable replies; warming up attempt=%d/%d", attempt, scriptListWarmupAttempts)
+	}
+	return replies, err
 }
 
 func pollDuration(cfg SyncConfig) time.Duration {
@@ -574,6 +734,9 @@ func (e *Engine) HandleChatLine(line string) {
 	e.handleActivity(act)
 }
 func (e *Engine) handleActivity(act Activity) {
+	if !e.backend.CanReadScript(act.Kind, act.Name) {
+		return
+	}
 	key := act.Key
 	if act.Kind == "npc" {
 		id, ok := e.npcIDByName(act.Name)
@@ -641,12 +804,13 @@ func (e *Engine) npcIDByName(name string) (int, bool) {
 }
 func (e *Engine) HandleListChanged(_ string) { go e.poll(context.Background()) }
 
-// ReconcileAll is kept as the public immediate-sync entry point used by the
-// Wails binding and the Sync Now button.
+// ReconcileAll is the public immediate-sync entry point used by the Wails
+// binding and the Sync Now button. Unlike scheduled polling, it refreshes the
+// self permission snapshot before fetching scripts.
 func (e *Engine) ReconcileAll(ctx context.Context) {
 	e.workMu.Lock()
 	defer e.workMu.Unlock()
-	e.pollLocked(ctx)
+	e.pollLocked(ctx, true)
 }
 
 func (e *Engine) enqueueReview(ref scriptRef, path, local, server, actor string) {
@@ -671,7 +835,7 @@ func (e *Engine) Status() SyncStatus {
 		items = append(items, it)
 	}
 	ncDown := e.cfg.Enabled && e.cfg.OutputDir != "" && !e.backend.IsNCConnected()
-	return SyncStatus{Enabled: e.cfg.Enabled, Paused: e.cfg.PauseUntil != 0 && e.now().Unix() < e.cfg.PauseUntil, NCDown: ncDown, OutputDirMissing: e.cfg.OutputDir == "", Server: e.server, OutputDir: e.cfg.OutputDir, LastSyncAt: e.lastSyncAt, ReviewCount: len(items), Items: items, Progress: e.progress, NextSyncAt: e.nextSyncAt}
+	return SyncStatus{Enabled: e.cfg.Enabled, Paused: e.cfg.PauseUntil != 0 && e.now().Unix() < e.cfg.PauseUntil, NCDown: ncDown, OutputDirMissing: e.cfg.OutputDir == "", Server: e.server, OutputDir: e.cfg.OutputDir, LastSyncAt: e.lastSyncAt, ReviewCount: len(items), Items: items, Progress: e.progress, NextSyncAt: e.nextSyncAt, PermissionsReady: e.permissionsReady, PermissionsError: e.permissionsError}
 }
 
 func (e *Engine) GetScriptPair(kind, key string) (ScriptPair, error) {

@@ -15,6 +15,7 @@ import type {
   Player,
   RemoteTheme,
   ScriptReply,
+  ScriptLists,
   Server,
   RightsData,
   AttrsData,
@@ -92,6 +93,7 @@ export interface RcService {
   getWeapons(): Promise<Weapon[] | null>
   getClasses(): Promise<Class[] | null>
   getNPCs(): Promise<NPC[] | null>
+  getScriptLists(onlyReadable: boolean): Promise<ScriptLists | null>
   addWeapon(name: string): Promise<void>
   deleteWeapon(name: string): Promise<void>
   addClass(name: string): Promise<void>
@@ -115,6 +117,8 @@ export interface RcService {
   getLoadedScript(scriptType: string, key: string): Promise<ScriptReply | null>
   setEditorDirty(scriptType: string, key: string, dirty: boolean): Promise<void>
   closeScriptEditor(scriptType: string, key: string): Promise<void>
+  graalScriptLspRequest(message: string): Promise<string>
+  refreshGraalScriptDocApi(): Promise<void>
   listFonts(): Promise<string[] | null>
   getCodingSettings(): Promise<CodingSettings>
   setCodingSettings(theme: string, fontFamily: string, fontSize: number): Promise<void>
@@ -246,6 +250,7 @@ export const rcService: RcService = {
   getWeapons: () => App.GetWeapons(),
   getClasses: () => App.GetClasses(),
   getNPCs: () => App.GetNPCs(),
+  getScriptLists: (onlyReadable) => App.GetScriptLists(onlyReadable),
   addWeapon: (name) => App.AddWeapon(name),
   deleteWeapon: (name) => App.DeleteWeapon(name),
   addClass: (name) => App.AddClass(name),
@@ -269,6 +274,8 @@ export const rcService: RcService = {
   getLoadedScript: (scriptType, key) => App.GetLoadedScript(scriptType, key),
   setEditorDirty: (scriptType, key, dirty) => App.SetEditorDirty(scriptType, key, dirty),
   closeScriptEditor: (scriptType, key) => App.CloseScriptEditor(scriptType, key),
+  graalScriptLspRequest: (message) => App.GraalScriptLSPRequest(message),
+  refreshGraalScriptDocApi: () => App.RefreshGraalScriptDocAPI(),
   listFonts: () => App.ListFonts(),
   getCodingSettings: () => App.GetCodingSettings(),
   setCodingSettings: (theme, fontFamily, fontSize) => App.SetCodingSettings(theme, fontFamily, fontSize),
