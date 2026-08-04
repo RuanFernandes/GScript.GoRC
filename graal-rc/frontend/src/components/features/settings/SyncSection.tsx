@@ -1,5 +1,5 @@
 import {useEffect, useMemo, useState, type ReactNode} from "react"
-import {AlertTriangle, Check, Clock3, FolderSync, Gauge, RefreshCw} from "lucide-react"
+import {AlertTriangle, Check, Clock3, FolderSync, Gauge, Info, RefreshCw} from "lucide-react"
 
 import {useSync} from "@/hooks/useSync"
 import {useLanguage} from "@/hooks/useLanguage"
@@ -62,8 +62,8 @@ export function SyncSection() {
   const total = progress.total
   const completed = Math.min(progress.completed, total || progress.completed)
   const percentage = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : progress.active ? 8 : 0
-  const state = status.ncDown ? t("sync.offline") : status.paused ? t("sync.paused") : !status.enabled ? t("sync.disabled") : !status.outputDir ? t("sync.chooseFolder") : progress.active ? progress.phase : t("sync.watching")
-  const tone = status.ncDown || status.paused ? "bg-amber-500" : enabled ? "bg-emerald-500" : "bg-muted-foreground/50"
+  const state = status.permissionsError ? t("sync.permissionsUnavailable") : status.ncDown ? t("sync.offline") : status.paused ? t("sync.paused") : !status.enabled ? t("sync.disabled") : !status.outputDir ? t("sync.chooseFolder") : progress.active ? progress.phase : t("sync.watching")
+  const tone = status.permissionsError || status.ncDown || status.paused ? "bg-amber-500" : enabled ? "bg-emerald-500" : "bg-muted-foreground/50"
   const lastSync = status.lastSyncAt ? new Date(status.lastSyncAt * 1000).toLocaleTimeString() : "never"
   const countdown = useMemo(() => formatCountdown(status.nextSyncAt, now, t), [status.nextSyncAt, now, t])
 
@@ -95,7 +95,14 @@ export function SyncSection() {
 
       {status.reviewCount > 0 && <div className="border-amber-500/30 bg-amber-500/10 text-amber-200 flex items-start gap-2 rounded-md border px-3 py-2 text-xs"><AlertTriangle className="mt-0.5 size-3.5 shrink-0" /><span>{status.reviewCount} script{status.reviewCount === 1 ? "" : "s"} need{status.reviewCount === 1 ? "s" : ""} review before the local copy is changed.</span></div>}
 
+      {status.permissionsError && <div className="border-amber-500/30 bg-amber-500/10 text-amber-200 flex items-start gap-2 rounded-md border px-3 py-2 text-xs"><AlertTriangle className="mt-0.5 size-3.5 shrink-0" /><span>{t("sync.permissionsUnavailable")}</span></div>}
+
       <Toggle checked={status.enabled} onChange={(v) => saveConfig({enabled: v})} label={t("sync.enable")} />
+
+      <div className="border-primary/25 bg-primary/8 text-muted-foreground flex items-start gap-2 rounded-md border px-3 py-2 text-xs leading-relaxed">
+        <Info className="text-primary mt-0.5 size-3.5 shrink-0" />
+        <span>{t("sync.lspDescription")}</span>
+      </div>
 
       <Field label={t("sync.outputFolder")} htmlFor="sync-dir"><div className="flex gap-2"><Input id="sync-dir" value={config.outputDir} readOnly placeholder={t("settings.notSet")} className="flex-1" /><Button variant="outline" size="sm" onClick={browse} className="shrink-0">{t("common.browse")}</Button></div></Field>
 

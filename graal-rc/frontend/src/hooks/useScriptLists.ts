@@ -1,8 +1,7 @@
 // useScriptLists fetches the weapon/class/npc caches and re-fetches whenever the
-// backend emits a cache-changed event (rc:weaponsChanged / rc:classesChanged /
-// rc:npcsChanged), which fire from grclib's add/delete push packets. The lists
-// are read directly from the server-maintained caches, so no reorder buffer is
-// needed here (a transient duplicate fetch is harmless).
+// backend emits a cache-changed or permission-changed event. The backend owns
+// the permission-aware filtering so the same rules are used by the Sync engine
+// and the Script Manager.
 import {useCallback, useEffect, useState} from "react"
 import {Events} from "@wailsio/runtime"
 
@@ -16,29 +15,38 @@ export interface UseScriptListsResult {
   classes: Class[]
   npcs: NPC[]
   loading: boolean
+  error: string | null
   refresh: () => Promise<void>
 }
 
-export function useScriptLists(service: RcService): UseScriptListsResult {
+export function useScriptLists(service: RcService, onlyReadable: boolean): UseScriptListsResult {
   const [weapons, setWeapons] = useState<Weapon[]>([])
   const [classes, setClasses] = useState<Class[]>([])
   const [npcs, setNPCs] = useState<NPC[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
-    const [w, c, n] = await Promise.all([
-      service.getWeapons().catch(() => null),
-      service.getClasses().catch(() => null),
-      service.getNPCs().catch(() => null),
-    ])
-    setWeapons(w ?? [])
-    setClasses(c ?? [])
-    setNPCs(n ?? [])
-    setLoading(false)
-  }, [service])
+    setLoading(true)
+    setError(null)
+    try {
+      const lists = await service.getScriptLists(onlyReadable)
+      if (!lists) throw new Error("The server returned no script lists")
+      setWeapons(lists.weapons ?? [])
+      setClasses(lists.classes ?? [])
+      setNPCs(lists.npcs ?? [])
+    } catch (err) {
+      setWeapons([])
+      setClasses([])
+      setNPCs([])
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLoading(false)
+    }
+  }, [onlyReadable, service])
 
   useEffect(() => {
-    refresh()
+    void refresh()
     // Re-fetch on any cache-changed event. Parsing rc:evt (same uniform envelope
     // the chat hook consumes) keeps a single subscription channel.
     const off = Events.On("rc:evt", (e: {data: string}) => {
@@ -47,9 +55,10 @@ export function useScriptLists(service: RcService): UseScriptListsResult {
         if (
           m.name === "rc:weaponsChanged" ||
           m.name === "rc:classesChanged" ||
-          m.name === "rc:npcsChanged"
+          m.name === "rc:npcsChanged" ||
+          m.name === "rc:scriptPermissionsChanged"
         ) {
-          refresh()
+          void refresh()
         }
       } catch {
         // ignore malformed events
@@ -60,5 +69,5 @@ export function useScriptLists(service: RcService): UseScriptListsResult {
     }
   }, [refresh])
 
-  return {weapons, classes, npcs, loading, refresh}
+  return {weapons, classes, npcs, loading, error, refresh}
 }

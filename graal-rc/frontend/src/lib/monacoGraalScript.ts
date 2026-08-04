@@ -45,6 +45,11 @@ export function registerGraalScript(monaco: MonacoLanguageAPI): void {
           [/\b(true|false|nil|null|NULL|pi|timevar2)\b/, "constant.language"],
           // Keep the GS2 namespace/prefix separate from the member name so
           // themes can style `temp.` independently from `playerName`.
+          // Dynamic GS2 properties use this.(@expr) and this.("name").
+          // Enter a dedicated state before the regular member-access rule so
+          // the opening parenthesis, @, and expression remain one property
+          // access instead of falling back to root tokens.
+          [/\b(?:temp|server|client|clientr|player|this|thiso)(?=\.\s*\()/, "variable.language.prefix", "@dynamicMemberAccess"],
           [/\b(?:temp|server|client|clientr|player|this|thiso)(?=\.)/, "variable.language.prefix", "@memberAccess"],
           [/\b(serverr)\b/, "variable.language.flag"],
           [/\b(name)\b/, "variable.language"],
@@ -67,6 +72,20 @@ export function registerGraalScript(monaco: MonacoLanguageAPI): void {
           [/\./, "punctuation"],
           [/[a-zA-Z_][a-zA-Z0-9_]*/, "variable.language.member", "@pop"],
           [/./, "@pop"],
+        ],
+        dynamicMemberAccess: [
+          [/\s+/, ""],
+          [/\./, "punctuation"],
+          [/\(/, "punctuation"],
+          [/@/, "keyword.operator.append"],
+          [/\b(?:temp|server|client|clientr|player|this|thiso)(?=\.)/, "variable.language.prefix"],
+          [/"/, "string.quoted.double.sql", "@sqlString"],
+          [/[a-zA-Z_][a-zA-Z0-9_]*/, "variable.language.member"],
+          [/[-~^/%|=+*!?&<>]/, "keyword.operator"],
+          [/[\[\]]/, "keyword.operator.array"],
+          [/\)/, "punctuation", "@pop"],
+          [/[{};:,.]/, "punctuation"],
+          [/./, ""],
         ],
         // "..." string with SQL keywords highlighted inside (grammar:
         // repository.sql-strings). Because this state shadows plain strings,

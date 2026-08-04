@@ -22,6 +22,7 @@ const EMPTY_STATUS: SyncStatus = {
   items: [],
   progress: {active: false, phase: "", current: "", completed: 0, total: 0},
   nextSyncAt: 0,
+  permissionsReady: false,
 }
 
 const DEFAULT_CONFIG: SyncConfig = {

@@ -3,9 +3,9 @@
 // Weapons, Classes, NPCs — each a searchable list with Refresh / Add / Delete
 // (and for NPCs: Reset / Edit Flags / View Attributes). Double-clicking a row
 // opens that script in its own editor window.
-import {useEffect, useMemo, useState} from "react"
+import {useEffect, useMemo, useRef, useState} from "react"
 import {toast} from "sonner"
-import {Flag, LocateFixed, RotateCcw, UserRound} from "lucide-react"
+import {Flag, LocateFixed, Loader2, RotateCcw, UserRound} from "lucide-react"
 
 import {Button} from "@/components/ui/button"
 import {Input} from "@/components/ui/input"
@@ -46,13 +46,29 @@ async function openScriptEditorOrFail(scriptType: string, key: string) {
 
 export function ScriptManagerWindowScreen() {
   const {t} = useLanguage()
-  const lists = useScriptLists(rcService)
+  const [onlyReadable, setOnlyReadable] = useState(false)
+  const lists = useScriptLists(rcService, onlyReadable)
   const [tab, setTab] = useState<"weapons" | "classes" | "npcs">("weapons")
+
+  useEffect(() => {
+    if (lists.error) {
+      toast.error(t("scripts.refreshFailed"), {description: lists.error})
+    }
+  }, [lists.error, t])
 
   return (
     <div className="bg-background flex h-svh flex-col">
       <header className="flex items-center gap-2 border-b px-4 py-2.5">
         <h1 className="text-base font-semibold">{t("scripts.title")}</h1>
+        <label className="text-muted-foreground ml-auto inline-flex cursor-pointer items-center gap-2 text-xs">
+          <input
+            type="checkbox"
+            checked={onlyReadable}
+            onChange={(event) => setOnlyReadable(event.target.checked)}
+            className="accent-primary"
+          />
+          <span>{t("scripts.onlyReadable")}</span>
+        </label>
       </header>
       <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)} className="flex min-h-0 flex-1 flex-col p-3">
         <TabsList>
@@ -117,6 +133,8 @@ function WeaponClassTab({
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [name, setName] = useState("")
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc")
+  const openingKeysRef = useRef<Set<string>>(new Set())
+  const [openingKeys, setOpeningKeys] = useState<Set<string>>(new Set())
 
   const filtered = useMemo(() => {
     const f = rows.filter((r) => r.key.toLowerCase().includes(filter.toLowerCase()))
@@ -139,6 +157,18 @@ function WeaponClassTab({
       await onRefresh()
     } catch (err) {
       toast.error(t("scripts.addFailed"), {description: String(err)})
+    }
+  }
+
+  const openRow = async (key: string) => {
+    if (openingKeysRef.current.has(key)) return
+    openingKeysRef.current.add(key)
+    setOpeningKeys(new Set(openingKeysRef.current))
+    try {
+      await openScriptEditorOrFail(kind, key)
+    } finally {
+      openingKeysRef.current.delete(key)
+      setOpeningKeys(new Set(openingKeysRef.current))
     }
   }
 
@@ -210,22 +240,34 @@ function WeaponClassTab({
                   </td>
                 </tr>
               ))}
-            {filtered.map((r) => (
-              <tr
-                key={r.key}
-                onClick={() => setSelected(r.key)}
-                onDoubleClick={() => openScriptEditorOrFail(kind, r.key)}
-                className={`cursor-pointer border-b ${
-                  selected === r.key ? "bg-accent" : "hover:bg-accent/50"
-                }`}
-              >
-                {r.cols.map((c, i) => (
-                  <td key={i} className="px-3 py-1.5">
-                    {c}
-                  </td>
-                ))}
-              </tr>
-            ))}
+            {filtered.map((r) => {
+              const opening = openingKeys.has(r.key)
+              return (
+                <tr
+                  key={r.key}
+                  aria-busy={opening}
+                  aria-disabled={opening}
+                  onClick={() => { if (!opening) setSelected(r.key) }}
+                  onDoubleClick={() => { if (!opening) void openRow(r.key) }}
+                  className={`border-b ${
+                    opening
+                      ? "cursor-wait opacity-60"
+                      : `cursor-pointer ${selected === r.key ? "bg-accent" : "hover:bg-accent/50"}`
+                  }`}
+                >
+                  {r.cols.map((c, i) => (
+                    <td key={i} className="px-3 py-1.5">
+                      {i === 0 ? (
+                        <span className="inline-flex items-center gap-2">
+                          {opening && <Loader2 className="text-muted-foreground size-3.5 animate-spin" aria-label="Loading" />}
+                          {c}
+                        </span>
+                      ) : c}
+                    </td>
+                  ))}
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </ScrollArea>

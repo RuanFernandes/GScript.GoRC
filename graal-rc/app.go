@@ -24,6 +24,7 @@ import (
 
 	"graal-rc/internal/connection"
 	"graal-rc/internal/credentials"
+	"graal-rc/internal/graalscript"
 	"graal-rc/internal/sqlite"
 	synclib "graal-rc/internal/sync"
 	"graal-rc/rclib"
@@ -91,6 +92,8 @@ type App struct {
 	codingMu       sync.Mutex
 	codingSettings CodingSettings
 
+	graalScriptLSP *graalscript.LanguageServer
+
 	languageMu sync.Mutex
 	language   string
 
@@ -134,6 +137,11 @@ func NewApp() *App {
 	} else {
 		migrateLegacyCredentials(vault)
 	}
+	lsp := graalscript.NewLanguageServer()
+	// The embedded server is usable as a standalone package in tests, but the
+	// desktop integration starts locked until the current server has a local
+	// Sync workspace configured.
+	lsp.SetEnabled(false)
 	return &App{
 		sessions:        connection.NewService(),
 		vault:           vault,
@@ -147,6 +155,7 @@ func NewApp() *App {
 		sqliteWindows:   map[string]*application.WebviewWindow{},
 		playerWindows:   map[string]*application.WebviewWindow{},
 		pmConversations: map[int]PMConversation{},
+		graalScriptLSP:  lsp,
 	}
 }
 
@@ -401,6 +410,11 @@ func (a *App) GetServers() ([]rclib.Server, error) { return a.sessions.GetServer
 // ConnectToServer authenticates to the server at the given index. On success it
 // brands the window titles and tray tooltip with the server name.
 func (a *App) ConnectToServer(index int) error {
+	// A running sync engine uses the shared connection backend. Tear it down
+	// before switching the underlying NC session; otherwise an in-flight poll
+	// from the previous server can continue after the handle starts serving the
+	// newly selected server.
+	a.stopSyncEngine()
 	err := a.sessions.ConnectToServer(index)
 	a.refreshServerChrome()
 	if err == nil {
@@ -466,12 +480,15 @@ func (a *App) SendAdminMessageAll(message string) error {
 	return a.sessions.SendAdminMessageAll(message)
 }
 
-// resolveAccount trims the account argument. Player-editor commands always
-// require an explicit account (right-click a player or pass it to the slash
-// command); grclib never exposes the logged-in account name, so there is no
-// implicit self.
+// resolveAccount trims the account argument and resolves an empty value to the
+// logged-in account for window URLs and write operations. The self rights read
+// itself is handled by Service.OpenRights with the protocol's empty target.
 func (a *App) resolveAccount(account string) string {
-	return strings.TrimSpace(account)
+	account = strings.TrimSpace(account)
+	if account == "" {
+		return a.sessions.SelfAccount()
+	}
+	return account
 }
 
 // OpenRights opens the staff-rights editor for an account (self if empty).
@@ -627,6 +644,12 @@ func (a *App) GetClasses() ([]rclib.Class, error) { return a.sessions.GetClasses
 
 // GetNPCs returns the cached NPC list.
 func (a *App) GetNPCs() ([]rclib.NPC, error) { return a.sessions.GetNPCs() }
+
+// GetScriptLists returns all NC script indexes, optionally restricted to
+// scripts this account can read according to its cached openrights response.
+func (a *App) GetScriptLists(onlyReadable bool) (connection.ScriptLists, error) {
+	return a.sessions.GetScriptLists(onlyReadable)
+}
 
 // AddWeapon creates a weapon by name.
 func (a *App) AddWeapon(name string) error { return a.sessions.AddWeapon(name) }
@@ -1716,6 +1739,23 @@ func (a *App) GetLoadedScript(scriptType, key string) (rclib.ScriptReply, error)
 		return reply, nil
 	}
 	return rclib.ScriptReply{}, errors.New("no cached script for this window")
+}
+
+// GraalScriptLSPRequest handles one complete JSON-RPC 2.0 message for the
+// embedded GraalScript language server. The frontend keeps the official LSP
+// wire shape even though Wails is the transport inside the desktop app; this
+// makes a future stdio/VS Code adapter a transport-only change.
+func (a *App) GraalScriptLSPRequest(message string) (string, error) {
+	if strings.TrimSpace(message) == "" {
+		return "", errors.New("empty GraalScript LSP message")
+	}
+	cfg := a.GetSyncConfig()
+	a.graalScriptLSP.SetEnabled(cfg.Enabled && strings.TrimSpace(cfg.OutputDir) != "")
+	response, err := a.graalScriptLSP.HandleJSON([]byte(message))
+	if err != nil {
+		return "", err
+	}
+	return string(response), nil
 }
 
 // CodingSettings are the Monaco editor appearance prefs, persisted to a file so

@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"graal-rc/internal/folderrights"
 	"graal-rc/rclib"
 )
 
@@ -39,6 +40,8 @@ type Status struct {
 	Account       string `json:"account"`
 	Nickname      string `json:"nickname"`
 	ServerName    string `json:"serverName"`
+	RealAccount   string `json:"realAccount"`
+	CommunityName string `json:"communityName"`
 }
 
 // Service manages the grclib connection handle and the credentials in use.
@@ -51,12 +54,29 @@ type Service struct {
 	pumpCancel      context.CancelFunc
 	lastNCAttempt   time.Time  // last ConnectToNCServer attempt; throttles retries
 	lastNCKeepalive time.Time  // last silent NC keepalive (weapon-list ping)
-	ncRequestMu     sync.Mutex // one owner at a time for NC request/response work
+	ncRequestMu     sync.Mutex // serializes brief NC sends and synchronous mutations
 	emit            func(name string, data ...any)
 
 	// maxUpload is the latest server-reported max upload size (bytes), pushed via
 	// the MaxUploadSize callback. 0 means unknown. Guarded by mu.
 	maxUpload int64
+
+	// selfRights is the cached folder_config returned by openrights for the
+	// logged-in account on the current server. It is deliberately fail-closed:
+	// until a fresh response is cached, script reads and writes are rejected.
+	rightsMu          sync.RWMutex
+	rightsRefreshMu   sync.Mutex
+	rightsRequestSeq  uint64
+	selfRights        folderrights.Access
+	selfRightsLoaded  bool
+	selfRightsError   string
+	selfRightsAccount string
+	// selfRightsCommunityName is the optional community name associated with
+	// selfRightsAccount. Both values come from the server's RC chat identity
+	// notification and are used to correlate later rights-change messages.
+	selfRightsCommunityName string
+	selfRightsServer        string
+	selfRightsUpdated       time.Time
 
 	// pendingFiles correlates a file download request (by remote path) to its
 	// content bytes, delivered asynchronously via the FileReceived callback.
@@ -95,12 +115,22 @@ type Service struct {
 	banTypes string
 }
 
+const remoteControlBuildDate = "2026/08/03"
+
 // RightsData is the reply payload for an OpenRights request.
 type RightsData struct {
 	Account      string `json:"account"`
 	Rights       int    `json:"rights"`
 	IPRange      string `json:"ipRange"`
 	FolderAccess string `json:"folderAccess"`
+}
+
+// ScriptLists is the complete NC script index, optionally filtered by the
+// current account's read rights.
+type ScriptLists struct {
+	Weapons []rclib.Weapon `json:"weapons"`
+	Classes []rclib.Class  `json:"classes"`
+	NPCs    []rclib.NPC    `json:"npcs"`
 }
 
 // AttrsData is the reply payload for an OpenAttrs request.
@@ -126,6 +156,11 @@ type CommentsData struct {
 // scriptTimeout is how long OpenScript/OpenNPC* waits for the NC server reply.
 const scriptTimeout = 15 * time.Second
 
+const (
+	rightsChangedMessage = "has set rights of"
+	rightsLoadedMessage  = "loaded the rights of"
+)
+
 // downloadTimeout is how long a file download waits for the full content. File
 // transfers can be large and the server slow (30 MB over a sluggish link can
 // take minutes; grclib streams "Received chunk" progress meanwhile), so this is
@@ -134,6 +169,12 @@ const downloadTimeout = 10 * time.Minute
 
 // pendingKey builds the correlation key for a script/flags/attributes request.
 func pendingKey(kind, idOrName string) string { return kind + ":" + idOrName }
+
+// selfRightsPendingKey is deliberately independent of the listserver login
+// account. Some servers return the canonical in-game account from /openrights
+// (for example, "Graal5766947") even when the RC/listserver credential is a
+// different alias (for example, "Repinho").
+const selfRightsPendingKey = "rights:self"
 
 // registerPending installs a reply channel for key, returning it and a cleanup.
 // If a waiter already exists for the same key (e.g. duplicate open), it is
@@ -177,10 +218,12 @@ func (s *Service) registerEditor(key string) (*editorWait, bool) {
 }
 
 // resolveEditor delivers a reply to all waiters for key (if any) and drops it.
-// Called from pump-goroutine callbacks.
-func (s *Service) resolveEditor(key string, reply any) {
+// Called from pump-goroutine callbacks. The bool reports whether a waiter was
+// actually resolved, which lets callbacks try a safe protocol-specific alias.
+func (s *Service) resolveEditor(key string, reply any) bool {
 	s.editorMu.Lock()
 	w, ok := s.editor[key]
+	resolved := ok && !w.closed
 	if ok && !w.closed {
 		w.reply = reply
 		w.closed = true
@@ -190,6 +233,7 @@ func (s *Service) resolveEditor(key string, reply any) {
 		delete(s.editor, key)
 	}
 	s.editorMu.Unlock()
+	return resolved
 }
 
 // dropEditor removes a timed-out waiter. Only the owning (isNew) caller drops.
@@ -228,6 +272,16 @@ func (s *Service) resolvePending(key string, reply rclib.ScriptReply) {
 		default:
 		}
 	}
+}
+
+// dropPending removes a waiter only if it is still the request that registered
+// it. A late timeout must not delete a newer request that reused the same key.
+func (s *Service) dropPending(key string, ch chan rclib.ScriptReply) {
+	s.pendingMu.Lock()
+	if current, ok := s.pending[key]; ok && current == ch {
+		delete(s.pending, key)
+	}
+	s.pendingMu.Unlock()
 }
 
 // registerFile installs a content channel for a download keyed by remote path,
@@ -307,6 +361,167 @@ func (s *Service) handleIrcMessage(channel, line string) {
 	if snapshot != nil {
 		s.emitEvent("rc:channels", snapshot)
 	}
+}
+
+type loadedRightsMessage struct {
+	Actor           string
+	Target          string
+	Account         string
+	CommunityName   string
+	ExplicitAccount bool
+}
+
+// parseLoadedRightsMessage extracts the identity displayed by the RC after an
+// openrights request. The optional parenthesized value is the canonical
+// account when the target is a community name:
+// "Repinho loaded the rights of Repinho (Graal5766947)".
+func parseLoadedRightsMessage(text string) (loadedRightsMessage, bool) {
+	lower := strings.ToLower(text)
+	marker := strings.Index(lower, rightsLoadedMessage)
+	if marker < 0 {
+		return loadedRightsMessage{}, false
+	}
+
+	actor := strings.TrimSpace(text[:marker])
+	if strings.HasPrefix(actor, "[") {
+		if timestampEnd := strings.Index(actor, "]"); timestampEnd >= 0 {
+			actor = strings.TrimSpace(actor[timestampEnd+1:])
+		}
+	}
+	targetText := strings.TrimSpace(text[marker+len(rightsLoadedMessage):])
+	if actor == "" || targetText == "" {
+		return loadedRightsMessage{}, false
+	}
+
+	message := loadedRightsMessage{Actor: actor, Target: targetText, Account: targetText}
+	if open := strings.LastIndex(targetText, " ("); strings.HasSuffix(targetText, ")") && open >= 0 {
+		target := strings.TrimSpace(targetText[:open])
+		account := strings.TrimSpace(targetText[open+2 : len(targetText)-1])
+		if target != "" && account != "" {
+			message.Target = target
+			message.Account = account
+			message.ExplicitAccount = true
+			if !strings.EqualFold(target, account) {
+				message.CommunityName = target
+			}
+		}
+	}
+
+	return message, true
+}
+
+// rightsChangedTarget extracts the account/community target from a rights
+// mutation notification. The actor is intentionally ignored: another staff
+// member may perform the change on behalf of the logged-in player.
+func rightsChangedTarget(text string) string {
+	lower := strings.ToLower(text)
+	marker := strings.Index(lower, rightsChangedMessage)
+	if marker < 0 {
+		return ""
+	}
+
+	target := strings.TrimSpace(text[marker+len(rightsChangedMessage):])
+	for _, prefix := range []string{"(offline) player ", "(online) player ", "player "} {
+		if strings.HasPrefix(strings.ToLower(target), prefix) {
+			target = strings.TrimSpace(target[len(prefix):])
+			break
+		}
+	}
+	return target
+}
+
+func isRightsChangedMessage(text string) bool {
+	return rightsChangedTarget(text) != ""
+}
+
+func equalFoldAny(value string, candidates ...string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	for _, candidate := range candidates {
+		if strings.EqualFold(value, strings.TrimSpace(candidate)) {
+			return true
+		}
+	}
+	return false
+}
+
+// selfRightsAliases returns every identity that can be used by the server for
+// the current session. The login account/nickname are available immediately;
+// the canonical account and optional community name are learned from RC chat.
+func (s *Service) selfRightsAliases() []string {
+	s.mu.Lock()
+	aliases := []string{s.creds.Account, s.creds.Nickname}
+	s.mu.Unlock()
+
+	s.rightsMu.RLock()
+	aliases = append(aliases, s.selfRightsAccount, s.selfRightsCommunityName)
+	s.rightsMu.RUnlock()
+	return aliases
+}
+
+func (s *Service) isSelfRightsAlias(value string) bool {
+	return equalFoldAny(value, s.selfRightsAliases()...)
+}
+
+// captureSelfRightsIdentity accepts only a message generated by the current
+// RC identity. This prevents a staff member viewing another player's rights
+// from replacing the local account/community cache.
+func (s *Service) captureSelfRightsIdentity(message loadedRightsMessage) {
+	aliases := s.selfRightsAliases()
+	if !equalFoldAny(message.Actor, aliases...) {
+		return
+	}
+	if !equalFoldAny(message.Target, aliases...) && !equalFoldAny(message.Account, aliases...) {
+		return
+	}
+
+	account := strings.TrimSpace(message.Account)
+	if account == "" {
+		return
+	}
+	community := strings.TrimSpace(message.CommunityName)
+
+	s.rightsMu.Lock()
+	changed := false
+	if message.ExplicitAccount || s.selfRightsAccount == "" {
+		if s.selfRightsAccount != account {
+			s.selfRightsAccount = account
+			changed = true
+		}
+	}
+	if community != "" && s.selfRightsCommunityName != community {
+		s.selfRightsCommunityName = community
+		changed = true
+	}
+	s.rightsMu.Unlock()
+
+	if changed {
+		log.Printf("[rights] self identity captured actor=%q community=%q account=%q", message.Actor, community, account)
+		s.emitEvent("rc:scriptIdentityChanged")
+	}
+}
+
+// handleRCMessage watches the server chat for rights identity/change
+// notifications. The callback runs on grclib's pump, so a refresh must stay
+// asynchronous: OpenRights waits for another callback from that pump.
+func (s *Service) handleRCMessage(text string) {
+	if loaded, ok := parseLoadedRightsMessage(text); ok {
+		s.captureSelfRightsIdentity(loaded)
+		return
+	}
+
+	target := rightsChangedTarget(text)
+	if target == "" || !s.isSelfRightsAlias(target) {
+		return
+	}
+	log.Printf("[rights] detected self rights change target=%q; refreshing self folder rights", target)
+	go func() {
+		if err := s.RefreshSelfFolderRights(); err != nil {
+			log.Printf("[rights] refresh after chat notification failed: %v", err)
+		}
+	}()
 }
 
 // applyChannelDelta updates the joined set per the marker line and returns the
@@ -567,6 +782,7 @@ func (s *Service) Login(creds Credentials) ([]rclib.Server, error) {
 	s.creds = creds
 	s.channels = nil
 	s.mu.Unlock()
+	s.clearSelfFolderRights()
 
 	return servers, nil
 }
@@ -596,6 +812,17 @@ func (s *Service) ConnectToServer(index int) error {
 	if h == 0 {
 		return errors.New("not connected: log in first")
 	}
+	s.clearSelfFolderRights()
+	// ConnectToServer reuses the same grclib handle. The NC socket belongs to
+	// the previously selected server, so it must be closed before switching the
+	// main connection; otherwise the next sync can observe the old NC lists and
+	// fetch scripts from the wrong server.
+	if rclib.IsNCConnected(h) {
+		log.Printf("[connection] disconnecting NC before switching server")
+		if err := rclib.DisconnectNC(h); err != nil {
+			log.Printf("[connection] disconnect old NC before server switch: %v", err)
+		}
+	}
 
 	// Resolve the server name from the cached listserver list by index, so the
 	// App layer can brand window/tray titles with it once connected. Strip the
@@ -623,10 +850,14 @@ func (s *Service) ConnectToServer(index int) error {
 			s.mu.Lock()
 			s.serverName = ""
 			s.mu.Unlock()
+			s.clearSelfFolderRights()
 			s.emitEvent("rc:disconnected", reason)
 			s.emitEvent("rc:channels", s.resetChannels())
 		},
-		Message:    func(text string) { s.emitEvent("rc:message", text) },
+		Message: func(text string) {
+			s.handleRCMessage(text)
+			s.emitEvent("rc:message", text)
+		},
 		IrcMessage: func(channel, line string) { s.handleIrcMessage(channel, line) },
 		PrivateMessage: func(playerID int, account, nick, message string) {
 			s.emitEvent("rc:pm", playerID, account, nick, message)
@@ -669,10 +900,23 @@ func (s *Service) ConnectToServer(index int) error {
 		},
 		FileReceived: func(path string, content []byte) { s.resolveFile(path, content) },
 		PlayerRights: func(account string, rights int, ipRange, folderAccess string) {
-			log.Printf("[editor-cb] player_rights account=%q rights=%d", account, rights)
-			s.resolveEditor(pendingKey("rights", account), RightsData{
+			log.Printf("[rights callback] account=%q rights=%d folderAccessLen=%d folderAccess=%q", account, rights, len(folderAccess), folderAccess)
+			data := RightsData{
 				Account: account, Rights: rights, IPRange: ipRange, FolderAccess: folderAccess,
-			})
+			}
+			resolved := s.resolveEditor(pendingKey("rights", account), data)
+			// A self request is sent with an empty target, while the server may
+			// return a canonical account that differs entirely from the
+			// listserver credential. Resolve the protocol-specific self waiter
+			// only when the account-specific waiter did not already match.
+			if !resolved {
+				resolved = s.resolveEditor(selfRightsPendingKey, data)
+			}
+			if resolved {
+				log.Printf("[rights callback] resolved pending request account=%q", account)
+			} else {
+				log.Printf("[rights callback] no pending waiter for account=%q", account)
+			}
 		},
 		PlayerAttributes: func(account, propertiesJSON, editorText string) {
 			log.Printf("[editor-cb] player_attributes account=%q editorLen=%d", account, len(editorText))
@@ -728,6 +972,11 @@ func (s *Service) ConnectToServer(index int) error {
 			if err := rclib.SetNickname(h, nick); err != nil {
 				log.Printf("set nickname %q: %v", nick, err)
 			}
+		}
+		// Match the reference Remote Control client: announce the client build
+		// date through the RC chat packet immediately after authentication.
+		if err := rclib.Execute(h, "/npc newrc,"+remoteControlBuildDate); err != nil {
+			log.Printf("announce Remote Control build date %q: %v", remoteControlBuildDate, err)
 		}
 		s.mu.Lock()
 		s.serverName = serverName
@@ -897,28 +1146,190 @@ func (s *Service) SelfAccount() string {
 	return s.creds.Account
 }
 
-// OpenRights requests an account's staff rights and waits for the reply.
+// clearSelfFolderRights invalidates the permission snapshot when the active
+// account or server changes. Clearing instead of reusing the previous value is
+// important because the same account can have different folder rules per
+// server.
+func (s *Service) clearSelfFolderRights() {
+	s.rightsMu.Lock()
+	s.selfRights = folderrights.Access{}
+	s.selfRightsLoaded = false
+	s.selfRightsError = ""
+	s.selfRightsAccount = ""
+	s.selfRightsCommunityName = ""
+	s.selfRightsServer = ""
+	s.selfRightsUpdated = time.Time{}
+	s.rightsMu.Unlock()
+	s.emitEvent("rc:scriptPermissionsChanged")
+}
+
+func (s *Service) invalidateSelfFolderRights(err error) {
+	s.rightsMu.Lock()
+	s.selfRights = folderrights.Access{}
+	s.selfRightsLoaded = false
+	s.selfRightsError = ""
+	if err != nil {
+		s.selfRightsError = err.Error()
+	}
+	s.selfRightsUpdated = time.Time{}
+	s.rightsMu.Unlock()
+}
+
+// RefreshSelfFolderRights explicitly asks the current server for this
+// account's folder access and replaces the local snapshot. Sync calls this at
+// bootstrap and before every polling pass.
+func (s *Service) RefreshSelfFolderRights() error {
+	s.rightsRefreshMu.Lock()
+	defer s.rightsRefreshMu.Unlock()
+
+	account := strings.TrimSpace(s.SelfAccount())
+	started := time.Now()
+	log.Printf("[rights] refresh start account=%q", account)
+	if account == "" {
+		err := errors.New("cannot refresh script permissions: not logged in")
+		log.Printf("[rights] refresh failed after %s: %v", time.Since(started), err)
+		s.invalidateSelfFolderRights(err)
+		return err
+	}
+	// For the current account, the RC protocol expects an empty target and lets
+	// the server resolve the caller. Sending the cached/login account string can
+	// be treated as a request for another player when its canonical casing
+	// differs from the server session's accountName.
+	data, err := s.OpenRights("")
+	if err != nil {
+		err = fmt.Errorf("openrights for %q: %w", account, err)
+		log.Printf("[rights] refresh failed after %s: %v", time.Since(started), err)
+		s.invalidateSelfFolderRights(err)
+		return err
+	}
+	log.Printf("[rights] openrights completed account=%q folderAccessLen=%d", data.Account, len(data.FolderAccess))
+	returnedAccount := strings.TrimSpace(data.Account)
+	if returnedAccount == "" {
+		err = fmt.Errorf("openrights returned an empty account, expected the current server account")
+		log.Printf("[rights] refresh failed after %s: %v", time.Since(started), err)
+		s.invalidateSelfFolderRights(err)
+		return err
+	}
+	access, err := folderrights.Parse(data.FolderAccess)
+	if err != nil {
+		err = fmt.Errorf("parse folder access for %q: %w", account, err)
+		log.Printf("[rights] refresh failed after %s: %v", time.Since(started), err)
+		s.invalidateSelfFolderRights(err)
+		return err
+	}
+
+	s.mu.Lock()
+	server := s.serverName
+	s.mu.Unlock()
+	s.rightsMu.Lock()
+	s.selfRights = access
+	s.selfRightsLoaded = true
+	s.selfRightsError = ""
+	s.selfRightsAccount = returnedAccount
+	s.selfRightsServer = server
+	s.selfRightsUpdated = time.Now()
+	s.rightsMu.Unlock()
+	log.Printf("[rights] refresh success localAccount=%q serverAccount=%q folderAccessLen=%d elapsed=%s", account, returnedAccount, len(data.FolderAccess), time.Since(started))
+	s.emitEvent("rc:scriptPermissionsChanged")
+	return nil
+}
+
+func (s *Service) ensureSelfFolderRights() error {
+	s.rightsMu.RLock()
+	loaded := s.selfRightsLoaded
+	s.rightsMu.RUnlock()
+	if loaded {
+		return nil
+	}
+	return s.RefreshSelfFolderRights()
+}
+
+func (s *Service) selfFolderRights() (folderrights.Access, bool) {
+	s.rightsMu.RLock()
+	access, loaded := s.selfRights, s.selfRightsLoaded
+	s.rightsMu.RUnlock()
+	return access, loaded
+}
+
+// CanReadScript reports the cached read permission for one logical script.
+// It returns false while the cache is unavailable, so callers cannot
+// accidentally use a stale or unknown permission state.
+func (s *Service) CanReadScript(scriptType, name string) bool {
+	access, loaded := s.selfFolderRights()
+	return loaded && access.CanRead(scriptType, name)
+}
+
+// CanWriteScript reports the cached write permission for one logical script.
+func (s *Service) CanWriteScript(scriptType, name string) bool {
+	access, loaded := s.selfFolderRights()
+	return loaded && access.CanWrite(scriptType, name)
+}
+
+// OpenRights requests an account's staff rights and waits for the reply. An
+// empty account sends /openrights without an argument so the server resolves
+// the current RC session to itself; explicit accounts use the direct rights
+// request packet.
 func (s *Service) OpenRights(account string) (RightsData, error) {
+	account = strings.TrimSpace(account)
+	selfAccount := strings.TrimSpace(s.SelfAccount())
+	selfRequest := account == "" || (selfAccount != "" && strings.EqualFold(account, selfAccount))
+	expectedAccount := account
+	if selfRequest {
+		expectedAccount = selfAccount
+	}
+	if expectedAccount == "" {
+		return RightsData{}, errors.New("account is required")
+	}
+	requestID := atomic.AddUint64(&s.rightsRequestSeq, 1)
+	started := time.Now()
 	h, err := s.requireHandle()
 	if err != nil {
+		log.Printf("[rights #%d] OpenRights rejected target=%q self=%v: %v", requestID, account, selfRequest, err)
 		return RightsData{}, err
 	}
-	key := pendingKey("rights", account)
+	key := pendingKey("rights", expectedAccount)
+	if selfRequest {
+		key = selfRightsPendingKey
+	}
 	w, isNew := s.registerEditor(key)
 	if isNew {
-		log.Printf("[editor] request rights account=%q (self creds.Account=%q nickname=%q)", account, s.creds.Account, s.creds.Nickname)
-		if err := rclib.RequestPlayerRights(h, account); err != nil {
-			s.dropEditor(key)
-			return RightsData{}, err
+		log.Printf("[rights #%d] dispatch target=%q self=%v expected=%q command=%q", requestID, account, selfRequest, expectedAccount, func() string {
+			if selfRequest {
+				return "/openrights"
+			}
+			return "PLI_RC_PLAYERRIGHTSGET"
+		}())
+		var requestErr error
+		if selfRequest {
+			// The server's /openrights command resolves an omitted account to
+			// the current RC session. Passing the cached account string can be
+			// rejected when its casing differs from the server's canonical name.
+			requestErr = rclib.Execute(h, "/openrights")
+		} else {
+			requestErr = rclib.RequestPlayerRights(h, account)
 		}
+		if requestErr != nil {
+			log.Printf("[rights #%d] dispatch failed after %s: %v", requestID, time.Since(started), requestErr)
+			s.dropEditor(key)
+			return RightsData{}, requestErr
+		}
+		log.Printf("[rights #%d] dispatched; waiting for callback key=%q timeout=%s", requestID, key, scriptTimeout)
 	} else {
-		log.Printf("[editor] dedup rights account=%q (awaiting in-flight request)", account)
+		log.Printf("[rights #%d] joined in-flight request target=%q self=%v key=%q", requestID, account, selfRequest, key)
 	}
 	reply, err := s.awaitEditor(w, key, isNew, "player rights")
 	if err != nil {
+		log.Printf("[rights #%d] callback wait failed after %s key=%q: %v", requestID, time.Since(started), key, err)
 		return RightsData{}, err
 	}
-	return reply.(RightsData), nil
+	data, ok := reply.(RightsData)
+	if !ok {
+		err = fmt.Errorf("unexpected player rights callback type %T", reply)
+		log.Printf("[rights #%d] callback invalid after %s key=%q: %v", requestID, time.Since(started), key, err)
+		return RightsData{}, err
+	}
+	log.Printf("[rights #%d] callback received after %s account=%q folderAccessLen=%d", requestID, time.Since(started), data.Account, len(data.FolderAccess))
+	return data, nil
 }
 
 // SetRights writes rights flags + ip range + folder access for an account.
@@ -1199,6 +1610,59 @@ func (s *Service) GetNPCs() ([]rclib.NPC, error) {
 	return rclib.GetNPCs(h)
 }
 
+// GetScriptLists returns the NC script index. When onlyReadable is true, the
+// lists are filtered using the cached self folder rights; the cache is loaded
+// on demand if this is the first permission-aware request in the session.
+func (s *Service) GetScriptLists(onlyReadable bool) (ScriptLists, error) {
+	var access folderrights.Access
+	if onlyReadable {
+		if err := s.ensureSelfFolderRights(); err != nil {
+			return ScriptLists{}, err
+		}
+		var loaded bool
+		access, loaded = s.selfFolderRights()
+		if !loaded {
+			return ScriptLists{}, errors.New("script permissions are not loaded")
+		}
+	}
+
+	weapons, err := s.GetWeapons()
+	if err != nil {
+		return ScriptLists{}, err
+	}
+	classes, err := s.GetClasses()
+	if err != nil {
+		return ScriptLists{}, err
+	}
+	npcs, err := s.GetNPCs()
+	if err != nil {
+		return ScriptLists{}, err
+	}
+	if !onlyReadable {
+		return ScriptLists{Weapons: weapons, Classes: classes, NPCs: npcs}, nil
+	}
+
+	filteredWeapons := make([]rclib.Weapon, 0, len(weapons))
+	for _, weapon := range weapons {
+		if access.CanRead("weapon", weapon.Name) {
+			filteredWeapons = append(filteredWeapons, weapon)
+		}
+	}
+	filteredClasses := make([]rclib.Class, 0, len(classes))
+	for _, class := range classes {
+		if access.CanRead("class", class.Name) {
+			filteredClasses = append(filteredClasses, class)
+		}
+	}
+	filteredNPCs := make([]rclib.NPC, 0, len(npcs))
+	for _, npc := range npcs {
+		if access.CanRead("npc", npc.Name) {
+			filteredNPCs = append(filteredNPCs, npc)
+		}
+	}
+	return ScriptLists{Weapons: filteredWeapons, Classes: filteredClasses, NPCs: filteredNPCs}, nil
+}
+
 // IsNCConnected reports whether the NC (script) socket is up. Used by the sync
 // engine to gate server I/O.
 func (s *Service) IsNCConnected() bool {
@@ -1209,6 +1673,16 @@ func (s *Service) IsNCConnected() bool {
 	return rclib.IsNCConnected(h)
 }
 
+// IsNCAuthenticated reports whether the NC handshake completed. A connected
+// socket can still be warming its weapon/class/NPC caches for a short moment.
+func (s *Service) IsNCAuthenticated() bool {
+	h, err := s.requireHandle()
+	if err != nil || h == 0 {
+		return false
+	}
+	return rclib.IsNCAuthenticated(h)
+}
+
 // FetchAllScripts pulls every weapon/class/npc script body from the server.
 // Requests are PIPELINED with bounded concurrency (ncFetchConcurrency): each
 // OpenScript sends its NC packet (serialized on dllMu for the brief send) then
@@ -1217,28 +1691,52 @@ func (s *Service) IsNCConnected() bool {
 // serially now takes seconds. A single hung script times out (scriptTimeout,
 // 15s) and is skipped+logged; it never aborts the fetch. progress (optional)
 // reports done/total so the UI can show a background bar.
-func (s *Service) FetchAllScripts(ctx context.Context, progress func(done, total int)) ([]rclib.ScriptReply, error) {
+func (s *Service) FetchAllScripts(ctx context.Context, allowed func(scriptType, name string) bool, progress func(done, total int)) ([]rclib.ScriptReply, error) {
 	if _, err := s.requireNC(); err != nil {
 		return nil, err
 	}
-	weapons, _ := s.GetWeapons()
-	classes, _ := s.GetClasses()
-	npcs, _ := s.GetNPCs()
+	weapons, err := s.GetWeapons()
+	if err != nil {
+		return nil, err
+	}
+	classes, err := s.GetClasses()
+	if err != nil {
+		return nil, err
+	}
+	npcs, err := s.GetNPCs()
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("[sync fetch] script lists received weapons=%d classes=%d npcs=%d", len(weapons), len(classes), len(npcs))
 
 	type job struct {
 		stype, key, name string
 	}
 	var jobs []job
+	skipped := 0
 	for _, w := range weapons {
-		jobs = append(jobs, job{"weapon", w.Name, w.Name})
+		if allowed == nil || allowed("weapon", w.Name) {
+			jobs = append(jobs, job{"weapon", w.Name, w.Name})
+		} else {
+			skipped++
+		}
 	}
 	for _, c := range classes {
-		jobs = append(jobs, job{"class", c.Name, c.Name})
+		if allowed == nil || allowed("class", c.Name) {
+			jobs = append(jobs, job{"class", c.Name, c.Name})
+		} else {
+			skipped++
+		}
 	}
 	for _, n := range npcs {
-		jobs = append(jobs, job{"npc", strconv.Itoa(n.ID), n.Name})
+		if allowed == nil || allowed("npc", n.Name) {
+			jobs = append(jobs, job{"npc", strconv.Itoa(n.ID), n.Name})
+		} else {
+			skipped++
+		}
 	}
 	total := len(jobs)
+	log.Printf("[sync fetch] permission filter kept=%d skipped=%d", total, skipped)
 
 	out := make([]rclib.ScriptReply, 0, total)
 	var outMu sync.Mutex
@@ -1258,7 +1756,7 @@ func (s *Service) FetchAllScripts(ctx context.Context, progress func(done, total
 				return
 			}
 			defer func() { <-sem }()
-			if r, err := s.OpenScript(j.stype, j.key); err == nil {
+			if r, err := s.openScript(j.stype, j.key, j.name); err == nil {
 				// Some NC callbacks return only the NPC id. Keep the display
 				// name from the cached NPC list so local sync never falls back
 				// to an ID-based filename.
@@ -1342,6 +1840,9 @@ func (s *Service) CreateNPC(name string, id int, npcType, scripter, level, x, y 
 
 // SaveWeapon writes a weapon's script back to the server.
 func (s *Service) SaveWeapon(name, script string) error {
+	if err := s.requireScriptPermission("weapon", name, 'w'); err != nil {
+		return err
+	}
 	s.ncRequestMu.Lock()
 	defer s.ncRequestMu.Unlock()
 	h, err := s.requireNC()
@@ -1353,6 +1854,9 @@ func (s *Service) SaveWeapon(name, script string) error {
 
 // SaveClass writes a class's script back to the server.
 func (s *Service) SaveClass(name, script string) error {
+	if err := s.requireScriptPermission("class", name, 'w'); err != nil {
+		return err
+	}
 	s.ncRequestMu.Lock()
 	defer s.ncRequestMu.Unlock()
 	h, err := s.requireNC()
@@ -1364,6 +1868,13 @@ func (s *Service) SaveClass(name, script string) error {
 
 // SaveNPC writes an NPC's script back to the server.
 func (s *Service) SaveNPC(id int, script string) error {
+	name, err := s.npcNameByID(id)
+	if err != nil {
+		return err
+	}
+	if err := s.requireScriptPermission("npc", name, 'w'); err != nil {
+		return err
+	}
 	s.ncRequestMu.Lock()
 	defer s.ncRequestMu.Unlock()
 	h, err := s.requireNC()
@@ -1373,15 +1884,70 @@ func (s *Service) SaveNPC(id int, script string) error {
 	return rclib.UpdateNPC(h, id, script)
 }
 
+func (s *Service) npcNameByID(id int) (string, error) {
+	npcs, err := s.GetNPCs()
+	if err != nil {
+		return "", err
+	}
+	for _, npc := range npcs {
+		if npc.ID == id {
+			return npc.Name, nil
+		}
+	}
+	return "", fmt.Errorf("NPC %d is not present in the current script list", id)
+}
+
+func (s *Service) requireScriptPermission(scriptType, name string, right rune) error {
+	if err := s.ensureSelfFolderRights(); err != nil {
+		return fmt.Errorf("script permissions unavailable: %w", err)
+	}
+	allowed := false
+	if right == 'r' {
+		allowed = s.CanReadScript(scriptType, name)
+	} else if right == 'w' {
+		allowed = s.CanWriteScript(scriptType, name)
+	}
+	if !allowed {
+		return fmt.Errorf("no %c permission for %s %q", right, scriptType, name)
+	}
+	return nil
+}
+
 // OpenScript requests a script from the server and waits for the reply. For
 // weapon/class, key is the name; for npc, key is the stringified id.
 func (s *Service) OpenScript(scriptType, key string) (rclib.ScriptReply, error) {
-	s.ncRequestMu.Lock()
-	defer s.ncRequestMu.Unlock()
+	name := key
+	if scriptType == "npc" {
+		id, err := strconv.Atoi(key)
+		if err != nil {
+			return rclib.ScriptReply{}, err
+		}
+		name, err = s.npcNameByID(id)
+		if err != nil {
+			return rclib.ScriptReply{}, err
+		}
+	}
+	return s.openScript(scriptType, key, name)
+}
+
+func (s *Service) openScript(scriptType, key, name string) (rclib.ScriptReply, error) {
+	if scriptType != "weapon" && scriptType != "class" && scriptType != "npc" {
+		return rclib.ScriptReply{}, errors.New("unknown script type: " + scriptType)
+	}
+	if err := s.requireScriptPermission(scriptType, name, 'r'); err != nil {
+		return rclib.ScriptReply{}, err
+	}
 	h, err := s.requireHandle()
 	if err != nil {
 		return rclib.ScriptReply{}, err
 	}
+	pending := pendingKey(scriptType, key)
+	ch := s.registerPending(pending)
+
+	// Serialize only the native send. The reply is delivered asynchronously by
+	// the pump and is correlated by its own pending key, so another script can
+	// be sent while this one is still waiting for the server.
+	s.ncRequestMu.Lock()
 	switch scriptType {
 	case "weapon":
 		err = rclib.RequestWeaponScript(h, key)
@@ -1394,19 +1960,20 @@ func (s *Service) OpenScript(scriptType, key string) (rclib.ScriptReply, error) 
 		}
 		err = rclib.RequestNPCScript(h, id)
 	default:
+		s.ncRequestMu.Unlock()
+		s.dropPending(pending, ch)
 		return rclib.ScriptReply{}, errors.New("unknown script type: " + scriptType)
 	}
+	s.ncRequestMu.Unlock()
 	if err != nil {
+		s.dropPending(pending, ch)
 		return rclib.ScriptReply{}, err
 	}
-	ch := s.registerPending(pendingKey(scriptType, key))
 	select {
 	case reply := <-ch:
 		return reply, nil
 	case <-time.After(scriptTimeout):
-		s.pendingMu.Lock()
-		delete(s.pending, pendingKey(scriptType, key))
-		s.pendingMu.Unlock()
+		s.dropPending(pending, ch)
 		return rclib.ScriptReply{}, errors.New("script request timed out")
 	}
 }
@@ -1709,6 +2276,7 @@ func (s *Service) Logout() {
 	s.serverName = ""
 	s.channels = nil
 	s.mu.Unlock()
+	s.clearSelfFolderRights()
 }
 
 // Status returns a snapshot of the current session state.
@@ -1729,5 +2297,9 @@ func (s *Service) Status() Status {
 		st.Connected = rclib.IsConnected(s.handle)
 		st.Authenticated = rclib.IsAuthenticated(s.handle)
 	}
+	s.rightsMu.RLock()
+	st.RealAccount = s.selfRightsAccount
+	st.CommunityName = s.selfRightsCommunityName
+	s.rightsMu.RUnlock()
 	return st
 }
