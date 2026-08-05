@@ -1,20 +1,35 @@
 version: '3'
 
 tasks:
-  go:mod:tidy:
-    summary: Runs `go mod tidy`
+  go:mod:verify:
+    summary: Verifies the module graph without modifying go.mod or go.sum
     internal: true
-    # Universal/multi-arch builds invoke this concurrently from parallel deps;
-    # two `go mod tidy` processes racing on go.mod can corrupt it (#4637).
     run: once
+    cmds:
+      - go list -mod=readonly -m all
+      - go mod verify
+
+  go:mod:tidy:
+    summary: Compatibility alias for the read-only module verification task
+    internal: true
+    run: once
+    deps:
+      - task: go:mod:verify
+
+  go:mod:tidy:write:
+    summary: Explicitly runs `go mod tidy` and may modify go.mod and go.sum
     cmds:
       - go mod tidy
 
   install:frontend:deps:
     summary: Install frontend dependencies
     run: once
+    vars:
+      BUILD_MODE: '{{.BUILD_MODE | default "dev"}}'
     cmds:
       - task: install:frontend:deps:{{.PACKAGE_MANAGER}}
+        vars:
+          BUILD_MODE: '{{.BUILD_MODE}}'
 
   install:frontend:deps:npm:
     dir: frontend
@@ -27,7 +42,9 @@ tasks:
       - sh: npm version
         msg: "Looks like npm isn't installed. Npm is part of the Node installer: https://nodejs.org/en/download/"
     cmds:
-      - npm install
+      - '{{if eq .BUILD_MODE "build"}}npm ci{{else}}npm install{{end}}'
+    vars:
+      BUILD_MODE: '{{.BUILD_MODE | default "dev"}}'
 
   install:frontend:deps:bun:
     dir: frontend
@@ -86,6 +103,8 @@ tasks:
       - dist/**/*
     deps:
       - task: install:frontend:deps
+        vars:
+          BUILD_MODE: '{{if eq .DEV "true"}}dev{{else}}build{{end}}'
       - task: generate:bindings
         vars:
           BUILD_FLAGS:
@@ -177,7 +196,7 @@ tasks:
     summary: Generates bindings for the frontend
     run: once
     deps:
-      - task: go:mod:tidy
+      - task: go:mod:verify
     sources:
       - "**/*.[jt]s"
       - exclude: frontend/**/*
@@ -260,7 +279,7 @@ tasks:
       - sh: '{{if eq .OBFUSCATED "true"}}command -v garble >/dev/null 2>&1{{else}}true{{end}}'
         msg: "garble is required for obfuscated builds. Install it with: go install mvdan.cc/garble@v0.16.0 (requires Go 1.24+). See https://github.com/burrowers/garble/releases for version/toolchain compatibility."
     cmds:
-      - '{{if eq .OBFUSCATED "true"}}garble {{.GARBLE_ARGS}} build{{else}}go build{{end}} {{.BUILD_FLAGS}} -o "{{.BIN_DIR}}/{{.APP_NAME}}-server{{exeExt}}"'
+      - '{{if eq .OBFUSCATED "true"}}garble {{.GARBLE_ARGS}} build{{else}}go build{{end}} -mod=readonly {{.BUILD_FLAGS}} -o "{{.BIN_DIR}}/{{.APP_NAME}}-server{{exeExt}}"'
     vars:
       BUILD_FLAGS: '-tags server{{if eq .DEV "true"}}{{if eq .OBFUSCATED "true"}},wails_obfuscated{{end}}{{if .EXTRA_TAGS}},{{.EXTRA_TAGS}}{{end}} -buildvcs=false -gcflags=all="-l"{{else}},production{{if eq .OBFUSCATED "true"}},wails_obfuscated{{end}}{{if .EXTRA_TAGS}},{{.EXTRA_TAGS}}{{end}} -trimpath -buildvcs=false -ldflags="-w -s"{{end}}'
 

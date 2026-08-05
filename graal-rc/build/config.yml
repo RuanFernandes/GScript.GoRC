@@ -5,13 +5,13 @@ version: '3'
 
 # This information is used to generate the build assets.
 info:
-  companyName: "My Company" # The name of the company
-  productName: "Graal RC" # The name of the application
+  companyName: "RuanFernandes" # The name of the company
+  productName: "Graal Remote Control" # The name of the application
   productIdentifier: "com.rauanf.graalrc" # The unique product identifier
   description: "Graal Remote Control client" # The application description
-  copyright: "(c) 2025, My Company" # Copyright text
-  comments: "Some Product Comments" # Comments
-  version: "0.0.1" # The application version
+  copyright: "© 2026, RuanFernandes" # Copyright text
+  comments: "Graal Remote Control client" # Comments
+  version: "0.1.0" # The application version
   # cfBundleIconName: "appicon" # The macOS icon name in Assets.car icon bundles (optional)
   #                               # Should match the name of your .icon file without the extension
   #                               # If not set and Assets.car exists, defaults to "appicon"

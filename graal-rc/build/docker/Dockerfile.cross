@@ -185,7 +185,7 @@ export CGO_CFLAGS="-w"
 
 # Build frontend if exists and not already built (host may have built it)
 if [ -d "frontend" ] && [ -f "frontend/package.json" ] && [ ! -d "frontend/dist" ]; then
-    (cd frontend && npm install --silent && npm run build --silent)
+    (cd frontend && npm ci --silent && npm run build --silent)
 fi
 
 # Build
@@ -210,7 +210,7 @@ if [ "$OBFUSCATED" = "true" ]; then
     TAGS="${TAGS},wails_obfuscated"
 fi
 
-${COMPILER} -tags "$TAGS" -trimpath -buildvcs=false -ldflags="$LDFLAGS" -o bin/${APP}-${GOOS}-${GOARCH}${EXT} .
+${COMPILER} -mod=readonly -tags "$TAGS" -trimpath -buildvcs=false -ldflags="$LDFLAGS" -o bin/${APP}-${GOOS}-${GOARCH}${EXT} .
 echo "Built: bin/${APP}-${GOOS}-${GOARCH}${EXT}"
 SCRIPT
 RUN chmod +x /usr/local/bin/build.sh

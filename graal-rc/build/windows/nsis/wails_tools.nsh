@@ -3,21 +3,25 @@
 !include "x64.nsh"
 !include "WinVer.nsh"
 !include "FileFunc.nsh"
+!include "StrFunc.nsh"
+
+${StrStr}
+${UnStrStr}
 
 !ifndef INFO_PROJECTNAME
-    !define INFO_PROJECTNAME "v3ref"
+    !error "Graal RC: INFO_PROJECTNAME must be supplied from build/windows/info.json."
 !endif
 !ifndef INFO_COMPANYNAME
-    !define INFO_COMPANYNAME "My Company"
+    !error "Graal RC: INFO_COMPANYNAME must be supplied from build/windows/info.json."
 !endif
 !ifndef INFO_PRODUCTNAME
-    !define INFO_PRODUCTNAME "My Product"
+    !error "Graal RC: INFO_PRODUCTNAME must be supplied from build/windows/info.json."
 !endif
 !ifndef INFO_PRODUCTVERSION
-    !define INFO_PRODUCTVERSION "0.1.0"
+    !error "Graal RC: INFO_PRODUCTVERSION must be supplied from build/windows/info.json."
 !endif
 !ifndef INFO_COPYRIGHT
-    !define INFO_COPYRIGHT "© 2026, My Company"
+    !error "Graal RC: INFO_COPYRIGHT must be supplied from build/windows/info.json."
 !endif
 !ifndef PRODUCT_EXECUTABLE
     !define PRODUCT_EXECUTABLE "${INFO_PROJECTNAME}.exe"
@@ -39,6 +43,22 @@
     !endif
 !endif
 
+!if "${WAILS_INSTALL_SCOPE}" != "user"
+    !if "${WAILS_INSTALL_SCOPE}" != "machine"
+        !error "Graal RC: WAILS_INSTALL_SCOPE must be 'user' or 'machine'."
+    !endif
+!endif
+
+!if "${WAILS_INSTALL_SCOPE}" == "user"
+    !if "${REQUEST_EXECUTION_LEVEL}" != "user"
+        !error "Graal RC: user installs must use REQUEST_EXECUTION_LEVEL=user."
+    !endif
+!else
+    !if "${REQUEST_EXECUTION_LEVEL}" != "admin"
+        !error "Graal RC: machine installs must use REQUEST_EXECUTION_LEVEL=admin."
+    !endif
+!endif
+
 RequestExecutionLevel "${REQUEST_EXECUTION_LEVEL}"
 
 !ifdef ARG_WAILS_AMD64_BINARY
@@ -47,11 +67,6 @@ RequestExecutionLevel "${REQUEST_EXECUTION_LEVEL}"
 
 !ifdef ARG_WAILS_ARM64_BINARY
     !define SUPPORTS_ARM64
-!endif
-
-# Local extension (not in upstream wails_tools.nsh): 32-bit / x86 target.
-!ifdef ARG_WAILS_X86_BINARY
-    !define SUPPORTS_X86
 !endif
 
 !ifdef SUPPORTS_AMD64
@@ -64,12 +79,24 @@ RequestExecutionLevel "${REQUEST_EXECUTION_LEVEL}"
     !ifdef SUPPORTS_ARM64
         !define ARCH "arm64"
     !else
-        !ifdef SUPPORTS_X86
-            !define ARCH "386"
-        !else
-            !error "Wails: Undefined ARCH, please provide at least one of ARG_WAILS_AMD64_BINARY, ARG_WAILS_ARM64_BINARY, or ARG_WAILS_X86_BINARY"
-        !endif
+        !error "Wails: Undefined ARCH, please provide at least one of ARG_WAILS_AMD64_BINARY or ARG_WAILS_ARM64_BINARY"
     !endif
+!endif
+
+# Graal RC currently ships only the amd64 native library. Do not produce an
+# installer that embeds an executable whose process cannot load it.
+!if "${ARCH}" != "amd64"
+    !error "Graal RC: the Windows installer requires an amd64 executable because rclib/grclib64.dll is the only native library shipped."
+!endif
+
+!ifndef ARG_GRCLIB_DLL
+    !error "Graal RC: ARG_GRCLIB_DLL is required and must point to rclib/grclib64.dll."
+!endif
+!ifndef ARG_GRCLIB_FILE
+    !error "Graal RC: ARG_GRCLIB_FILE is required and must be grclib64.dll."
+!endif
+!if "${ARG_GRCLIB_FILE}" != "grclib64.dll"
+    !error "Graal RC: the native library destination must be grclib64.dll for an amd64 build."
 !endif
 
 !macro wails.checkArchitecture
@@ -94,19 +121,14 @@ RequestExecutionLevel "${REQUEST_EXECUTION_LEVEL}"
             ${EndIf}
         !endif
 
-        # 32-bit build installs on any Windows (x86 native, x64 via WoW64, arm64
-        # via emulation), so an X86-only installer accepts unconditionally.
-        !ifdef SUPPORTS_X86
-            Goto ok
-        !endif
-
         IfSilent silentArch notSilentArch
         silentArch:
             SetErrorLevel 65
             Abort
         notSilentArch:
             MessageBox MB_OK "${WAILS_ARCHITECTURE_NOT_SUPPORTED}"
-            Quit
+            SetErrorLevel 65
+            Abort
     ${else}
         IfSilent silentWin notSilentWin
         silentWin:
@@ -114,10 +136,19 @@ RequestExecutionLevel "${REQUEST_EXECUTION_LEVEL}"
             Abort
         notSilentWin:
             MessageBox MB_OK "${WAILS_WIN10_REQUIRED}"
-            Quit
+            SetErrorLevel 64
+            Abort
     ${EndIf}
 
     ok:
+!macroend
+
+!macro wails.setRegistryView
+    !if "${ARCH}" == "386"
+        SetRegView 32
+    !else
+        SetRegView 64
+    !endif
 !macroend
 
 !macro wails.files
@@ -133,15 +164,12 @@ RequestExecutionLevel "${REQUEST_EXECUTION_LEVEL}"
         ${EndIf}
     !endif
 
-    !ifdef SUPPORTS_X86
-        File "/oname=${PRODUCT_EXECUTABLE}" "${ARG_WAILS_X86_BINARY}"
-    !endif
 !macroend
 
 !macro wails.writeUninstaller
     WriteUninstaller "$INSTDIR\uninstall.exe"
 
-    SetRegView 64
+    !insertmacro wails.setRegistryView
     !if "${WAILS_INSTALL_SCOPE}" == "user"
         WriteRegStr HKCU "${UNINST_KEY}" "Publisher" "${INFO_COMPANYNAME}"
         WriteRegStr HKCU "${UNINST_KEY}" "DisplayName" "${INFO_PRODUCTNAME}"
@@ -170,7 +198,7 @@ RequestExecutionLevel "${REQUEST_EXECUTION_LEVEL}"
 !macro wails.deleteUninstaller
     Delete "$INSTDIR\uninstall.exe"
 
-    SetRegView 64
+    !insertmacro wails.setRegistryView
     !if "${WAILS_INSTALL_SCOPE}" == "user"
         DeleteRegKey HKCU "${UNINST_KEY}"
     !else
@@ -179,10 +207,39 @@ RequestExecutionLevel "${REQUEST_EXECUTION_LEVEL}"
 !macroend
 
 !macro wails.setShellContext
-    ${If} ${REQUEST_EXECUTION_LEVEL} == "admin"
+    !if "${WAILS_INSTALL_SCOPE}" == "machine"
         SetShellVarContext all
-    ${else}
+    !else
         SetShellVarContext current
+    !endif
+!macroend
+
+!macro wails.checkAppClosed SEARCH_FUNCTION
+    nsExec::ExecToStack '/OEM /TIMEOUT=5000 "$SYSDIR\tasklist.exe" /FI "IMAGENAME eq ${PRODUCT_EXECUTABLE}" /FO CSV /NH'
+    Pop $R0
+    Pop $R1
+
+    ${If} $R0 == "error"
+        MessageBox MB_ICONSTOP|MB_OK "${INFO_PRODUCTNAME} could not verify whether the application is running. Close ${INFO_PRODUCTNAME} and run this installer again."
+        SetErrorLevel 71
+        Abort
+    ${EndIf}
+    ${If} $R0 == "timeout"
+        MessageBox MB_ICONSTOP|MB_OK "The check for a running ${INFO_PRODUCTNAME} process timed out. Close ${INFO_PRODUCTNAME} and run this installer again."
+        SetErrorLevel 71
+        Abort
+    ${EndIf}
+    ${If} $R0 != "0"
+        MessageBox MB_ICONSTOP|MB_OK "${INFO_PRODUCTNAME} could not verify whether the application is running (task check exit code $R0). Close ${INFO_PRODUCTNAME} and run this installer again."
+        SetErrorLevel 71
+        Abort
+    ${EndIf}
+
+    ${${SEARCH_FUNCTION}} $R2 $R1 "${PRODUCT_EXECUTABLE}"
+    ${If} $R2 != ""
+        MessageBox MB_ICONEXCLAMATION|MB_OK "${INFO_PRODUCTNAME} is still running. Close it completely, then run this installer again. The operation was cancelled to protect the installed files and user data."
+        SetErrorLevel 32
+        Abort
     ${EndIf}
 !macroend
 
@@ -193,20 +250,20 @@ RequestExecutionLevel "${REQUEST_EXECUTION_LEVEL}"
         !define WAILS_INSTALL_WEBVIEW_DETAILPRINT "Installing: WebView2 Runtime"
     !endif
 
-    SetRegView 64
-	# If the admin key exists and is not empty then webview2 is already installed
+    !insertmacro wails.setRegistryView
+	# If the machine key exists and is not empty then WebView2 is already installed.
 	ReadRegStr $0 HKLM "SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
     ${If} $0 != ""
-        Goto ok
+        Goto webview2_ok
     ${EndIf}
 
-    ${If} ${REQUEST_EXECUTION_LEVEL} == "user"
-        # If the installer is run in user level, check the user specific key exists and is not empty then webview2 is already installed
-	    ReadRegStr $0 HKCU "Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
+    !if "${WAILS_INSTALL_SCOPE}" == "user"
+        # A user-scope bootstrapper can use the per-user WebView2 runtime.
+        ReadRegStr $0 HKCU "Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
         ${If} $0 != ""
-            Goto ok
+            Goto webview2_ok
         ${EndIf}
-     ${EndIf}
+    !endif
     
 	SetDetailsPrint both
     DetailPrint "${WAILS_INSTALL_WEBVIEW_DETAILPRINT}"
@@ -216,10 +273,27 @@ RequestExecutionLevel "${REQUEST_EXECUTION_LEVEL}"
     CreateDirectory "$pluginsdir\webview2bootstrapper"
     SetOutPath "$pluginsdir\webview2bootstrapper"
     File "MicrosoftEdgeWebview2Setup.exe"
-    ExecWait '"$pluginsdir\webview2bootstrapper\MicrosoftEdgeWebview2Setup.exe" /silent /install'
+    ClearErrors
+    ExecWait '"$pluginsdir\webview2bootstrapper\MicrosoftEdgeWebview2Setup.exe" /silent /install' $R0
+    ${If} ${Errors}
+        SetDetailsPrint both
+        DetailPrint "WebView2 Runtime bootstrapper could not be started."
+        MessageBox MB_ICONSTOP|MB_OK "${INFO_PRODUCTNAME} could not start the WebView2 Runtime installer. Install the Evergreen WebView2 Runtime manually from https://developer.microsoft.com/microsoft-edge/webview2/ and run this installer again."
+        SetErrorLevel 70
+        Abort
+    ${EndIf}
+    # 3010 means the runtime installed successfully and Windows requests a reboot.
+    ${If} $R0 != 0
+    ${AndIf} $R0 != 3010
+        SetDetailsPrint both
+        DetailPrint "WebView2 Runtime bootstrapper failed with exit code $R0."
+        MessageBox MB_ICONSTOP|MB_OK "${INFO_PRODUCTNAME} could not install the WebView2 Runtime (bootstrapper exit code $R0). Install or repair the Evergreen WebView2 Runtime from https://developer.microsoft.com/microsoft-edge/webview2/, then run this installer again."
+        SetErrorLevel 70
+        Abort
+    ${EndIf}
     
     SetDetailsPrint both
-    ok:
+    webview2_ok:
 !macroend
 
 # Copy of APP_ASSOCIATE and APP_UNASSOCIATE macros from here https://gist.github.com/nikku/281d0ef126dbc215dd58bfd5b3a5cd5b

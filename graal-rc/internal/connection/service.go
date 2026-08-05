@@ -52,10 +52,16 @@ type Service struct {
 	creds           Credentials
 	serverName      string // name of the server selected in ConnectToServer; "" when none
 	serverEpoch     uint64 // increments whenever the active server/session changes
+	lifecycleMu     sync.Mutex
+	lifecycleOp     *connectionOperation
+	pumpMu          sync.Mutex
 	pumpCancel      context.CancelFunc
+	pumpDone        chan struct{}
+	pumpErr         error
 	lastNCAttempt   time.Time  // last ConnectToNCServer attempt; throttles retries
 	lastNCKeepalive time.Time  // last silent NC keepalive (weapon-list ping)
 	ncRequestMu     sync.Mutex // serializes brief NC sends and synchronous mutations
+	emitMu          sync.RWMutex
 	emit            func(name string, data ...any)
 
 	// maxUpload is the latest server-reported max upload size (bytes), pushed via
@@ -82,7 +88,7 @@ type Service struct {
 	// pendingFiles correlates a file download request (by remote path) to its
 	// content bytes, delivered asynchronously via the FileReceived callback.
 	pendingFilesMu sync.Mutex
-	pendingFiles   map[string]chan []byte
+	pendingFiles   map[string]*fileWait
 	// channels is the authoritative set of joined IRC channels, derived from the
 	// join/left marker lines. It is the single source of truth for which IRC
 	// tabs the frontend should show; the frontend reconciles its tabs against a
@@ -93,13 +99,13 @@ type Service struct {
 	// cancels the pending leave and the tab survives.
 	channels map[string]*channelState
 
-	// pending maps a script/flags/attributes request key to its reply channel.
+	// pending maps a script/flags/attributes request key to its reply waiter.
 	// A request (OpenScript/OpenNPCFlags/OpenNPCAttributes) registers under a key
 	// like "weapon:name" / "npc:<id>" / "npcflags:<id>" / "npcattr:<id>" and the
 	// matching pump-goroutine callback resolves it. Replies arrive asynchronously
 	// from the NC server.
 	pendingMu sync.Mutex
-	pending   map[string]chan rclib.ScriptReply
+	pending   map[string]*pendingWait
 
 	// editor correlates a player-editor request (rights/attrs/ban/banhistory/
 	// staffactivity/bantypes/comments) keyed by "<kind>:<account>" to its reply.
@@ -199,18 +205,103 @@ func pendingKey(kind, idOrName string) string { return kind + ":" + idOrName }
 // different alias (for example, "Repinho").
 const selfRightsPendingKey = "rights:self"
 
-// registerPending installs a reply channel for key, returning it and a cleanup.
-// If a waiter already exists for the same key (e.g. duplicate open), it is
-// replaced — the old one times out.
-func (s *Service) registerPending(key string) chan rclib.ScriptReply {
-	ch := make(chan rclib.ScriptReply, 1)
+var errConnectionSessionChanged = fmt.Errorf("connection session changed: %w", context.Canceled)
+
+type connectionOperation struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+type pendingWait struct {
+	done   chan struct{}
+	reply  rclib.ScriptReply
+	err    error
+	closed bool
+}
+
+type fileWait struct {
+	done    chan struct{}
+	content []byte
+	err     error
+	closed  bool
+}
+
+// beginLifecycleOperation serializes Login, server selection and Logout. A
+// newer lifecycle operation cancels the previous one and waits for it to stop
+// before touching the native handle, so an old operation cannot disconnect or
+// reconfigure a handle that a newer operation has already adopted.
+func (s *Service) beginLifecycleOperation() *connectionOperation {
+	for {
+		s.lifecycleMu.Lock()
+		previous := s.lifecycleOp
+		if previous == nil {
+			ctx, cancel := context.WithCancel(context.Background())
+			operation := &connectionOperation{ctx: ctx, cancel: cancel, done: make(chan struct{})}
+			s.lifecycleOp = operation
+			s.lifecycleMu.Unlock()
+			return operation
+		}
+		previous.cancel()
+		done := previous.done
+		s.lifecycleMu.Unlock()
+		<-done
+	}
+}
+
+func (s *Service) endLifecycleOperation(operation *connectionOperation) {
+	s.lifecycleMu.Lock()
+	if s.lifecycleOp == operation {
+		s.lifecycleOp = nil
+		close(operation.done)
+	}
+	s.lifecycleMu.Unlock()
+}
+
+func operationErr(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (w *pendingWait) finish(reply rclib.ScriptReply, err error) {
+	if w.closed {
+		return
+	}
+	w.reply = reply
+	w.err = err
+	w.closed = true
+	close(w.done)
+}
+
+func (w *fileWait) finish(content []byte, err error) {
+	if w.closed {
+		return
+	}
+	w.content = content
+	w.err = err
+	w.closed = true
+	close(w.done)
+}
+
+// registerPending installs a reply waiter before dispatching a request. A
+// duplicate key joins the existing request instead of issuing a second packet:
+// this protocol has no request ID, so a late reply for the first packet could
+// otherwise resolve the second caller's waiter incorrectly.
+func (s *Service) registerPending(key string) (*pendingWait, bool) {
+	w := &pendingWait{done: make(chan struct{})}
 	s.pendingMu.Lock()
 	if s.pending == nil {
-		s.pending = map[string]chan rclib.ScriptReply{}
+		s.pending = map[string]*pendingWait{}
 	}
-	s.pending[key] = ch
+	if previous := s.pending[key]; previous != nil && !previous.closed {
+		s.pendingMu.Unlock()
+		return previous, false
+	}
+	s.pending[key] = w
 	s.pendingMu.Unlock()
-	return ch
+	return w, true
 }
 
 // editorWait is a fan-out reply slot: done is closed when reply lands, so every
@@ -219,6 +310,7 @@ func (s *Service) registerPending(key string) chan rclib.ScriptReply {
 type editorWait struct {
 	done   chan struct{}
 	reply  any
+	err    error
 	closed bool
 }
 
@@ -249,6 +341,7 @@ func (s *Service) resolveEditor(key string, reply any) bool {
 	resolved := ok && !w.closed
 	if ok && !w.closed {
 		w.reply = reply
+		w.err = nil
 		w.closed = true
 		close(w.done)
 	}
@@ -259,10 +352,35 @@ func (s *Service) resolveEditor(key string, reply any) bool {
 	return resolved
 }
 
-// dropEditor removes a timed-out waiter. Only the owning (isNew) caller drops.
+// cancelEditor removes a waiter only if it is still the request that registered
+// it. This identity check prevents a late timeout from deleting a newer request
+// reusing the same key.
+func (s *Service) cancelEditor(key string, waiter *editorWait, err error) {
+	s.editorMu.Lock()
+	if current, ok := s.editor[key]; ok && current == waiter {
+		if !waiter.closed {
+			waiter.err = err
+			waiter.closed = true
+			close(waiter.done)
+		}
+		delete(s.editor, key)
+	}
+	s.editorMu.Unlock()
+}
+
+// dropEditor is kept for call sites that fail before they can await a waiter.
+// The identity check is not needed there because the caller owns the key
+// before dispatching a new request.
 func (s *Service) dropEditor(key string) {
 	s.editorMu.Lock()
-	delete(s.editor, key)
+	if waiter, ok := s.editor[key]; ok {
+		delete(s.editor, key)
+		if !waiter.closed {
+			waiter.err = context.Canceled
+			waiter.closed = true
+			close(waiter.done)
+		}
+	}
 	s.editorMu.Unlock()
 }
 
@@ -271,71 +389,111 @@ func (s *Service) dropEditor(key string) {
 func (s *Service) awaitEditor(w *editorWait, key string, isNew bool, kind string) (any, error) {
 	select {
 	case <-w.done:
+		if w.err != nil {
+			return nil, w.err
+		}
 		return w.reply, nil
 	case <-time.After(scriptTimeout):
 		if isNew {
-			s.dropEditor(key)
+			s.cancelEditor(key, w, fmt.Errorf("%s request timed out", kind))
 		}
 		return nil, errors.New(kind + " request timed out")
 	}
 }
 
 // resolvePending delivers a reply to the waiter for key (if any) and drops it.
-// Called from pump-goroutine callbacks; non-blocking (buffered channel).
+// Called from pump-goroutine callbacks; closing the waiter is non-blocking.
 func (s *Service) resolvePending(key string, reply rclib.ScriptReply) {
 	s.pendingMu.Lock()
-	ch, ok := s.pending[key]
+	w, ok := s.pending[key]
 	if ok {
 		delete(s.pending, key)
+		w.finish(reply, nil)
 	}
 	s.pendingMu.Unlock()
-	if ok {
-		select {
-		case ch <- reply:
-		default:
-		}
-	}
 }
 
-// dropPending removes a waiter only if it is still the request that registered
-// it. A late timeout must not delete a newer request that reused the same key.
-func (s *Service) dropPending(key string, ch chan rclib.ScriptReply) {
+// cancelPending removes a waiter only if it is still the request that
+// registered it. A late timeout must not delete a newer request that reused the
+// same key.
+func (s *Service) cancelPending(key string, waiter *pendingWait, err error) {
 	s.pendingMu.Lock()
-	if current, ok := s.pending[key]; ok && current == ch {
+	if current, ok := s.pending[key]; ok && current == waiter {
 		delete(s.pending, key)
+		waiter.finish(rclib.ScriptReply{}, err)
 	}
 	s.pendingMu.Unlock()
 }
 
-// registerFile installs a content channel for a download keyed by remote path,
-// returning it. Called before FileBrowserDownload so the matching FileReceived
-// callback resolves it.
-func (s *Service) registerFile(path string) chan []byte {
-	ch := make(chan []byte, 1)
+// registerFile installs a content waiter for a download keyed by remote path.
+// A duplicate joins the existing request because the file callback carries no
+// request ID with which to distinguish two packets for the same path. Called
+// before FileBrowserDownload so the matching FileReceived callback resolves it.
+func (s *Service) registerFile(path string) (*fileWait, bool) {
+	w := &fileWait{done: make(chan struct{})}
 	s.pendingFilesMu.Lock()
 	if s.pendingFiles == nil {
-		s.pendingFiles = map[string]chan []byte{}
+		s.pendingFiles = map[string]*fileWait{}
 	}
-	s.pendingFiles[path] = ch
+	if previous := s.pendingFiles[path]; previous != nil && !previous.closed {
+		s.pendingFilesMu.Unlock()
+		return previous, false
+	}
+	s.pendingFiles[path] = w
 	s.pendingFilesMu.Unlock()
-	return ch
+	return w, true
 }
 
 // resolveFile delivers downloaded content to the waiter for path (if any) and
 // drops it. Called from the pump-goroutine FileReceived callback; non-blocking.
 func (s *Service) resolveFile(path string, content []byte) {
 	s.pendingFilesMu.Lock()
-	ch, ok := s.pendingFiles[path]
+	w, ok := s.pendingFiles[path]
 	if ok {
 		delete(s.pendingFiles, path)
+		w.finish(content, nil)
 	}
 	s.pendingFilesMu.Unlock()
-	if ok {
-		select {
-		case ch <- content:
-		default:
+}
+
+func (s *Service) cancelFile(path string, waiter *fileWait, err error) {
+	s.pendingFilesMu.Lock()
+	if current, ok := s.pendingFiles[path]; ok && current == waiter {
+		delete(s.pendingFiles, path)
+		waiter.finish(nil, err)
+	}
+	s.pendingFilesMu.Unlock()
+}
+
+// cancelWaiters wakes every asynchronous request when the native session or
+// its pump is no longer usable. This is deliberately separate from timeouts so
+// Logout/server switching never leaves callers waiting for 15 minutes or ten
+// minutes on a dead callback route.
+func (s *Service) cancelWaiters(err error) {
+	s.pendingMu.Lock()
+	for key, waiter := range s.pending {
+		delete(s.pending, key)
+		waiter.finish(rclib.ScriptReply{}, err)
+	}
+	s.pendingMu.Unlock()
+
+	s.editorMu.Lock()
+	for key, waiter := range s.editor {
+		delete(s.editor, key)
+		if !waiter.closed {
+			waiter.err = err
+			waiter.closed = true
+			close(waiter.done)
 		}
 	}
+	s.editorMu.Unlock()
+
+	s.pendingFilesMu.Lock()
+	for path, waiter := range s.pendingFiles {
+		delete(s.pendingFiles, path)
+		waiter.finish(nil, err)
+	}
+	s.pendingFilesMu.Unlock()
 }
 
 // channelState tracks one IRC channel's join state plus a pending (debounced)
@@ -366,12 +524,19 @@ func displayServerName(name string) string {
 // SetEmitter wires the bridge used to push grclib callbacks to the frontend
 // (Wails runtime.EventsEmit). Must be set before ConnectToServer so chat/IRC/
 // server-data events raised on the pump goroutine can reach the UI.
-func (s *Service) SetEmitter(fn func(name string, data ...any)) { s.emit = fn }
+func (s *Service) SetEmitter(fn func(name string, data ...any)) {
+	s.emitMu.Lock()
+	s.emit = fn
+	s.emitMu.Unlock()
+}
 
 // emitEvent is a nil-safe helper for the pump-goroutine callbacks.
 func (s *Service) emitEvent(name string, data ...any) {
-	if s.emit != nil {
-		s.emit(name, data...)
+	s.emitMu.RLock()
+	emit := s.emit
+	s.emitMu.RUnlock()
+	if emit != nil {
+		emit(name, data...)
 	}
 }
 
@@ -658,12 +823,16 @@ func (s *Service) startPump(h rclib.Handle) {
 	s.lastNCKeepalive = time.Time{}
 	s.mu.Unlock()
 	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	s.pumpMu.Lock()
 	s.pumpCancel = cancel
+	s.pumpDone = done
+	s.pumpErr = nil
+	s.pumpMu.Unlock()
 	go func() {
 		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("[pump] fatal panic (event pump stopped): %v\n%s", r, debug.Stack())
-			}
+			s.finishPump(done)
+			close(done)
 		}()
 		ticker := time.NewTicker(15 * time.Millisecond)
 		defer ticker.Stop()
@@ -672,12 +841,77 @@ func (s *Service) startPump(h rclib.Handle) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				rclib.ProcessEvents(h)
-				s.maybeConnectNC(h)
-				s.ncKeepalive(h)
-				s.settleChannelLeaves()
+				if err := s.pumpTick(h); err != nil {
+					s.failPump(h, done, err)
+					return
+				}
 			}
 		}
+	}()
+}
+
+// pumpTick contains one complete tick behind a recovery boundary. A panic or
+// native error is terminal for this handle: continuing to call into a possibly
+// corrupted native connection is less safe than stopping it. The failure is
+// surfaced to the UI and all waiters are canceled; recovery is explicit through
+// a later Login/ConnectToServer operation, never an implicit reconnect.
+func (s *Service) pumpTick(h rclib.Handle) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("event pump panicked: %v", recovered)
+			log.Printf("[pump] %v\n%s", err, debug.Stack())
+		}
+	}()
+	if err := rclib.ProcessEvents(h); err != nil {
+		return err
+	}
+	s.maybeConnectNC(h)
+	s.ncKeepalive(h)
+	s.settleChannelLeaves()
+	return nil
+}
+
+func (s *Service) finishPump(done chan struct{}) {
+	s.pumpMu.Lock()
+	if s.pumpDone == done {
+		s.pumpCancel = nil
+		s.pumpDone = nil
+	}
+	s.pumpMu.Unlock()
+}
+
+func (s *Service) failPump(h rclib.Handle, done chan struct{}, err error) {
+	s.pumpMu.Lock()
+	active := s.pumpDone == done
+	s.pumpMu.Unlock()
+	if !active {
+		return
+	}
+
+	pumpErr := fmt.Errorf("event pump stopped: %w", err)
+	s.mu.Lock()
+	if s.handle == h {
+		s.serverName = ""
+		s.serverEpoch++
+		s.channels = nil
+		s.maxUpload = 0
+	}
+	s.mu.Unlock()
+	s.clearSelfFolderRights()
+	s.clearServerTextCache()
+	s.pumpMu.Lock()
+	if s.pumpDone == done {
+		s.pumpErr = pumpErr
+	}
+	s.pumpMu.Unlock()
+	log.Printf("[pump] handle=%#x %v", uintptr(h), pumpErr)
+	s.cancelWaiters(pumpErr)
+	// Do not reconnect or disconnect here. The native handle may be in the
+	// middle of a fault path; the user-visible error lets the next explicit
+	// lifecycle operation perform orderly cleanup.
+	func() {
+		defer func() { _ = recover() }()
+		s.emitEvent("rc:pumpError", pumpErr.Error())
 	}()
 }
 
@@ -748,19 +982,56 @@ func (s *Service) ncKeepalive(h rclib.Handle) {
 
 // stopPump stops the active event pump, if any.
 func (s *Service) stopPump() {
-	if s.pumpCancel != nil {
-		s.pumpCancel()
-		s.pumpCancel = nil
+	s.pumpMu.Lock()
+	cancel := s.pumpCancel
+	done := s.pumpDone
+	s.pumpCancel = nil
+	s.pumpDone = nil
+	s.pumpMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if done != nil {
+		<-done
 	}
 }
 
 // hasHandle reports whether a listserver connection is currently held.
-func (s *Service) hasHandle() bool { return s.handle != 0 }
+func (s *Service) hasHandle() bool {
+	s.mu.Lock()
+	hasHandle := s.handle != 0
+	s.mu.Unlock()
+	return hasHandle
+}
+
+func (s *Service) clearPumpError() {
+	s.pumpMu.Lock()
+	s.pumpErr = nil
+	s.pumpMu.Unlock()
+}
+
+// unregisterCallbacks is cleanup: preserve the primary operation error, but
+// make a failed native detach visible in logs instead of leaving that failure
+// indistinguishable from a clean session transition.
+func unregisterCallbacks(h rclib.Handle) {
+	if h == 0 {
+		return
+	}
+	if err := rclib.UnregisterCallbacks(h); err != nil {
+		log.Printf("[connection] unregister callbacks for handle %#x: %v", uintptr(h), err)
+	}
+}
 
 // Login connects to the listserver with the given credentials and keeps the
 // resulting handle. A previous handle is dropped first. Returns the server
 // list produced by the listserver login.
 func (s *Service) Login(creds Credentials) ([]rclib.Server, error) {
+	operation := s.beginLifecycleOperation()
+	defer s.endLifecycleOperation(operation)
+	return s.login(operation.ctx, creds)
+}
+
+func (s *Service) login(ctx context.Context, creds Credentials) ([]rclib.Server, error) {
 	if creds.Account == "" || creds.Password == "" {
 		return nil, errors.New("account and password are required")
 	}
@@ -777,9 +1048,17 @@ func (s *Service) Login(creds Credentials) ([]rclib.Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := operationErr(ctx); err != nil {
+		rclib.Disconnect(h)
+		return nil, err
+	}
 
 	servers, err := rclib.GetServers(h)
 	lastErr := rclib.LastError(h)
+	if operationErr(ctx) != nil {
+		rclib.Disconnect(h)
+		return nil, ctx.Err()
+	}
 	if err != nil {
 		rclib.Disconnect(h)
 		return nil, err
@@ -795,17 +1074,25 @@ func (s *Service) Login(creds Credentials) ([]rclib.Server, error) {
 		return nil, errors.New("You're not staff in any server.")
 	}
 
-	s.mu.Lock()
-	if s.handle != 0 {
-		s.stopPump()
-		rclib.UnregisterCallbacks(s.handle)
-		rclib.Disconnect(s.handle)
+	if err := operationErr(ctx); err != nil {
+		rclib.Disconnect(h)
+		return nil, err
 	}
+	s.stopPump()
+	s.mu.Lock()
+	previous := s.handle
 	s.handle = h
 	s.creds = creds
 	s.serverEpoch++
 	s.channels = nil
+	s.maxUpload = 0
 	s.mu.Unlock()
+	s.cancelWaiters(errConnectionSessionChanged)
+	s.clearPumpError()
+	if previous != 0 {
+		unregisterCallbacks(previous)
+		rclib.Disconnect(previous)
+	}
 	s.clearSelfFolderRights()
 	s.clearServerTextCache()
 
@@ -831,17 +1118,32 @@ func (s *Service) GetServers() ([]rclib.Server, error) {
 // server's reason such as "IP not approved") before returning. This is what
 // surfaces async login failures to the UI.
 func (s *Service) ConnectToServer(index int) error {
+	operation := s.beginLifecycleOperation()
+	defer s.endLifecycleOperation(operation)
+	return s.connectToServer(operation.ctx, index)
+}
+
+func (s *Service) connectToServer(ctx context.Context, index int) error {
+	if err := operationErr(ctx); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	h := s.handle
+	nickname := s.creds.Nickname
 	s.mu.Unlock()
 	if h == 0 {
 		return errors.New("not connected: log in first")
 	}
+	s.stopPump()
+	s.cancelWaiters(errConnectionSessionChanged)
 	s.clearSelfFolderRights()
 	s.clearServerTextCache()
 	s.mu.Lock()
 	s.serverEpoch++
 	epoch := s.serverEpoch
+	s.serverName = ""
+	s.maxUpload = 0
+	s.channels = nil
 	s.mu.Unlock()
 	// ConnectToServer reuses the same grclib handle. The NC socket belongs to
 	// the previously selected server, so it must be closed before switching the
@@ -852,6 +1154,9 @@ func (s *Service) ConnectToServer(index int) error {
 		if err := rclib.DisconnectNC(h); err != nil {
 			log.Printf("[connection] disconnect old NC before server switch: %v", err)
 		}
+	}
+	if err := operationErr(ctx); err != nil {
+		return err
 	}
 
 	// Resolve the server name from the cached listserver list by index, so the
@@ -865,12 +1170,13 @@ func (s *Service) ConnectToServer(index int) error {
 
 	connected := make(chan struct{}, 1)
 	disconnected := make(chan string, 1)
-	rclib.RegisterCallbacks(h, &rclib.EventCallbacks{
+	if err := rclib.RegisterCallbacks(h, &rclib.EventCallbacks{
 		Connected: func() {
 			select {
 			case connected <- struct{}{}:
 			default:
 			}
+			s.emitEvent("rc:connected")
 		},
 		Disconnected: func(reason string) {
 			select {
@@ -911,15 +1217,18 @@ func (s *Service) ConnectToServer(index int) error {
 		},
 		ScriptReceived: func(scriptType, name string, id int, script string) {
 			s.handleScriptReceived(scriptType, name, id, script)
+			s.emitEvent("rc:scriptReceived", scriptType, name, id, script)
 		},
 		WeaponChanged: func(name string) { s.emitEvent("rc:weaponsChanged", name) },
 		ClassChanged:  func(name string) { s.emitEvent("rc:classesChanged", name) },
 		NPCChanged:    func(id int) { s.emitEvent("rc:npcsChanged", id) },
 		NPCFlags: func(id int, flags string) {
 			s.resolvePending(pendingKey("npcflags", strconv.Itoa(id)), rclib.ScriptReply{Type: "npcflags", ID: id, Script: flags})
+			s.emitEvent("rc:npcFlags", id, flags)
 		},
 		NPCAttributes: func(id int, attrs string) {
 			s.resolvePending(pendingKey("npcattr", strconv.Itoa(id)), rclib.ScriptReply{Type: "npcattr", ID: id, Script: attrs})
+			s.emitEvent("rc:npcAttributes", id, attrs)
 		},
 		FileBrowserFolders: func(count int) { s.emitEvent("rc:fbFolders", count) },
 		FileBrowserFiles:   func(folder string, count int) { s.emitEvent("rc:fbFiles", folder, count) },
@@ -949,18 +1258,21 @@ func (s *Service) ConnectToServer(index int) error {
 			} else {
 				log.Printf("[rights callback] no pending waiter for account=%q", account)
 			}
+			s.emitEvent("rc:playerRights", account, rights, ipRange, folderAccess)
 		},
 		PlayerAttributes: func(account, propertiesJSON, editorText string) {
 			log.Printf("[editor-cb] player_attributes account=%q editorLen=%d", account, len(editorText))
 			s.resolveEditor(pendingKey("attrs", account), AttrsData{
 				Account: account, PropertiesJSON: propertiesJSON, EditorText: editorText,
 			})
+			s.emitEvent("rc:playerAttributes", account, propertiesJSON, editorText)
 		},
 		BanData: func(account, computerID, details string) {
 			log.Printf("[editor-cb] ban_data account=%q", account)
 			s.resolveEditor(pendingKey("ban", account), BanData{
 				Account: account, ComputerID: computerID, Details: details,
 			})
+			s.emitEvent("rc:banData", account, computerID, details)
 		},
 		BanListData: func(dataType, account, content string) {
 			log.Printf("[editor-cb] ban_list_data type=%q account=%q len=%d", dataType, account, len(content))
@@ -978,6 +1290,7 @@ func (s *Service) ConnectToServer(index int) error {
 			default:
 				log.Printf("[banlistdata] %s %s: %q", dataType, account, content)
 			}
+			s.emitEvent("rc:banListData", dataType, account, content)
 		},
 		PlayerTextData: func(dataType, account, content string) {
 			log.Printf("[editor-cb] player_text_data type=%q account=%q len=%d", dataType, account, len(content))
@@ -987,28 +1300,61 @@ func (s *Service) ConnectToServer(index int) error {
 			default:
 				log.Printf("[playertextdata] %s %s: %q", dataType, account, content)
 			}
+			s.emitEvent("rc:playerTextData", dataType, account, content)
 		},
-	})
+	}); err != nil {
+		s.cancelWaiters(errConnectionSessionChanged)
+		unregisterCallbacks(h)
+		return fmt.Errorf("register connection callbacks: %w", err)
+	}
 	s.startPump(h)
 
 	// Kick off the server login; the result arrives asynchronously via events.
+	if err := operationErr(ctx); err != nil {
+		s.stopPump()
+		unregisterCallbacks(h)
+		return err
+	}
 	if err := rclib.ConnectToServer(h, index); err != nil {
+		s.stopPump()
+		unregisterCallbacks(h)
+		s.cancelWaiters(errConnectionSessionChanged)
 		return err
 	}
 
+	timeout := time.NewTimer(30 * time.Second)
+	defer timeout.Stop()
 	select {
 	case <-connected:
+		if err := operationErr(ctx); err != nil {
+			s.stopPump()
+			unregisterCallbacks(h)
+			s.cancelWaiters(errConnectionSessionChanged)
+			return err
+		}
 		// The server does not adopt our nickname until we send it (mirrors the
 		// reference client, which calls rc_set_nickname in its onConnected).
-		if nick := s.creds.Nickname; nick != "" {
-			if err := rclib.SetNickname(h, nick); err != nil {
-				log.Printf("set nickname %q: %v", nick, err)
+		if nickname != "" {
+			if err := rclib.SetNickname(h, nickname); err != nil {
+				log.Printf("set nickname %q: %v", nickname, err)
 			}
+		}
+		if err := operationErr(ctx); err != nil {
+			s.stopPump()
+			unregisterCallbacks(h)
+			s.cancelWaiters(errConnectionSessionChanged)
+			return err
 		}
 		// Match the reference Remote Control client: announce the client build
 		// date through the RC chat packet immediately after authentication.
 		if err := rclib.Execute(h, "/npc newrc,"+remoteControlBuildDate); err != nil {
 			log.Printf("announce Remote Control build date %q: %v", remoteControlBuildDate, err)
+		}
+		if err := operationErr(ctx); err != nil {
+			s.stopPump()
+			unregisterCallbacks(h)
+			s.cancelWaiters(errConnectionSessionChanged)
+			return err
 		}
 		s.mu.Lock()
 		s.serverName = serverName
@@ -1016,6 +1362,9 @@ func (s *Service) ConnectToServer(index int) error {
 		go s.refreshServerTextCache(h, epoch, serverName)
 		return nil
 	case reason := <-disconnected:
+		s.stopPump()
+		unregisterCallbacks(h)
+		s.cancelWaiters(errConnectionSessionChanged)
 		s.mu.Lock()
 		s.serverName = ""
 		s.mu.Unlock()
@@ -1023,45 +1372,90 @@ func (s *Service) ConnectToServer(index int) error {
 			reason = "disconnected by server"
 		}
 		return errors.New(reason)
-	case <-time.After(30 * time.Second):
+	case <-timeout.C:
+		s.stopPump()
+		unregisterCallbacks(h)
+		s.cancelWaiters(errConnectionSessionChanged)
 		s.mu.Lock()
 		s.serverName = ""
 		s.mu.Unlock()
 		return errors.New("server connection timed out")
+	case <-ctx.Done():
+		s.stopPump()
+		unregisterCallbacks(h)
+		s.cancelWaiters(errConnectionSessionChanged)
+		return ctx.Err()
 	}
 }
 
 // SetNewProtocol toggles newer-protocol compatibility before server login.
 func (s *Service) SetNewProtocol(enable bool) error {
+	operation := s.beginLifecycleOperation()
+	defer s.endLifecycleOperation(operation)
+	if err := operationErr(operation.ctx); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	h := s.handle
 	s.mu.Unlock()
 	if h == 0 {
 		return errors.New("not connected: log in first")
 	}
-	return rclib.SetNewProtocol(h, enable)
+	if err := rclib.SetNewProtocol(h, enable); err != nil {
+		return err
+	}
+	return operationErr(operation.ctx)
 }
 
 // ConnectToNCServer explicitly opens the NC (script) socket.
 func (s *Service) ConnectToNCServer() error {
+	operation := s.beginLifecycleOperation()
+	defer s.endLifecycleOperation(operation)
+	return s.connectToNC(operation.ctx)
+}
+
+func (s *Service) connectToNC(ctx context.Context) error {
+	if err := operationErr(ctx); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	h := s.handle
 	s.mu.Unlock()
 	if h == 0 {
 		return errors.New("not connected: log in first")
 	}
-	return rclib.ConnectToNCServer(h)
+	if err := rclib.ConnectToNCServer(h); err != nil {
+		return err
+	}
+	if err := operationErr(ctx); err != nil {
+		// A newer lifecycle operation canceled this attempt after the native
+		// call completed. Do not leave an NC socket from the canceled operation
+		// attached to the session it no longer owns.
+		if disconnectErr := rclib.DisconnectNC(h); disconnectErr != nil {
+			log.Printf("[connection] cleanup canceled NC connect: %v", disconnectErr)
+		}
+		return err
+	}
+	return nil
 }
 
 // DisconnectNC closes the NC socket.
 func (s *Service) DisconnectNC() error {
+	operation := s.beginLifecycleOperation()
+	defer s.endLifecycleOperation(operation)
+	if err := operationErr(operation.ctx); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	h := s.handle
 	s.mu.Unlock()
 	if h == 0 {
 		return errors.New("not connected: log in first")
 	}
-	return rclib.DisconnectNC(h)
+	if err := rclib.DisconnectNC(h); err != nil {
+		return err
+	}
+	return operationErr(operation.ctx)
 }
 
 // NCStatus returns the NC socket snapshot for the active handle.
@@ -1081,13 +1475,21 @@ func (s *Service) NCStatus() NCStatus {
 
 // IrcLogin starts the IRC session for the active handle.
 func (s *Service) IrcLogin() error {
+	operation := s.beginLifecycleOperation()
+	defer s.endLifecycleOperation(operation)
+	if err := operationErr(operation.ctx); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	h := s.handle
 	s.mu.Unlock()
 	if h == 0 {
 		return errors.New("not connected: log in first")
 	}
-	return rclib.IrcLogin(h)
+	if err := rclib.IrcLogin(h); err != nil {
+		return err
+	}
+	return operationErr(operation.ctx)
 }
 
 // SendIrcText sends a raw IRC command on the active handle.
@@ -1677,6 +2079,12 @@ func (s *Service) requireHandle() (rclib.Handle, error) {
 	if h == 0 {
 		return 0, errors.New("not connected: log in first")
 	}
+	s.pumpMu.Lock()
+	pumpErr := s.pumpErr
+	s.pumpMu.Unlock()
+	if pumpErr != nil {
+		return 0, fmt.Errorf("connection event pump unavailable: %w", pumpErr)
+	}
 	return h, nil
 }
 
@@ -1882,7 +2290,7 @@ func (s *Service) FetchAllScripts(ctx context.Context, allowed func(scriptType, 
 				return
 			}
 			defer func() { <-sem }()
-			if r, err := s.openScript(j.stype, j.key, j.name); err == nil {
+			if r, err := s.openScriptContext(ctx, j.stype, j.key, j.name); err == nil {
 				// Some NC callbacks return only the NPC id. Keep the display
 				// name from the cached NPC list so local sync never falls back
 				// to an ID-based filename.
@@ -2057,6 +2465,13 @@ func (s *Service) OpenScript(scriptType, key string) (rclib.ScriptReply, error) 
 }
 
 func (s *Service) openScript(scriptType, key, name string) (rclib.ScriptReply, error) {
+	return s.openScriptContext(context.Background(), scriptType, key, name)
+}
+
+func (s *Service) openScriptContext(ctx context.Context, scriptType, key, name string) (rclib.ScriptReply, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if scriptType != "weapon" && scriptType != "class" && scriptType != "npc" {
 		return rclib.ScriptReply{}, errors.New("unknown script type: " + scriptType)
 	}
@@ -2068,38 +2483,64 @@ func (s *Service) openScript(scriptType, key, name string) (rclib.ScriptReply, e
 		return rclib.ScriptReply{}, err
 	}
 	pending := pendingKey(scriptType, key)
-	ch := s.registerPending(pending)
-
-	// Serialize only the native send. The reply is delivered asynchronously by
-	// the pump and is correlated by its own pending key, so another script can
-	// be sent while this one is still waiting for the server.
-	s.ncRequestMu.Lock()
-	switch scriptType {
-	case "weapon":
-		err = rclib.RequestWeaponScript(h, key)
-	case "class":
-		err = rclib.RequestClassScript(h, key)
-	case "npc":
-		id, convErr := strconv.Atoi(key)
-		if convErr != nil {
-			return rclib.ScriptReply{}, convErr
+	waiter, isNew := s.registerPending(pending)
+	if err := operationErr(ctx); err != nil {
+		if isNew {
+			s.cancelPending(pending, waiter, err)
 		}
-		err = rclib.RequestNPCScript(h, id)
-	default:
-		s.ncRequestMu.Unlock()
-		s.dropPending(pending, ch)
-		return rclib.ScriptReply{}, errors.New("unknown script type: " + scriptType)
-	}
-	s.ncRequestMu.Unlock()
-	if err != nil {
-		s.dropPending(pending, ch)
 		return rclib.ScriptReply{}, err
 	}
+
+	// Serialize only the native send. The reply is delivered asynchronously by
+	// the pump and is correlated by its pending key, so requests with different
+	// keys can be sent while this one is still waiting for the server. A caller
+	// sharing this key joins the existing waiter and does not send a duplicate.
+	if isNew {
+		s.ncRequestMu.Lock()
+		switch scriptType {
+		case "weapon":
+			err = rclib.RequestWeaponScript(h, key)
+		case "class":
+			err = rclib.RequestClassScript(h, key)
+		case "npc":
+			id, convErr := strconv.Atoi(key)
+			if convErr != nil {
+				s.ncRequestMu.Unlock()
+				s.cancelPending(pending, waiter, convErr)
+				return rclib.ScriptReply{}, convErr
+			}
+			err = rclib.RequestNPCScript(h, id)
+		default:
+			s.ncRequestMu.Unlock()
+			s.cancelPending(pending, waiter, errors.New("unknown script type: "+scriptType))
+			return rclib.ScriptReply{}, errors.New("unknown script type: " + scriptType)
+		}
+		s.ncRequestMu.Unlock()
+		if err != nil {
+			s.cancelPending(pending, waiter, err)
+			return rclib.ScriptReply{}, err
+		}
+	}
+	if err := operationErr(ctx); err != nil {
+		if isNew {
+			s.cancelPending(pending, waiter, err)
+		}
+		return rclib.ScriptReply{}, err
+	}
+	timer := time.NewTimer(scriptTimeout)
+	defer timer.Stop()
 	select {
-	case reply := <-ch:
-		return reply, nil
-	case <-time.After(scriptTimeout):
-		s.dropPending(pending, ch)
+	case <-waiter.done:
+		return waiter.reply, waiter.err
+	case <-ctx.Done():
+		if isNew {
+			s.cancelPending(pending, waiter, ctx.Err())
+		}
+		return rclib.ScriptReply{}, ctx.Err()
+	case <-timer.C:
+		if isNew {
+			s.cancelPending(pending, waiter, errors.New("script request timed out"))
+		}
 		return rclib.ScriptReply{}, errors.New("script request timed out")
 	}
 }
@@ -2143,25 +2584,29 @@ func (s *Service) requestServerText(h rclib.Handle, kind string) (rclib.ScriptRe
 	defer s.serverTextRequestMu.Unlock()
 
 	key := pendingKey("serverdata", kind)
-	ch := s.registerPending(key)
-	var err error
-	switch kind {
-	case "options":
-		err = rclib.RequestServerOptions(h)
-	case "folder_config":
-		err = rclib.RequestFolderConfig(h)
-	case "flags":
-		err = rclib.RequestServerFlags(h)
-	}
-	if err != nil {
-		s.dropPending(key, ch)
-		return rclib.ScriptReply{}, err
+	waiter, isNew := s.registerPending(key)
+	if isNew {
+		var err error
+		switch kind {
+		case "options":
+			err = rclib.RequestServerOptions(h)
+		case "folder_config":
+			err = rclib.RequestFolderConfig(h)
+		case "flags":
+			err = rclib.RequestServerFlags(h)
+		}
+		if err != nil {
+			s.cancelPending(key, waiter, err)
+			return rclib.ScriptReply{}, err
+		}
 	}
 	select {
-	case reply := <-ch:
-		return reply, nil
+	case <-waiter.done:
+		return waiter.reply, waiter.err
 	case <-time.After(scriptTimeout):
-		s.dropPending(key, ch)
+		if isNew {
+			s.cancelPending(key, waiter, errors.New("server text request timed out"))
+		}
 		return rclib.ScriptReply{}, errors.New("server text request timed out")
 	}
 }
@@ -2219,18 +2664,22 @@ func (s *Service) OpenNPCFlags(id int) (rclib.ScriptReply, error) {
 	if err != nil {
 		return rclib.ScriptReply{}, err
 	}
-	if err := rclib.GetNPCFlags(h, id); err != nil {
-		return rclib.ScriptReply{}, err
-	}
 	key := strconv.Itoa(id)
-	ch := s.registerPending(pendingKey("npcflags", key))
+	pending := pendingKey("npcflags", key)
+	waiter, isNew := s.registerPending(pending)
+	if isNew {
+		if err := rclib.GetNPCFlags(h, id); err != nil {
+			s.cancelPending(pending, waiter, err)
+			return rclib.ScriptReply{}, err
+		}
+	}
 	select {
-	case reply := <-ch:
-		return reply, nil
+	case <-waiter.done:
+		return waiter.reply, waiter.err
 	case <-time.After(scriptTimeout):
-		s.pendingMu.Lock()
-		delete(s.pending, pendingKey("npcflags", key))
-		s.pendingMu.Unlock()
+		if isNew {
+			s.cancelPending(pending, waiter, errors.New("npc flags request timed out"))
+		}
 		return rclib.ScriptReply{}, errors.New("npc flags request timed out")
 	}
 }
@@ -2241,18 +2690,22 @@ func (s *Service) OpenNPCAttributes(id int) (rclib.ScriptReply, error) {
 	if err != nil {
 		return rclib.ScriptReply{}, err
 	}
-	if err := rclib.RequestNPCAttributes(h, id); err != nil {
-		return rclib.ScriptReply{}, err
-	}
 	key := strconv.Itoa(id)
-	ch := s.registerPending(pendingKey("npcattr", key))
+	pending := pendingKey("npcattr", key)
+	waiter, isNew := s.registerPending(pending)
+	if isNew {
+		if err := rclib.RequestNPCAttributes(h, id); err != nil {
+			s.cancelPending(pending, waiter, err)
+			return rclib.ScriptReply{}, err
+		}
+	}
 	select {
-	case reply := <-ch:
-		return reply, nil
+	case <-waiter.done:
+		return waiter.reply, waiter.err
 	case <-time.After(scriptTimeout):
-		s.pendingMu.Lock()
-		delete(s.pending, pendingKey("npcattr", key))
-		s.pendingMu.Unlock()
+		if isNew {
+			s.cancelPending(pending, waiter, errors.New("npc attributes request timed out"))
+		}
 		return rclib.ScriptReply{}, errors.New("npc attributes request timed out")
 	}
 }
@@ -2388,23 +2841,26 @@ func (s *Service) DownloadFile(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	ch := s.registerFile(path)
-	if err := rclib.FileBrowserDownload(h, path); err != nil {
-		s.pendingFilesMu.Lock()
-		delete(s.pendingFiles, path)
-		s.pendingFilesMu.Unlock()
-		return nil, err
+	waiter, isNew := s.registerFile(path)
+	if isNew {
+		if err := rclib.FileBrowserDownload(h, path); err != nil {
+			s.cancelFile(path, waiter, err)
+			return nil, err
+		}
 	}
 	select {
-	case content := <-ch:
-		if content == nil {
+	case <-waiter.done:
+		if waiter.err != nil {
+			return nil, waiter.err
+		}
+		if waiter.content == nil {
 			return nil, errors.New("server returned no file content")
 		}
-		return content, nil
+		return waiter.content, nil
 	case <-time.After(downloadTimeout):
-		s.pendingFilesMu.Lock()
-		delete(s.pendingFiles, path)
-		s.pendingFilesMu.Unlock()
+		if isNew {
+			s.cancelFile(path, waiter, errors.New("file download timed out (no response from server)"))
+		}
 		return nil, errors.New("file download timed out (no response from server)")
 	}
 }
@@ -2428,18 +2884,28 @@ func (s *Service) UploadFile(path string, content []byte) error {
 
 // Logout drops the active handle and clears credentials.
 func (s *Service) Logout() {
+	operation := s.beginLifecycleOperation()
+	defer s.endLifecycleOperation(operation)
+	s.logout()
+}
+
+func (s *Service) logout() {
 	s.stopPump()
 	s.mu.Lock()
-	if s.handle != 0 {
-		rclib.UnregisterCallbacks(s.handle)
-		rclib.Disconnect(s.handle)
-		s.handle = 0
-	}
+	h := s.handle
+	s.handle = 0
 	s.creds = Credentials{}
 	s.serverName = ""
 	s.serverEpoch++
 	s.channels = nil
+	s.maxUpload = 0
 	s.mu.Unlock()
+	s.cancelWaiters(errConnectionSessionChanged)
+	s.clearPumpError()
+	if h != 0 {
+		unregisterCallbacks(h)
+		rclib.Disconnect(h)
+	}
 	s.clearSelfFolderRights()
 	s.clearServerTextCache()
 }

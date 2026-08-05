@@ -1,0 +1,320 @@
+name: Windows CI
+
+on:
+  pull_request: {}
+  push: {}
+  workflow_dispatch:
+    inputs:
+      run_webview2_smoke:
+        description: Run the opt-in per-user NSIS/WebView2 smoke test
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: windows-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CGO_ENABLED: '0'
+  GOTOOLCHAIN: local
+  GOWORK: off
+  WAILS_VERSION: v3.0.0-alpha2.117
+  STATICCHECK_VERSION: v0.7.0
+
+jobs:
+  quality:
+    name: Quality and frontend gate
+    runs-on: windows-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install pinned CI tools
+        shell: pwsh
+        run: |
+          $goBin = (go env GOBIN).Trim()
+          if ([string]::IsNullOrWhiteSpace($goBin)) {
+            $goBin = Join-Path (go env GOPATH).Trim() 'bin'
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value $goBin
+          $env:PATH = "$goBin;$env:PATH"
+
+          go install ("github.com/wailsapp/wails/v3/cmd/wails3@" + $env:WAILS_VERSION)
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to install the pinned Wails CLI' }
+          go install ("honnef.co/go/tools/cmd/staticcheck@" + $env:STATICCHECK_VERSION)
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to install the pinned staticcheck' }
+
+          wails3 version
+          staticcheck -version
+
+      - name: Verify Go dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path ci-reports -Force | Out-Null
+          go mod download
+          if ($LASTEXITCODE -ne 0) { throw 'go mod download failed' }
+          go mod verify
+          if ($LASTEXITCODE -ne 0) { throw 'go mod verify failed' }
+          go list -m all | Set-Content -Path ci-reports/go-modules.txt -Encoding utf8
+
+      - name: Install and audit frontend dependencies
+        shell: pwsh
+        working-directory: frontend
+        run: |
+          $ErrorActionPreference = 'Stop'
+          npm ci
+          if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
+
+          $audit = npm audit --json 2>&1
+          $auditExitCode = $LASTEXITCODE
+          $audit | Set-Content -Path ..\ci-reports\npm-audit.json -Encoding utf8
+          if ($auditExitCode -gt 1) { throw "npm audit could not complete (exit code $auditExitCode)" }
+
+          npm audit --audit-level=high
+          if ($LASTEXITCODE -ne 0) { throw 'npm audit found a high or critical vulnerability' }
+
+      - name: Generate Wails bindings
+        shell: pwsh
+        run: pwsh -NoProfile -File build/ci/generate-bindings.ps1
+
+      - name: Build frontend
+        shell: pwsh
+        working-directory: frontend
+        run: |
+          npm run build
+          if ($LASTEXITCODE -ne 0) { throw 'npm run build failed' }
+
+      - name: Run Go tests
+        shell: pwsh
+        run: go test ./...
+
+      - name: Run Go vet with the FFI exception scoped to unsafeptr
+        shell: pwsh
+        run: go vet -unsafeptr=false ./...
+
+      - name: Run staticcheck with the documented baseline
+        shell: pwsh
+        run: staticcheck '-checks=all,-ST1000,-ST1005,-U1000,-SA2001' ./...
+
+      - name: Validate the Windows FFI boundary
+        shell: pwsh
+        run: pwsh -NoProfile -File build/ci/verify-ffi.ps1 -Architecture amd64 -RunStaticcheck
+
+      - name: Upload quality reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-ci-reports
+          path: ci-reports
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload generated frontend assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-assets
+          path: |
+            frontend/bindings
+            frontend/dist
+          if-no-files-found: error
+          retention-days: 3
+
+  windows_build:
+    name: Windows build (${{ matrix.arch }})
+    needs: quality
+    runs-on: windows-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - amd64
+          - '386'
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download generated frontend assets
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-assets
+          path: frontend
+
+      - name: Install pinned Wails CLI
+        shell: pwsh
+        run: |
+          $goBin = (go env GOBIN).Trim()
+          if ([string]::IsNullOrWhiteSpace($goBin)) {
+            $goBin = Join-Path (go env GOPATH).Trim() 'bin'
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value $goBin
+          $env:PATH = "$goBin;$env:PATH"
+          go install ("github.com/wailsapp/wails/v3/cmd/wails3@" + $env:WAILS_VERSION)
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to install the pinned Wails CLI' }
+          wails3 version
+
+      - name: Verify dependencies for the build job
+        shell: pwsh
+        run: |
+          go mod download
+          if ($LASTEXITCODE -ne 0) { throw 'go mod download failed' }
+          go mod verify
+          if ($LASTEXITCODE -ne 0) { throw 'go mod verify failed' }
+
+      - name: Build Windows binary
+        shell: pwsh
+        run: pwsh -NoProfile -File build/ci/build-windows.ps1 -Architecture '${{ matrix.arch }}'
+
+      - name: Re-validate FFI and PE architecture
+        shell: pwsh
+        run: pwsh -NoProfile -File build/ci/verify-ffi.ps1 -Architecture '${{ matrix.arch }}' -BinaryPath 'ci-artifacts/windows/${{ matrix.arch }}/graal-rc-windows-${{ matrix.arch }}.exe'
+
+      - name: Upload Windows build and SHA-256 manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.arch }}
+          path: ci-artifacts/windows/${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 14
+
+  installer_validation:
+    name: NSIS installer validation
+    needs: windows_build
+    if: ${{ needs.windows_build.result == 'success' }}
+    runs-on: windows-latest
+    timeout-minutes: 20
+    outputs:
+      nsis_available: ${{ steps.detect_nsis.outputs.nsis_available }}
+      x64_installer: ${{ steps.installer_status.outputs.x64_installer }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download amd64 build
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-amd64
+          path: ci-artifacts/windows/amd64
+
+      - name: Download x86 build
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-386
+          path: ci-artifacts/windows/386
+
+      - name: Detect optional NSIS tool
+        id: detect_nsis
+        shell: pwsh
+        run: |
+          $makensis = Get-Command makensis -CommandType Application -ErrorAction SilentlyContinue
+          $available = if ($null -ne $makensis) { 'true' } else { 'false' }
+          "nsis_available=$available" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          if ($available -eq 'false') {
+            Write-Output '::notice::makensis is not installed on this hosted runner; installer validation is conditionally skipped.'
+          }
+          else {
+            Write-Host "Using NSIS: $($makensis.Source)"
+          }
+
+      - name: Install pinned Wails CLI for packaging
+        if: steps.detect_nsis.outputs.nsis_available == 'true'
+        shell: pwsh
+        run: |
+          $goBin = (go env GOBIN).Trim()
+          if ([string]::IsNullOrWhiteSpace($goBin)) {
+            $goBin = Join-Path (go env GOPATH).Trim() 'bin'
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value $goBin
+          $env:PATH = "$goBin;$env:PATH"
+          go install ("github.com/wailsapp/wails/v3/cmd/wails3@" + $env:WAILS_VERSION)
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to install the pinned Wails CLI' }
+          wails3 version
+
+      - name: Compile and validate amd64 NSIS installer
+        if: steps.detect_nsis.outputs.nsis_available == 'true'
+        shell: pwsh
+        run: pwsh -NoProfile -File build/ci/validate-installer.ps1 -Architecture amd64 -BinaryPath 'ci-artifacts/windows/amd64/graal-rc-windows-amd64.exe'
+
+      - name: Conditionally validate x86 NSIS installer
+        if: steps.detect_nsis.outputs.nsis_available == 'true'
+        shell: pwsh
+        run: |
+          if (Test-Path -LiteralPath 'rclib/grclib.dll' -PathType Leaf) {
+            pwsh -NoProfile -File build/ci/validate-installer.ps1 -Architecture 386 -BinaryPath 'ci-artifacts/windows/386/graal-rc-windows-386.exe'
+          }
+          else {
+            Write-Output '::notice::rclib/grclib.dll is absent; x86 installer validation is skipped.'
+          }
+
+      - name: Record installer gate status
+        id: installer_status
+        if: always()
+        shell: pwsh
+        run: |
+          $installer = 'ci-artifacts/installers/amd64/graal-rc-amd64-installer.exe'
+          $available = if (Test-Path -LiteralPath $installer -PathType Leaf) { 'true' } else { 'false' }
+          "x64_installer=$available" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Upload validated installer and hash
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-amd64
+          path: ci-artifacts/installers/amd64
+          if-no-files-found: ignore
+          retention-days: 14
+
+  webview2_smoke:
+    name: Opt-in WebView2 smoke test
+    needs: installer_validation
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_webview2_smoke && needs.installer_validation.result == 'success' && needs.installer_validation.outputs.x64_installer == 'true' }}
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Download validated installer
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-installer-amd64
+          path: ci-artifacts/installers/amd64
+
+      - name: Run per-user WebView2 smoke test
+        shell: pwsh
+        run: pwsh -NoProfile -File build/ci/smoke-webview2.ps1 -InstallerPath 'ci-artifacts/installers/amd64/graal-rc-amd64-installer.exe'

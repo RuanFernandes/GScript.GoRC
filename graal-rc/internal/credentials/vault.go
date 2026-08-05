@@ -9,6 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+
+	"graal-rc/internal/fileutil"
 )
 
 // Account is a full persisted login (profile name/nickname/account/password). DisplayName and
@@ -44,7 +47,13 @@ func (a Account) Summary() AccountSummary {
 // Vault reads/writes the DPAPI-encrypted account list under the OS config dir.
 type Vault struct {
 	path string
+	mu   sync.Mutex
 }
+
+// Protect and Unprotect provide the same per-user encryption used by the
+// account vault for other sensitive, app-owned payloads such as plugin secrets.
+func Protect(data []byte) ([]byte, error)   { return protect(data) }
+func Unprotect(data []byte) ([]byte, error) { return unprotect(data) }
 
 // NewVault resolves <UserConfigDir>/graal-rc/accounts.dat.
 func NewVault() (*Vault, error) {
@@ -65,27 +74,56 @@ func (v *Vault) Path() string { return v.path }
 // Load reads and decrypts the account list. A missing file is reported as an
 // empty list (not an error) so a fresh install behaves like an empty vault.
 func (v *Vault) Load() ([]Account, error) {
-	data, err := os.ReadFile(v.path)
-	if os.IsNotExist(err) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	operationLock := credentialOperationLock(v.path)
+	operationLock.Lock()
+	defer operationLock.Unlock()
+	return v.loadUnlocked()
+}
+
+func (v *Vault) loadUnlocked() ([]Account, error) {
+	data, ok, err := fileutil.ReadAndRecover(v.path, 0o600, func(data []byte) error {
+		_, _, err := decodeAccounts(data)
+		return err
+	})
+	if err != nil || !ok {
+		return nil, err
+	}
+
+	accounts, migrated, err := decodeAccounts(data)
+	if err != nil {
+		return nil, err
+	}
+	if accounts == nil {
 		return nil, nil
 	}
-	if err != nil {
-		return nil, err
+
+	if migrated {
+		if err := v.saveUnlocked(accounts); err != nil {
+			return nil, err
+		}
 	}
+	return accounts, nil
+}
+
+type storedAccount struct {
+	ProfileName string `json:"profileName,omitempty"`
+	Nickname    string `json:"nickname,omitempty"`
+	Account     string `json:"account"`
+	Password    string `json:"password"`
+	DisplayName string `json:"displayName,omitempty"`
+	Photo       string `json:"photo,omitempty"`
+}
+
+func decodeAccounts(data []byte) ([]Account, bool, error) {
 	plain, err := unprotect(data)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	var stored []struct {
-		ProfileName string `json:"profileName,omitempty"`
-		Nickname    string `json:"nickname,omitempty"`
-		Account     string `json:"account"`
-		Password    string `json:"password"`
-		DisplayName string `json:"displayName,omitempty"`
-		Photo       string `json:"photo,omitempty"`
-	}
+	var stored []storedAccount
 	if err := json.Unmarshal(plain, &stored); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	accounts := make([]Account, len(stored))
 	migrated := false
@@ -102,16 +140,25 @@ func (v *Vault) Load() ([]Account, error) {
 			migrated = true
 		}
 	}
-	if migrated {
-		if err := v.Save(accounts); err != nil {
-			return nil, err
-		}
-	}
-	return accounts, nil
+	return accounts, migrated, nil
+}
+
+func validVaultPayload(data []byte) error {
+	_, _, err := decodeAccounts(data)
+	return err
 }
 
 // Save encrypts and writes the full account list, replacing any previous file.
 func (v *Vault) Save(accounts []Account) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	operationLock := credentialOperationLock(v.path)
+	operationLock.Lock()
+	defer operationLock.Unlock()
+	return v.saveUnlocked(accounts)
+}
+
+func (v *Vault) saveUnlocked(accounts []Account) error {
 	plain, err := json.MarshalIndent(accounts, "", "  ")
 	if err != nil {
 		return err
@@ -120,15 +167,20 @@ func (v *Vault) Save(accounts []Account) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(v.path, cipher, 0o600)
+	return fileutil.AtomicWriteFileWithValidator(v.path, cipher, 0o600, validVaultPayload)
 }
 
 // Add inserts or replaces (matched by Account name) and persists.
 func (v *Vault) Add(a Account) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	operationLock := credentialOperationLock(v.path)
+	operationLock.Lock()
+	defer operationLock.Unlock()
 	if a.Account == "" {
 		return errors.New("account name is required")
 	}
-	accounts, err := v.Load()
+	accounts, err := v.loadUnlocked()
 	if err != nil {
 		return err
 	}
@@ -143,13 +195,18 @@ func (v *Vault) Add(a Account) error {
 	if !replaced {
 		accounts = append(accounts, a)
 	}
-	return v.Save(accounts)
+	return v.saveUnlocked(accounts)
 }
 
 // Remove deletes the account with the given name and persists. Removing a name
 // that does not exist is not an error.
 func (v *Vault) Remove(accountName string) error {
-	accounts, err := v.Load()
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	operationLock := credentialOperationLock(v.path)
+	operationLock.Lock()
+	defer operationLock.Unlock()
+	accounts, err := v.loadUnlocked()
 	if err != nil {
 		return err
 	}
@@ -159,20 +216,25 @@ func (v *Vault) Remove(accountName string) error {
 			next = append(next, a)
 		}
 	}
-	return v.Save(next)
+	return v.saveUnlocked(next)
 }
 
 // Mutate applies fn to the account matched by name and persists. Returns
 // ErrAccountNotFound if no account matches.
 func (v *Vault) Mutate(accountName string, fn func(*Account)) error {
-	accounts, err := v.Load()
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	operationLock := credentialOperationLock(v.path)
+	operationLock.Lock()
+	defer operationLock.Unlock()
+	accounts, err := v.loadUnlocked()
 	if err != nil {
 		return err
 	}
 	for i := range accounts {
 		if accounts[i].Account == accountName {
 			fn(&accounts[i])
-			return v.Save(accounts)
+			return v.saveUnlocked(accounts)
 		}
 	}
 	return ErrAccountNotFound
@@ -183,7 +245,12 @@ var ErrAccountNotFound = errors.New("account not found")
 
 // Get returns the account matched by name (ErrAccountNotFound if none).
 func (v *Vault) Get(accountName string) (Account, error) {
-	accounts, err := v.Load()
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	operationLock := credentialOperationLock(v.path)
+	operationLock.Lock()
+	defer operationLock.Unlock()
+	accounts, err := v.loadUnlocked()
 	if err != nil {
 		return Account{}, err
 	}

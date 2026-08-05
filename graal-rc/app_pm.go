@@ -72,6 +72,7 @@ func (a *App) appendOutgoingPM(playerID int, account, nick, message string) {
 	}
 	a.pmConversations[playerID] = c
 	a.pmMu.Unlock()
+	a.emitPluginEvent("pm.sent", playerID, account, nick, message)
 	a.emitPMState()
 }
 

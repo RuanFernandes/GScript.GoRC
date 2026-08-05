@@ -9,10 +9,14 @@ package credentials
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"graal-rc/internal/connection"
+	"graal-rc/internal/fileutil"
 )
 
 // Credentials is the persisted payload (mirrors connection.Credentials).
@@ -25,6 +29,19 @@ type Credentials struct {
 // Store reads/writes the credentials file under the OS config directory.
 type Store struct {
 	path string
+	mu   sync.Mutex
+}
+
+var credentialOperationLocks sync.Map
+
+func credentialOperationLock(path string) *sync.Mutex {
+	key, err := filepath.Abs(path)
+	if err != nil {
+		key = path
+	}
+	candidate := &sync.Mutex{}
+	actual, _ := credentialOperationLocks.LoadOrStore(key, candidate)
+	return actual.(*sync.Mutex)
 }
 
 // NewStore resolves <UserConfigDir>/graal-rc/credentials.json.
@@ -49,31 +66,57 @@ func (s *Store) Save(c Credentials) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.path, data, 0o600)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	operationLock := credentialOperationLock(s.path)
+	operationLock.Lock()
+	defer operationLock.Unlock()
+	return fileutil.AtomicWriteFileWithValidator(s.path, data, 0o600, func(current []byte) error {
+		_, err := decodeCredentials(current)
+		return err
+	})
 }
 
 // Load reads the stored credentials. ok is false when no file exists.
 func (s *Store) Load() (c Credentials, ok bool, err error) {
-	data, err := os.ReadFile(s.path)
-	if os.IsNotExist(err) {
-		return Credentials{}, false, nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	operationLock := credentialOperationLock(s.path)
+	operationLock.Lock()
+	defer operationLock.Unlock()
+	data, ok, err := fileutil.ReadAndRecover(s.path, 0o600, func(data []byte) error {
+		_, err := decodeCredentials(data)
+		return err
+	})
+	if err != nil || !ok {
+		return Credentials{}, ok, err
 	}
-	if err != nil {
-		return Credentials{}, false, err
-	}
-	if err := json.Unmarshal(data, &c); err != nil {
-		return Credentials{}, false, err
-	}
-	return c, true, nil
+	c, err = decodeCredentials(data)
+	return c, true, err
 }
 
-// Clear removes the stored credentials, if any.
+// Clear removes the stored credentials and its recovery backup, if any.
 func (s *Store) Clear() error {
-	err := os.Remove(s.path)
-	if os.IsNotExist(err) {
-		return nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	operationLock := credentialOperationLock(s.path)
+	operationLock.Lock()
+	defer operationLock.Unlock()
+	var errs []error
+	for _, path := range []string{s.path, s.path + ".bak"} {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, err)
+		}
 	}
-	return err
+	return errors.Join(errs...)
+}
+
+func decodeCredentials(data []byte) (Credentials, error) {
+	var c Credentials
+	if err := json.Unmarshal(data, &c); err != nil {
+		return Credentials{}, fmt.Errorf("decode credentials JSON: %w", err)
+	}
+	return c, nil
 }
 
 // FromConnection adapts a connection.Credentials value for storage.
