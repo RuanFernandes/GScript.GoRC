@@ -8,27 +8,27 @@
         AllowPromptForPassword="false">
     </Settings>
     <Installer
-        Path="v3ref.exe"
+        Path="graal-rc.exe"
         Arguments=""
-        InstallLocation="C:\Program Files\My Company\My Product">
+        InstallLocation="C:\Program Files\RuanFernandes\Graal Remote Control">
     </Installer>
     <PackageInformation
-        PackageName="My Product"
-        PackageDisplayName="My Product"
-        PublisherName="CN=My Company"
-        PublisherDisplayName="My Company"
+        PackageName="Graal Remote Control"
+        PackageDisplayName="Graal Remote Control"
+        PublisherName="CN=RuanFernandes"
+        PublisherDisplayName="RuanFernandes"
         Version="0.1.0.0"
-        PackageDescription="A v3ref application">
+        PackageDescription="Graal Remote Control client">
         <Capabilities>
             <Capability Name="runFullTrust" />
             
         </Capabilities>
         <Applications>
             <Application
-                Id="com.example.v3ref"
-                Description="A v3ref application"
-                DisplayName="My Product"
-                ExecutableName="v3ref.exe"
+                Id="com.rauanf.graalrc"
+                Description="Graal Remote Control client"
+                DisplayName="Graal Remote Control"
+                ExecutableName="graal-rc.exe"
                 EntryPoint="Windows.FullTrustApplication">
                 
             </Application>
@@ -41,13 +41,13 @@
         </Dependencies>
         <Properties>
             <Framework>false</Framework>
-            <DisplayName>My Product</DisplayName>
-            <PublisherDisplayName>My Company</PublisherDisplayName>
-            <Description>A v3ref application</Description>
+            <DisplayName>Graal Remote Control</DisplayName>
+            <PublisherDisplayName>RuanFernandes</PublisherDisplayName>
+            <Description>Graal Remote Control client</Description>
             <Logo>Assets\AppIcon.png</Logo>
         </Properties>
     </PackageInformation>
-    <SaveLocation PackagePath="v3ref.msix" />
+    <SaveLocation PackagePath="graal-rc.msix" />
     <PackageIntegrity>
         <CertificatePath></CertificatePath>
     </PackageIntegrity>

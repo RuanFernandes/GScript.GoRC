@@ -12,22 +12,34 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
-func main() {
-	initFileLogger()
-	InstallCrashHandler()
-
-	a := NewApp()
-
-	app := application.New(application.Options{
-		Name:        "graal-rc",
-		Description: "Graal Remote Control client",
+func applicationOptions(a *App) application.Options {
+	return application.Options{
+		Name:         "graal-rc",
+		Description:  "Graal Remote Control client",
+		OnShutdown:   a.shutdown,
+		PostShutdown: a.postShutdown,
+		SingleInstance: &application.SingleInstanceOptions{
+			UniqueID: "com.rauanf.graalrc",
+			OnSecondInstanceLaunch: func(application.SecondInstanceData) {
+				a.showMainWindow()
+			},
+		},
 		Services: []application.Service{
 			application.NewService(a),
 		},
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(assets),
 		},
-	})
+	}
+}
+
+func main() {
+	initFileLogger()
+	InstallCrashHandler()
+
+	a := NewApp()
+
+	app := application.New(applicationOptions(a))
 	a.attach(app)
 
 	// Main window: the account/server/RC flow.

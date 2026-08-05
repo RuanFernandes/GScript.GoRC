@@ -25,6 +25,7 @@ import {Events} from "@wailsio/runtime"
 import type {RcService} from "@/services/rcService"
 import type {ChatMessage, ChatTab, GsFunction} from "@/types"
 import {loadGsFunctions, refreshGsFunctions, searchFunctions} from "@/lib/gscriptApi"
+import {pluginRuntime} from "@/plugins/runtime"
 
 const SERVER_CHANNEL = ""
 const MAX_LINES_PER_TAB = 1000
@@ -338,6 +339,11 @@ export function useChat(service: RcService): UseChatResult {
           void handleScriptHelp(channel, query)
         }
         return true
+      }
+      const pluginCommand = trimmed.match(/^\/([^\s]+)(?:\s+(.*))?$/)
+      if (pluginCommand) {
+        const args = pluginCommand[2]?.trim() ? pluginCommand[2].trim().split(/\s+/) : []
+        if (pluginRuntime.executeCommand(pluginCommand[1], args)) return true
       }
       try {
         if (channel === SERVER_CHANNEL) {

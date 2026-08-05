@@ -42,11 +42,11 @@ type exceptionRecord struct {
 
 // vehHandler is the C-callable VectoredHandler. It is invoked synchronously by
 // the OS on the faulting thread.
-func vehHandler(info uintptr) uintptr {
-	if info == 0 {
+func vehHandler(info unsafe.Pointer) uintptr {
+	if info == nil {
 		return 0
 	}
-	ep := (*exceptionPointers)(unsafe.Pointer(info))
+	ep := (*exceptionPointers)(info)
 	if ep != nil && ep.record != nil && ep.record.code >= 0xC0000000 {
 		// 0xC0000000+ is the fatal-exception range (access violation, stack
 		// overflow, etc.). Ignore debugger/continuable noise below it.

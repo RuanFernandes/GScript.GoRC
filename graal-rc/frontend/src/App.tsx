@@ -29,8 +29,13 @@ import {SyncReviewWindowScreen} from "@/screens/SyncReviewWindowScreen"
 import {SqliteExplorerWindowScreen} from "@/screens/SqliteExplorerWindowScreen"
 import {TextEditorWindowScreen} from "@/screens/TextEditorWindowScreen"
 import type {AppView, LoginRequest} from "@/types"
+import type {PluginNotification, PluginNotificationLevel} from "@/plugins/types"
 import {useLanguage} from "@/hooks/useLanguage"
 import {LanguageWelcomeScreen} from "@/screens/LanguageWelcomeScreen"
+import {pluginRuntime} from "@/plugins/runtime"
+import {PluginManagerWindowScreen} from "@/screens/PluginManagerWindowScreen"
+import {PluginDocumentationWindowScreen} from "@/screens/PluginDocumentationWindowScreen"
+import {PluginUIWindowScreen} from "@/screens/PluginUIWindowScreen"
 
 type PendingConfirm =
   | {kind: "login"; account: string}
@@ -52,6 +57,28 @@ function Shell() {
     if (typeof window === "undefined") return ""
     return window.localStorage.getItem(NICKNAME_STORAGE_KEY) ?? ""
   })
+
+  useEffect(() => {
+    void pluginRuntime.start()
+    return () => { void pluginRuntime.stop() }
+  }, [])
+
+  useEffect(() => {
+    const onNotification = (event: Event) => {
+      const detail = (event as CustomEvent<PluginNotification & {level?: PluginNotificationLevel}>).detail
+      if (!detail?.message?.trim()) return
+      const title = detail.title?.trim() || detail.message
+      const options = {description: detail.title?.trim() ? detail.message : undefined, duration: detail.durationMs}
+      switch (detail.level) {
+        case "success": toast.success(title, options); break
+        case "warning": toast.warning(title, options); break
+        case "error": toast.error(title, options); break
+        default: toast.info(title, options); break
+      }
+    }
+    window.addEventListener("gorc:plugin-notification", onNotification)
+    return () => window.removeEventListener("gorc:plugin-notification", onNotification)
+  }, [])
 
   useEffect(() => {
     window.localStorage.setItem(NICKNAME_STORAGE_KEY, sessionNickname)
@@ -288,9 +315,15 @@ function App() {
                 ? {title: "File Browser", content: <FileBrowserWindowScreen />}
                 : hash.startsWith("#scripts")
                   ? {title: "Script Manager", content: <ScriptManagerWindowScreen />}
-                  : hash.startsWith("#settings")
-                    ? {title: "Settings", content: <SettingsWindowScreen />}
-                    : hash.startsWith("#sync")
+    : hash.startsWith("#settings")
+      ? {title: "Settings", content: <SettingsWindowScreen />}
+      : hash.startsWith("#plugins")
+        ? {title: "Plugins", content: <PluginManagerWindowScreen />}
+      : hash.startsWith("#plugin-docs")
+        ? {title: "Plugin Documentation", content: <PluginDocumentationWindowScreen />}
+      : hash.startsWith("#plugin-ui")
+        ? {title: "Plugin UI", content: <PluginUIWindowScreen />}
+      : hash.startsWith("#sync")
                       ? {title: "Sync Review", content: <SyncReviewWindowScreen />}
                       : hash.startsWith("#editor")
                         ? {title: "Script Editor", content: <ScriptEditorWindowScreen />}

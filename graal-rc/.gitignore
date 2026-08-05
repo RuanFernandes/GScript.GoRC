@@ -1,5 +1,6 @@
 # Build outputs
 bin/
+ci-artifacts/
 build/bin/
 build/android/.gradle/
 build/android/build/

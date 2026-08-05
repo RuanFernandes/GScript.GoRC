@@ -38,7 +38,7 @@ tasks:
   build:
     summary: Creates a debug build of the application for Android
     deps:
-      - task: common:go:mod:tidy
+      - task: common:go:mod:verify
       - task: generate:android:overlay
       - task: common:build:frontend
         vars:
@@ -107,7 +107,7 @@ tasks:
         mkdir -p {{.BIN_DIR}}
         mkdir -p build/android/app/src/main/jniLibs/$JNI_DIR
 
-        go build -buildmode=c-shared -overlay build/android/overlay.json {{.BUILD_FLAGS}} \
+        go build -mod=readonly -buildmode=c-shared -overlay build/android/overlay.json {{.BUILD_FLAGS}} \
           -o build/android/app/src/main/jniLibs/$JNI_DIR/libwails.so
     vars:
       BUILD_FLAGS: '{{if eq .PRODUCTION "true"}}-tags production,android -trimpath -buildvcs=false -ldflags="-w -s"{{else}}-tags android,debug -buildvcs=false -gcflags=all="-l"{{end}}'

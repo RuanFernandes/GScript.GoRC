@@ -3,14 +3,17 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	stdsync "sync"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 
+	"graal-rc/internal/fileutil"
 	"graal-rc/internal/sync"
 )
 
@@ -33,59 +36,111 @@ type syncFile struct {
 // currentSyncServer returns the connected server name ("" if none). Each
 // Get/Set binds to the currently-connected server's config.
 func (a *App) currentSyncServer() string {
+	if a.sessions == nil {
+		return ""
+	}
 	return a.sessions.Status().ServerName
 }
 
 // ensureSyncCfgsLoaded lazily loads the per-server config map from disk.
 // Caller holds a.syncCfgMu.
-func (a *App) ensureSyncCfgsLoaded() {
+func (a *App) ensureSyncCfgsLoaded() error {
 	if a.syncCfgLoaded {
-		return
+		return nil
 	}
-	a.syncCfgLoaded = true
-	a.syncCfgs = map[string]sync.SyncConfig{}
 	path, err := syncPath()
 	if err != nil {
-		return
+		return err
 	}
-	b, err := os.ReadFile(path)
+	configs, err := loadSyncCfgsFromPath(path)
 	if err != nil {
-		return
+		return fmt.Errorf("load sync configuration: %w", err)
 	}
-	// Back-compat: an older single-config file (a bare SyncConfig JSON) is
-	// migrated under the "" key so it is not lost.
-	var single sync.SyncConfig
-	if json.Unmarshal(b, &single) == nil && single.PollingMinutes != 0 {
-		if single.PollingMinutes < 1 {
-			single.PollingMinutes = 5
+	a.syncCfgs = configs
+	a.syncCfgLoaded = true
+	return nil
+}
+
+func loadSyncCfgsFromPath(path string) (map[string]sync.SyncConfig, error) {
+	b, ok, err := fileutil.ReadAndRecover(path, 0o600, func(data []byte) error {
+		_, err := decodeSyncConfigs(data)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return map[string]sync.SyncConfig{}, nil
+	}
+	configs, err := decodeSyncConfigs(b)
+	if err != nil {
+		return nil, err
+	}
+	return configs, nil
+}
+
+func decodeSyncConfigs(data []byte) (map[string]sync.SyncConfig, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	if raw == nil {
+		return nil, fmt.Errorf("configuration must be a JSON object")
+	}
+	if servers, ok := raw["servers"]; ok {
+		var sf syncFile
+		if err := json.Unmarshal(servers, &sf.Servers); err != nil {
+			return nil, fmt.Errorf("servers: %w", err)
 		}
-		a.syncCfgs[""] = single
-		return
-	}
-	var sf syncFile
-	if json.Unmarshal(b, &sf) == nil && sf.Servers != nil {
+		if sf.Servers == nil {
+			return nil, fmt.Errorf("servers must be a JSON object")
+		}
 		for k, c := range sf.Servers {
 			if c.PollingMinutes < 1 {
 				c.PollingMinutes = 5
 			}
-			a.syncCfgs[k] = c
+			sf.Servers[k] = c
+		}
+		return sf.Servers, nil
+	}
+
+	// Back-compat: an older single-config file (a bare SyncConfig JSON) is
+	// migrated under the "" key so it is not lost.
+	if _, ok := raw["enabled"]; !ok {
+		if _, ok := raw["outputDir"]; !ok {
+			if _, ok := raw["pollingMinutes"]; !ok {
+				return nil, fmt.Errorf("missing servers configuration")
+			}
 		}
 	}
+	var single sync.SyncConfig
+	if err := json.Unmarshal(data, &single); err != nil {
+		return nil, err
+	}
+	if single.PollingMinutes < 1 {
+		single.PollingMinutes = 5
+	}
+	return map[string]sync.SyncConfig{"": single}, nil
 }
 
 // persistSyncCfgsLocked writes the whole server map to disk. Caller holds
 // a.syncCfgMu (or call the unlocked wrapper).
-func (a *App) persistSyncCfgsLocked() {
+func (a *App) persistSyncCfgsLocked() error {
 	path, err := syncPath()
 	if err != nil {
-		return
+		return err
 	}
 	b, err := json.MarshalIndent(syncFile{Servers: a.syncCfgs}, "", "  ")
 	if err != nil {
-		return
+		return err
 	}
-	_ = os.MkdirAll(filepath.Dir(path), 0o755)
-	_ = os.WriteFile(path, b, 0o644)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return fileutil.AtomicWriteFileWithValidator(path, b, 0o600, func(current []byte) error {
+		_, err := decodeSyncConfigs(current)
+		return err
+	})
 }
 
 // normalizeSyncCfg fills sane defaults for zero values.
@@ -103,27 +158,52 @@ func normalizeSyncCfg(c sync.SyncConfig) sync.SyncConfig {
 }
 
 // GetSyncConfig returns the CURRENT server's sync config (defaults if unset).
+// The legacy binding keeps its no-error return shape; callers that need to
+// distinguish an unavailable/corrupt file should use GetSyncConfigWithError.
 func (a *App) GetSyncConfig() sync.SyncConfig {
+	cfg, err := a.getSyncConfig()
+	if err != nil {
+		log.Printf("sync config: %v", err)
+		return sync.DefaultSyncConfig()
+	}
+	return cfg
+}
+
+// GetSyncConfigWithError exposes persistence failures without breaking the
+// existing frontend binding contract of GetSyncConfig.
+func (a *App) GetSyncConfigWithError() (sync.SyncConfig, error) {
+	return a.getSyncConfig()
+}
+
+func (a *App) getSyncConfig() (sync.SyncConfig, error) {
 	a.syncCfgMu.Lock()
 	defer a.syncCfgMu.Unlock()
-	a.ensureSyncCfgsLoaded()
+	if err := a.ensureSyncCfgsLoaded(); err != nil {
+		return sync.SyncConfig{}, err
+	}
 	srv := a.currentSyncServer()
 	if c, ok := a.syncCfgs[srv]; ok {
-		return normalizeSyncCfg(c)
+		return normalizeSyncCfg(c), nil
 	}
-	return sync.DefaultSyncConfig()
+	return sync.DefaultSyncConfig(), nil
 }
 
 // SetSyncConfig persists the CURRENT server's sync config, applies it live to a
 // running engine, and broadcasts it so the Settings window updates.
 func (a *App) SetSyncConfig(enabled bool, outputDir string, pollingMinutes int, autoPush, autoPull bool) error {
+	if err := ensureAppRunning(a); err != nil {
+		return err
+	}
 	if pollingMinutes < 1 {
 		pollingMinutes = 5
 	}
 	a.syncCfgMu.Lock()
-	a.ensureSyncCfgsLoaded()
+	if err := a.ensureSyncCfgsLoaded(); err != nil {
+		a.syncCfgMu.Unlock()
+		return fmt.Errorf("load sync configuration: %w", err)
+	}
 	srv := a.currentSyncServer()
-	prev, _ := a.syncCfgs[srv]
+	prev, hadPrev := a.syncCfgs[srv]
 	cfg := normalizeSyncCfg(sync.SyncConfig{
 		Enabled:        enabled,
 		OutputDir:      outputDir,
@@ -133,13 +213,23 @@ func (a *App) SetSyncConfig(enabled bool, outputDir string, pollingMinutes int, 
 		PauseUntil:     prev.PauseUntil,
 	})
 	a.syncCfgs[srv] = cfg
-	a.persistSyncCfgsLocked()
+	if err := a.persistSyncCfgsLocked(); err != nil {
+		if hadPrev {
+			a.syncCfgs[srv] = prev
+		} else {
+			delete(a.syncCfgs, srv)
+		}
+		a.syncCfgMu.Unlock()
+		return fmt.Errorf("save sync configuration: %w", err)
+	}
 	a.syncCfgMu.Unlock()
 
 	// Apply live (only if the running engine belongs to this server).
 	wasEnabled := prev.Enabled && prev.OutputDir != ""
 	nowEnabled := cfg.Enabled && cfg.OutputDir != ""
-	a.graalScriptLSP.SetEnabled(nowEnabled)
+	if a.graalScriptLSP != nil {
+		a.graalScriptLSP.SetEnabled(nowEnabled)
+	}
 	switch {
 	case nowEnabled && a.hasSyncEngine():
 		a.applySyncConfig(cfg)
@@ -171,6 +261,9 @@ func (a *App) hasSyncEngine() bool {
 // JSON and emits a raw event (mirrors rc:fbConfig/rc:codingSettings).
 func (a *App) syncEmitter() func(string, ...any) {
 	return func(name string, data ...any) {
+		if appIsShuttingDown(a) {
+			return
+		}
 		if name == "rc:syncStatus" && len(data) > 0 {
 			if status, ok := data[0].(sync.SyncStatus); ok && !status.Progress.Active {
 				// The sync engine writes server changes to disk asynchronously. Once
@@ -187,11 +280,19 @@ func (a *App) syncEmitter() func(string, ...any) {
 			return
 		}
 		a.app.Event.Emit(name, string(b))
+		a.emitPluginEvent(normalizePluginEvent(name), data...)
 	}
 }
 
 func (a *App) refreshGraalScriptWorkspace() {
-	cfg := a.GetSyncConfig()
+	if appIsShuttingDown(a) || a.graalScriptLSP == nil {
+		return
+	}
+	cfg, err := a.getSyncConfig()
+	if err != nil {
+		log.Printf("sync config for workspace refresh: %v", err)
+		return
+	}
 	if !cfg.Enabled || cfg.OutputDir == "" {
 		return
 	}
@@ -200,53 +301,61 @@ func (a *App) refreshGraalScriptWorkspace() {
 	}
 }
 
-// startSyncEngine constructs + starts the engine for the CURRENT server. If an
-// engine is already running for a different server it is stopped first (each
-// server keeps its own engine + baseline + config).
+var syncEngineTransitionMu stdsync.Mutex
+
+// startSyncEngine constructs + starts the engine for the CURRENT server. The
+// transition mutex serializes start/apply/stop operations, while the engine
+// mutex is held only long enough to swap pointers. Engine.Stop can wait for
+// network work, so it is never called while syncEngineMu is held.
 func (a *App) startSyncEngine() {
-	srv := a.currentSyncServer()
-	a.syncEngineMu.Lock()
-	if a.syncEngine != nil {
-		// Engine for a different server still running — tear it down first.
-		old := a.syncEngine
-		a.syncEngine = nil
-		oldCancel := a.syncCancel
-		a.syncCancel = nil
-		a.syncEngineMu.Unlock()
-		if oldCancel != nil {
-			oldCancel()
-		}
-		old.Stop()
-	} else {
-		a.syncEngineMu.Unlock()
+	syncEngineTransitionMu.Lock()
+	defer syncEngineTransitionMu.Unlock()
+	if appIsShuttingDown(a) {
+		return
 	}
 
-	cfg := a.GetSyncConfig()
+	a.stopSyncEngineLocked()
+	srv := a.currentSyncServer()
+	cfg, err := a.getSyncConfig()
+	if err != nil {
+		log.Printf("start sync engine: %v", err)
+		return
+	}
 	// Keep a disabled server from retaining an inert engine. Apart from making
 	// status truthful, this lets the Enable Sync toggle start a fresh engine
 	// when the user enables it later in the session.
 	if !cfg.Enabled || cfg.OutputDir == "" {
-		a.graalScriptLSP.SetEnabled(false)
+		if a.graalScriptLSP != nil {
+			a.graalScriptLSP.SetEnabled(false)
+		}
 		if a.app != nil {
-			b, _ := json.Marshal(cfg)
-			a.app.Event.Emit("rc:syncConfig", string(b))
+			if b, marshalErr := json.Marshal(cfg); marshalErr == nil {
+				a.app.Event.Emit("rc:syncConfig", string(b))
+			}
 		}
 		return
 	}
-	a.graalScriptLSP.SetEnabled(true)
-	ctx, cancel := context.WithCancel(context.Background())
+	if a.graalScriptLSP != nil {
+		a.graalScriptLSP.SetEnabled(true)
+	}
+	parent := context.Background()
+	if a.app != nil {
+		parent = a.app.Context()
+	}
+	ctx, cancel := context.WithCancel(parent)
 	eng := sync.NewEngine(a.sessions, srv, a.syncEmitter())
 	eng.SetEditorChecker(func(kind, key string) bool {
 		_, open := a.editorWindowsSnapshot(kind, key)
 		return open
 	})
-	eng.SetLocalActor(func() string { return a.sessions.Status().Nickname })
+	eng.SetLocalActor(func() string {
+		if a.sessions == nil {
+			return ""
+		}
+		return a.sessions.Status().Nickname
+	})
 
 	a.syncEngineMu.Lock()
-	// Another start may have raced ahead; prefer the latest.
-	if a.syncEngine != nil {
-		a.syncEngine.Stop()
-	}
 	a.syncEngine = eng
 	a.syncCtx = ctx
 	a.syncCancel = cancel
@@ -255,14 +364,23 @@ func (a *App) startSyncEngine() {
 	eng.ApplyConfig(cfg)
 	eng.Start(ctx)
 	if a.app != nil {
-		b, _ := json.Marshal(cfg)
-		a.app.Event.Emit("rc:syncConfig", string(b))
+		if b, marshalErr := json.Marshal(cfg); marshalErr == nil {
+			a.app.Event.Emit("rc:syncConfig", string(b))
+		}
 	}
 }
 
 // stopSyncEngine tears the engine down.
 func (a *App) stopSyncEngine() {
-	a.graalScriptLSP.SetEnabled(false)
+	syncEngineTransitionMu.Lock()
+	defer syncEngineTransitionMu.Unlock()
+	a.stopSyncEngineLocked()
+}
+
+func (a *App) stopSyncEngineLocked() {
+	if a.graalScriptLSP != nil {
+		a.graalScriptLSP.SetEnabled(false)
+	}
 	a.syncEngineMu.Lock()
 	eng := a.syncEngine
 	a.syncEngine = nil
@@ -279,6 +397,11 @@ func (a *App) stopSyncEngine() {
 }
 
 func (a *App) applySyncConfig(cfg sync.SyncConfig) {
+	syncEngineTransitionMu.Lock()
+	defer syncEngineTransitionMu.Unlock()
+	if appIsShuttingDown(a) {
+		return
+	}
 	if eng := a.currentSyncEngine(); eng != nil {
 		eng.ApplyConfig(cfg)
 	}
@@ -288,10 +411,16 @@ func (a *App) applySyncConfig(cfg sync.SyncConfig) {
 
 // SyncNow triggers a full reconcile immediately.
 func (a *App) SyncNow() error {
+	if err := ensureAppRunning(a); err != nil {
+		return err
+	}
 	eng := a.currentSyncEngine()
 	if eng == nil {
 		// Auto-start if configured + enabled.
-		cfg := a.GetSyncConfig()
+		cfg, err := a.getSyncConfig()
+		if err != nil {
+			return fmt.Errorf("load sync configuration: %w", err)
+		}
 		if cfg.Enabled && cfg.OutputDir != "" {
 			a.startSyncEngine()
 			eng = a.currentSyncEngine()
@@ -345,14 +474,29 @@ func (a *App) ResolveConflict(kind, key, choice, mergeContent string) error {
 
 // PauseSync pauses reconcile for an hour (current server).
 func (a *App) PauseSync() error {
+	if err := ensureAppRunning(a); err != nil {
+		return err
+	}
 	until := time.Now().Add(time.Hour).Unix()
 	a.syncCfgMu.Lock()
-	a.ensureSyncCfgsLoaded()
+	if err := a.ensureSyncCfgsLoaded(); err != nil {
+		a.syncCfgMu.Unlock()
+		return fmt.Errorf("load sync configuration: %w", err)
+	}
 	srv := a.currentSyncServer()
-	c := a.syncCfgs[srv]
+	previous, hadPrevious := a.syncCfgs[srv]
+	c := previous
 	c.PauseUntil = until
 	a.syncCfgs[srv] = c
-	a.persistSyncCfgsLocked()
+	if err := a.persistSyncCfgsLocked(); err != nil {
+		if hadPrevious {
+			a.syncCfgs[srv] = previous
+		} else {
+			delete(a.syncCfgs, srv)
+		}
+		a.syncCfgMu.Unlock()
+		return fmt.Errorf("save sync pause: %w", err)
+	}
 	a.syncCfgMu.Unlock()
 	if eng := a.currentSyncEngine(); eng != nil {
 		eng.SetPaused(until) // lightweight: no watcher restart
@@ -362,13 +506,28 @@ func (a *App) PauseSync() error {
 
 // ResumeSync clears the pause (current server).
 func (a *App) ResumeSync() error {
+	if err := ensureAppRunning(a); err != nil {
+		return err
+	}
 	a.syncCfgMu.Lock()
-	a.ensureSyncCfgsLoaded()
+	if err := a.ensureSyncCfgsLoaded(); err != nil {
+		a.syncCfgMu.Unlock()
+		return fmt.Errorf("load sync configuration: %w", err)
+	}
 	srv := a.currentSyncServer()
-	c := a.syncCfgs[srv]
+	previous, hadPrevious := a.syncCfgs[srv]
+	c := previous
 	c.PauseUntil = 0
 	a.syncCfgs[srv] = c
-	a.persistSyncCfgsLocked()
+	if err := a.persistSyncCfgsLocked(); err != nil {
+		if hadPrevious {
+			a.syncCfgs[srv] = previous
+		} else {
+			delete(a.syncCfgs, srv)
+		}
+		a.syncCfgMu.Unlock()
+		return fmt.Errorf("save sync resume: %w", err)
+	}
 	a.syncCfgMu.Unlock()
 	if eng := a.currentSyncEngine(); eng != nil {
 		eng.SetPaused(0)

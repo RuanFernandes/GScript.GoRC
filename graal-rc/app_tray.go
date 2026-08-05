@@ -68,7 +68,7 @@ func maxInt(a, b int) int {
 }
 
 func (a *App) updateTrayPMBadge() {
-	if a.tray == nil {
+	if appIsShuttingDown(a) || a.tray == nil {
 		return
 	}
 	a.tray.SetIcon(trayBadgeIcon(a.hasUnreadPM()))
@@ -103,7 +103,7 @@ func (a *App) setupTray(main *application.WebviewWindow) {
 	// proceed (real quit). quitting is set only by the tray Close entry so that
 	// path bypasses the hide and tears the app down.
 	main.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
-		if a.quitting.Load() {
+		if a.quitting.Load() || appIsShuttingDown(a) {
 			return
 		}
 		if a.isLoggedInServer() {
@@ -115,25 +115,35 @@ func (a *App) setupTray(main *application.WebviewWindow) {
 	// Refresh window/tray chrome every few seconds so the live player count in the
 	// tray tooltip stays current and a server-side disconnect resets the titles
 	// even without a frontend round-trip.
-	go func() {
+	lifecycleFor(a).startBackground(func(stop <-chan struct{}) {
 		ticker := time.NewTicker(3 * time.Second)
 		defer ticker.Stop()
-		for range ticker.C {
-			a.refreshServerChrome()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				if !appIsShuttingDown(a) {
+					a.refreshServerChrome()
+				}
+			}
 		}
-	}()
+	})
 }
 
 // isLoggedInServer reports whether there is an active, authenticated server
 // session. This is the gate for hide-to-tray on close.
 func (a *App) isLoggedInServer() bool {
+	if a.sessions == nil {
+		return false
+	}
 	st := a.sessions.Status()
 	return st.Connected && st.Authenticated
 }
 
 // showMainWindow restores and focuses the main window from the tray.
 func (a *App) showMainWindow() {
-	if a.mainWindow == nil {
+	if appIsShuttingDown(a) || a.mainWindow == nil {
 		return
 	}
 	a.mainWindow.Show().Focus()
@@ -142,5 +152,7 @@ func (a *App) showMainWindow() {
 // quitApp performs a real shutdown, bypassing the hide-to-tray hook.
 func (a *App) quitApp() {
 	a.quitting.Store(true)
-	a.app.Quit()
+	if a.app != nil {
+		a.app.Quit()
+	}
 }

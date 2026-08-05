@@ -34,7 +34,7 @@ tasks:
     summary: Builds the application using native Go cross-compilation
     internal: true
     deps:
-      - task: common:go:mod:tidy
+      - task: common:go:mod:verify
       - task: common:build:frontend
         vars:
           BUILD_FLAGS:
@@ -51,7 +51,7 @@ tasks:
       - task: generate:syso
         vars:
           ARCH: '{{.ARCH}}'
-      - '{{if eq .OBFUSCATED "true"}}garble {{.GARBLE_ARGS}} build{{else}}go build{{end}} {{.BUILD_FLAGS}} -o "{{.BIN_DIR}}/{{.APP_NAME}}.exe"'
+      - '{{if eq .OBFUSCATED "true"}}garble {{.GARBLE_ARGS}} build{{else}}go build{{end}} -mod=readonly {{.BUILD_FLAGS}} -o "{{.BIN_DIR}}/{{.APP_NAME}}.exe"'
       - cmd: powershell Remove-item *.syso
         platforms: [windows]
       - cmd: rm -f *.syso
@@ -120,32 +120,31 @@ tasks:
     preconditions:
       - sh: '[ "{{.INSTALL_SCOPE}}" = "user" ] || [ "{{.INSTALL_SCOPE}}" = "machine" ]'
         msg: "INSTALL_SCOPE must be 'user' or 'machine', got '{{.INSTALL_SCOPE}}'"
+      - sh: '[ "{{.ARCH}}" = "amd64" ]'
+        msg: "Graal RC Windows installers currently support only amd64 because rclib/grclib64.dll is the only native library shipped."
     cmds:
       # Create the Microsoft WebView2 bootstrapper if it doesn't exist
       - wails3 generate webview2bootstrapper -dir "{{.ROOT_DIR}}/build/windows/nsis"
+      - cmd: powershell -NoProfile -ExecutionPolicy Bypass -File "{{.ROOT_DIR}}\build\windows\validate-native.ps1" -ExecutablePath "{{.ROOT_DIR}}\{{.BIN_DIR}}\{{.APP_NAME}}.exe" -NativeLibraryPath "{{.ROOT_DIR}}\rclib\{{.GRCLIB_FILE}}" -Architecture "{{.ARCH}}"
+        platforms: [windows]
       - |
         {{if eq OS "windows"}}
-        makensis {{if eq .INSTALL_SCOPE "user"}}-DWAILS_INSTALL_SCOPE=user -DREQUEST_EXECUTION_LEVEL=user {{end}}-DARG_WAILS_{{.ARG_FLAG}}_BINARY="{{.ROOT_DIR}}\{{.BIN_DIR}}\{{.APP_NAME}}.exe" -DARG_GRCLIB_DLL="{{.ROOT_DIR}}\rclib\{{.GRCLIB_FILE}}" project.nsi
+        powershell -NoProfile -ExecutionPolicy Bypass -File "{{.ROOT_DIR}}\build\windows\compile-nsis.ps1" -InstallScope "{{.INSTALL_SCOPE}}" -Architecture "{{.ARCH}}" -AppName "{{.APP_NAME}}" -ExecutablePath "{{.ROOT_DIR}}\{{.BIN_DIR}}\{{.APP_NAME}}.exe" -NativeLibraryPath "{{.ROOT_DIR}}\rclib\{{.GRCLIB_FILE}}" -NativeLibraryName "{{.GRCLIB_FILE}}"
         {{else}}
-        makensis {{if eq .INSTALL_SCOPE "user"}}-DWAILS_INSTALL_SCOPE=user -DREQUEST_EXECUTION_LEVEL=user {{end}}-DARG_WAILS_{{.ARG_FLAG}}_BINARY="{{.ROOT_DIR}}/{{.BIN_DIR}}/{{.APP_NAME}}.exe" -DARG_GRCLIB_DLL="{{.ROOT_DIR}}/rclib/{{.GRCLIB_FILE}}" project.nsi
+        pwsh -NoProfile -File "{{.ROOT_DIR}}/build/windows/compile-nsis.ps1" -InstallScope "{{.INSTALL_SCOPE}}" -Architecture "{{.ARCH}}" -AppName "{{.APP_NAME}}" -ExecutablePath "{{.ROOT_DIR}}/{{.BIN_DIR}}/{{.APP_NAME}}.exe" -NativeLibraryPath "{{.ROOT_DIR}}/rclib/{{.GRCLIB_FILE}}" -NativeLibraryName "{{.GRCLIB_FILE}}"
         {{end}}
     vars:
       ARCH: '{{.ARCH | default ARCH}}'
-      ARG_FLAG: '{{if eq .ARCH "amd64"}}AMD64{{else if eq .ARCH "386"}}X86{{else}}ARM64{{end}}'
-      # Native grclib lib ships next to the exe; bitness must match the build
-      # arch (32-bit grclib.dll for 386, 64-bit grclib64.dll otherwise).
-      GRCLIB_FILE: '{{if eq .ARCH "386"}}grclib.dll{{else}}grclib64.dll{{end}}'
+      # The only Windows native library committed for this application is amd64.
+      GRCLIB_FILE: 'grclib64.dll'
       INSTALL_SCOPE: '{{.INSTALL_SCOPE | default "machine"}}'
 
   package:all:
-    summary: Builds NSIS installers for both Windows architectures (amd64 + 386)
+    summary: Builds the supported NSIS installer (amd64)
     cmds:
       - task: create:nsis:installer
         vars:
           ARCH: amd64
-      - task: create:nsis:installer
-        vars:
-          ARCH: "386"
 
   create:msix:package:
     summary: Creates an MSIX package

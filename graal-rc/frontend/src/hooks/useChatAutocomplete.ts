@@ -1,6 +1,7 @@
-import {useRef} from "react"
+import {useEffect, useRef, useState} from "react"
 
 import type {Player} from "@/types"
+import {pluginRuntime} from "@/plugins/runtime"
 
 // useChatAutocomplete powers Tab completion of chat commands, terminal-style:
 // no popup — press Tab to complete/cycle the current token, Shift+Tab to cycle
@@ -89,16 +90,36 @@ const parse = (text: string): [string, string | undefined] => {
 
 export function useChatAutocomplete(players: Player[]) {
   const ctx = useRef<Ctx | null>(null)
+  const [pluginCommands, setPluginCommands] = useState<string[]>(() => pluginRuntime.getCommands().map(command => command.id))
   // The exact text we produced on the last Tab. Used to tell "Tab again to cycle"
   // apart from "Tab on freshly typed text".
   const lastSet = useRef<string | null>(null)
+
+  useEffect(() => {
+    let disposed = false
+    const update = () => setPluginCommands([...new Set(pluginRuntime.getCommands().map(command => command.id))])
+    update()
+    window.addEventListener("gorc:plugin-commands", update)
+    // The plugin manager can be opened in another Wails window after the main
+    // RC has already started. Refreshing here makes the first chat render
+    // authoritative even when that window's event was missed.
+    void pluginRuntime.refresh().then(() => {
+      if (!disposed) update()
+    }).catch(() => {})
+    return () => {
+      disposed = true
+      window.removeEventListener("gorc:plugin-commands", update)
+    }
+  }, [])
 
   const build = (text: string): Ctx | null => {
     const [cmdRaw, rest] = parse(text)
     // Command-name phase: no space yet.
     if (rest === undefined) {
       const pfx = cmdRaw.toLowerCase()
-      const matches = COMMANDS.filter((c) => c.name.startsWith(pfx)).map((c) => c.name)
+      const livePluginCommands = pluginRuntime.getCommands().map(command => command.id)
+      const names = [...new Set([...COMMANDS.map(command => command.name), ...pluginCommands, ...livePluginCommands])]
+      const matches = names.filter(name => name.toLowerCase().startsWith(pfx))
       return matches.length ? {matches, index: 0} : null
     }
     // Argument phase: only account-taking commands complete from the playerlist.

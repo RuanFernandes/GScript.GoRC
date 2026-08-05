@@ -25,6 +25,7 @@ import (
 	"graal-rc/internal/connection"
 	"graal-rc/internal/credentials"
 	"graal-rc/internal/graalscript"
+	pluginlib "graal-rc/internal/plugins"
 	"graal-rc/internal/sqlite"
 	synclib "graal-rc/internal/sync"
 	"graal-rc/rclib"
@@ -73,6 +74,26 @@ type App struct {
 	settingsMu     sync.Mutex
 	settingsWindow *application.WebviewWindow
 
+	pluginWindowMu sync.Mutex
+	pluginWindow   *application.WebviewWindow
+
+	pluginDocsWindowMu sync.Mutex
+	pluginDocsWindow   *application.WebviewWindow
+
+	pluginFileOpenMu      sync.Mutex
+	pluginFileOpenWaiters map[string]pluginFileOpenRequest
+	pluginFileOpenSeq     uint64
+
+	pluginMonacoMu      sync.Mutex
+	pluginMonacoWaiters map[string]pluginMonacoRequest
+	pluginMonacoSeq     uint64
+
+	pluginMonacoLanguagesMu sync.RWMutex
+	pluginMonacoLanguages   map[string]PluginMonacoLanguage
+
+	pluginUIWindowMu sync.Mutex
+	pluginUIWindows  map[string]*pluginUIWindowState
+
 	fileBrowserMu     sync.Mutex
 	fileBrowserWindow *application.WebviewWindow
 
@@ -93,6 +114,7 @@ type App struct {
 	codingSettings CodingSettings
 
 	graalScriptLSP *graalscript.LanguageServer
+	plugins        *pluginlib.Manager
 
 	languageMu sync.Mutex
 	language   string
@@ -142,20 +164,29 @@ func NewApp() *App {
 	// desktop integration starts locked until the current server has a local
 	// Sync workspace configured.
 	lsp.SetEnabled(false)
+	pluginManager, pluginErr := pluginlib.NewManager()
+	if pluginErr != nil {
+		log.Printf("plugins: %v", pluginErr)
+	}
 	return &App{
-		sessions:        connection.NewService(),
-		vault:           vault,
-		editorWindows:   map[string]*application.WebviewWindow{},
-		editorCache:     map[string]rclib.ScriptReply{},
-		editorDirty:     map[string]bool{},
-		textCache:       map[string][]byte{},
-		dbFiles:         map[string]string{},
-		dbHeaders:       map[string][]byte{},
-		textWindows:     map[string]*application.WebviewWindow{},
-		sqliteWindows:   map[string]*application.WebviewWindow{},
-		playerWindows:   map[string]*application.WebviewWindow{},
-		pmConversations: map[int]PMConversation{},
-		graalScriptLSP:  lsp,
+		sessions:              connection.NewService(),
+		vault:                 vault,
+		editorWindows:         map[string]*application.WebviewWindow{},
+		editorCache:           map[string]rclib.ScriptReply{},
+		editorDirty:           map[string]bool{},
+		textCache:             map[string][]byte{},
+		dbFiles:               map[string]string{},
+		dbHeaders:             map[string][]byte{},
+		textWindows:           map[string]*application.WebviewWindow{},
+		sqliteWindows:         map[string]*application.WebviewWindow{},
+		pluginFileOpenWaiters: map[string]pluginFileOpenRequest{},
+		pluginMonacoWaiters:   map[string]pluginMonacoRequest{},
+		pluginMonacoLanguages: map[string]PluginMonacoLanguage{},
+		pluginUIWindows:       map[string]*pluginUIWindowState{},
+		playerWindows:         map[string]*application.WebviewWindow{},
+		pmConversations:       map[int]PMConversation{},
+		graalScriptLSP:        lsp,
+		plugins:               pluginManager,
 	}
 }
 
@@ -171,6 +202,15 @@ func NewApp() *App {
 // ordering (the chat burst otherwise scrambles).
 func (a *App) attach(app *application.App) {
 	a.app = app
+	if a.plugins != nil {
+		a.plugins.SetRuntimeEmitter(func(name string, data any) {
+			payload, err := json.Marshal(data)
+			if err != nil {
+				return
+			}
+			app.Event.Emit(name, string(payload))
+		})
+	}
 	var seq uint64
 	a.sessions.SetEmitter(func(name string, data ...any) {
 		if name == "rc:pm" && len(data) >= 4 {
@@ -210,7 +250,726 @@ func (a *App) attach(app *application.App) {
 			return
 		}
 		app.Event.Emit("rc:evt", string(b))
+		if a.plugins != nil {
+			pluginPayload := struct {
+				Name string `json:"name"`
+				Data []any  `json:"data"`
+			}{Name: normalizePluginEvent(name), Data: data}
+			if pluginBytes, err := json.Marshal(pluginPayload); err == nil {
+				app.Event.Emit("plugin:event", string(pluginBytes))
+			}
+		}
 	})
+}
+
+func normalizePluginEvent(name string) string {
+	name = strings.TrimPrefix(name, "rc:")
+	known := map[string]string{
+		"connected": "rc.connected", "pm": "pm.received", "pmSent": "pm.sent", "irc": "irc.message", "message": "rc.message",
+		"disconnected": "rc.disconnected", "weaponsChanged": "weapon.changed",
+		"classesChanged": "class.changed", "npcsChanged": "npc.changed",
+		"scriptReceived": "script.received", "npcFlags": "npc.flags",
+		"npcAttributes": "npc.attributes", "fbFolders": "filebrowser.folders",
+		"fbFiles": "filebrowser.files", "fbMessage": "filebrowser.message",
+		"playerRights": "player.rights", "playerAttributes": "player.attributes",
+		"banData": "player.ban", "banListData": "player.banList",
+		"playerTextData": "player.text",
+		"serverdata":     "nc.serverdata", "ncConnected": "nc.connected", "ncDisconnected": "nc.disconnected",
+		"fbChanged": "filebrowser.changed", "fbStart": "filebrowser.started", "fbCd": "filebrowser.directory.changed",
+		"syncConflict": "script.conflict", "syncProgress": "sync.progress", "syncStatus": "sync.status",
+		"channels": "irc.channels", "scriptIdentityChanged": "script.identity.changed", "scriptPermissionsChanged": "script.permissions.changed",
+		"fbMaxUpload": "filebrowser.maxUpload",
+	}
+	if mapped, ok := known[name]; ok {
+		return mapped
+	}
+	return strings.ReplaceAll(name, "_", ".")
+}
+
+func (a *App) emitPluginEvent(name string, data ...any) {
+	if a.app == nil {
+		return
+	}
+	payload := struct {
+		Name string `json:"name"`
+		Data []any  `json:"data"`
+	}{Name: name, Data: data}
+	if b, err := json.Marshal(payload); err == nil {
+		a.app.Event.Emit("plugin:event", string(b))
+	}
+}
+
+type PluginHTTPRequest = pluginlib.HTTPRequest
+type PluginHTTPResponse = pluginlib.HTTPResponse
+type PluginInfo = pluginlib.PluginInfo
+type PluginPermissions = pluginlib.Permissions
+
+func pluginIntArg(args []any, index int) (int, error) {
+	if index < 0 || index >= len(args) {
+		return 0, errors.New("missing plugin argument")
+	}
+	switch value := args[index].(type) {
+	case int:
+		return value, nil
+	case float64:
+		return int(value), nil
+	default:
+		return 0, errors.New("plugin argument must be an integer")
+	}
+}
+
+func pluginStringArg(args []any, index int) (string, error) {
+	if index < 0 || index >= len(args) {
+		return "", errors.New("missing plugin argument")
+	}
+	value, ok := args[index].(string)
+	if !ok {
+		return "", errors.New("plugin argument must be a string")
+	}
+	return value, nil
+}
+
+func pluginJSONArg(args []any, index int, target any) error {
+	if index < 0 || index >= len(args) {
+		return errors.New("missing plugin argument")
+	}
+	b, err := json.Marshal(args[index])
+	if err != nil {
+		return errors.New("plugin argument is not valid JSON")
+	}
+	if err := json.Unmarshal(b, target); err != nil {
+		return errors.New("plugin argument has an invalid shape")
+	}
+	return nil
+}
+
+func (a *App) GetPlugins() []PluginInfo {
+	if a.plugins == nil {
+		return []PluginInfo{}
+	}
+	return a.plugins.List()
+}
+
+func (a *App) RefreshPlugins() error {
+	if a.plugins == nil {
+		return errors.New("plugin manager is unavailable")
+	}
+	if err := a.plugins.Discover(); err != nil {
+		return err
+	}
+	if a.app != nil {
+		a.app.Event.Emit("plugin:list")
+	}
+	return nil
+}
+
+func (a *App) SetPluginEnabled(id string, enabled bool) error {
+	if a.plugins == nil {
+		return errors.New("plugin manager is unavailable")
+	}
+	if err := a.plugins.SetEnabled(id, enabled); err != nil {
+		return err
+	}
+	if a.app != nil {
+		a.app.Event.Emit("plugin:list")
+	}
+	return nil
+}
+
+// RecordPluginFailure is used by the frontend sandbox supervisor to update
+// the host-side circuit breaker. It is intentionally not part of the plugin
+// SDK; only the trusted runtime calls it.
+func (a *App) RecordPluginFailure(id string) (bool, error) {
+	if a.plugins == nil {
+		return false, errors.New("plugin manager is unavailable")
+	}
+	disabled, err := a.plugins.RecordPluginFailure(id)
+	if err != nil {
+		return false, err
+	}
+	if a.app != nil {
+		a.app.Event.Emit("plugin:list")
+	}
+	return disabled, nil
+}
+
+// RecordPluginSuccess resets the trusted runtime circuit breaker after a
+// plugin has completed initialization successfully.
+func (a *App) RecordPluginSuccess(id string) error {
+	if a.plugins == nil {
+		return errors.New("plugin manager is unavailable")
+	}
+	if err := a.plugins.RecordPluginSuccess(id); err != nil {
+		return err
+	}
+	if a.app != nil {
+		a.app.Event.Emit("plugin:list")
+	}
+	return nil
+}
+
+func (a *App) ApprovePluginPermissions(id string, permissions PluginPermissions) error {
+	if a.plugins == nil {
+		return errors.New("plugin manager is unavailable")
+	}
+	if err := a.plugins.Approve(id, permissions); err != nil {
+		return err
+	}
+	if a.app != nil {
+		a.app.Event.Emit("plugin:list")
+	}
+	return nil
+}
+
+func (a *App) RemovePlugin(id string) error {
+	if a.plugins == nil {
+		return errors.New("plugin manager is unavailable")
+	}
+	if err := a.plugins.Remove(id); err != nil {
+		return err
+	}
+	if a.app != nil {
+		a.app.Event.Emit("plugin:list")
+	}
+	return nil
+}
+
+func (a *App) GetPluginDirectory() string {
+	if a.plugins == nil {
+		return ""
+	}
+	return a.plugins.Root()
+}
+
+func (a *App) OpenPluginsFolder() error {
+	directory := a.GetPluginDirectory()
+	if directory == "" {
+		return errors.New("plugin directory is unavailable")
+	}
+	switch runtime.GOOS {
+	case "windows":
+		return exec.Command("explorer.exe", directory).Start()
+	case "darwin":
+		return exec.Command("open", directory).Start()
+	default:
+		return exec.Command("xdg-open", directory).Start()
+	}
+}
+
+func (a *App) CreatePluginTemplate(name string) (PluginInfo, error) {
+	if a.plugins == nil {
+		return PluginInfo{}, errors.New("plugin manager is unavailable")
+	}
+	info, err := a.plugins.CreateTemplate(name)
+	if err == nil && a.app != nil {
+		a.app.Event.Emit("plugin:list")
+	}
+	return info, err
+}
+
+func (a *App) GetPluginFiles(id string) ([]string, error) {
+	if a.plugins == nil {
+		return nil, errors.New("plugin manager is unavailable")
+	}
+	return a.plugins.ListFiles(id)
+}
+
+func (a *App) ReadPluginFile(id, path string) (pluginlib.PluginFile, error) {
+	if a.plugins == nil {
+		return pluginlib.PluginFile{}, errors.New("plugin manager is unavailable")
+	}
+	return a.plugins.ReadFile(id, path)
+}
+
+func (a *App) WritePluginFile(id, path, content string) error {
+	if a.plugins == nil {
+		return errors.New("plugin manager is unavailable")
+	}
+	if err := a.plugins.WriteFile(id, path, content); err != nil {
+		return err
+	}
+	a.plugins.Log(id, "info", "Saved "+path)
+	if a.app != nil {
+		a.app.Event.Emit("plugin:list")
+	}
+	return nil
+}
+
+func (a *App) BuildPlugin(id string) (pluginlib.PluginBuildResult, error) {
+	if a.plugins == nil {
+		return pluginlib.PluginBuildResult{}, errors.New("plugin manager is unavailable")
+	}
+	result, err := a.plugins.Build(id)
+	if err == nil && a.app != nil {
+		if result.Success {
+			a.app.Event.Emit("plugin:reload", id)
+		}
+		a.app.Event.Emit("plugin:list")
+	}
+	return result, err
+}
+
+func (a *App) ReloadPlugin(id string) error {
+	if a.plugins == nil {
+		return errors.New("plugin manager is unavailable")
+	}
+	if _, err := a.plugins.Bundle(id); err != nil {
+		return err
+	}
+	a.plugins.Log(id, "info", "Plugin reload requested")
+	if a.app != nil {
+		a.app.Event.Emit("plugin:reload", id)
+	}
+	return nil
+}
+
+func (a *App) GetPluginLogs(id string) []pluginlib.PluginLogEntry {
+	if a.plugins == nil {
+		return []pluginlib.PluginLogEntry{}
+	}
+	return a.plugins.Logs(id)
+}
+
+func (a *App) ClearPluginLogs(id string) {
+	if a.plugins == nil {
+		return
+	}
+	a.plugins.ClearLogs(id)
+	if a.app != nil {
+		a.app.Event.Emit("plugin:logs", id)
+	}
+}
+
+func (a *App) AppendPluginLog(id, level, message string) {
+	if a.plugins == nil {
+		return
+	}
+	a.plugins.Log(id, level, message)
+	if a.app != nil {
+		a.app.Event.Emit("plugin:logs", id)
+	}
+}
+
+func (a *App) ExportPlugin(id string) (string, error) {
+	if a.plugins == nil {
+		return "", errors.New("plugin manager is unavailable")
+	}
+	info, ok := func() (pluginlib.PluginInfo, bool) {
+		for _, item := range a.plugins.List() {
+			if item.Manifest.ID == id {
+				return item, true
+			}
+		}
+		return pluginlib.PluginInfo{}, false
+	}()
+	if !ok {
+		return "", pluginlib.ErrPluginNotFound
+	}
+	path, err := a.app.Dialog.SaveFile().SetMessage("Export " + info.Manifest.Name).SetFilename(info.Manifest.ID + ".zip").PromptForSingleSelection()
+	if err != nil || path == "" {
+		return path, err
+	}
+	return a.plugins.Export(id, path)
+}
+
+func (a *App) GetPluginBundle(id string) (string, error) {
+	if a.plugins == nil {
+		return "", errors.New("plugin manager is unavailable")
+	}
+	return a.plugins.Bundle(id)
+}
+
+func (a *App) PluginStorageGet(id, key string) (string, bool, error) {
+	if a.plugins == nil {
+		return "", false, errors.New("plugin manager is unavailable")
+	}
+	return a.plugins.StorageGet(id, key)
+}
+
+func (a *App) PluginStorageSet(id, key, value string) error {
+	if a.plugins == nil {
+		return errors.New("plugin manager is unavailable")
+	}
+	return a.plugins.StorageSet(id, key, value)
+}
+
+func (a *App) PluginStorageDelete(id, key string) error {
+	if a.plugins == nil {
+		return errors.New("plugin manager is unavailable")
+	}
+	return a.plugins.StorageDelete(id, key)
+}
+
+func (a *App) PluginSecretGet(id, key string) (string, bool, error) {
+	if a.plugins == nil {
+		return "", false, errors.New("plugin manager is unavailable")
+	}
+	return a.plugins.SecretGet(id, key)
+}
+
+func (a *App) PluginSecretSet(id, key, value string) error {
+	if a.plugins == nil {
+		return errors.New("plugin manager is unavailable")
+	}
+	return a.plugins.SecretSet(id, key, value)
+}
+
+func (a *App) PluginSecretDelete(id, key string) error {
+	if a.plugins == nil {
+		return errors.New("plugin manager is unavailable")
+	}
+	return a.plugins.SecretDelete(id, key)
+}
+
+// PluginCall is the allowlisted write/action bridge. It intentionally accepts
+// a narrow method name and JSON-like arguments instead of exposing Service or
+// the generated Wails bindings to plugin code.
+func (a *App) PluginCall(id, method string, args []any) (any, error) {
+	if a.plugins == nil {
+		return nil, errors.New("plugin manager is unavailable")
+	}
+	api := method
+	if strings.HasPrefix(method, "actions.") {
+		api = strings.TrimPrefix(method, "actions.")
+	}
+	if strings.HasPrefix(method, "pm.") {
+		api = "pm.send"
+	}
+	if strings.HasPrefix(method, "admin.") {
+		api = "admin.send"
+	}
+	if strings.HasPrefix(method, "nc.") {
+		api = method
+	}
+	if strings.HasPrefix(method, "sockets.") {
+		api = "network.socket"
+	}
+	if strings.HasPrefix(method, "plugins.") {
+		api = "plugins.messaging"
+	}
+	if strings.HasPrefix(method, "express.") {
+		api = "express.http"
+	}
+	if strings.HasPrefix(method, "filebrowser.read") {
+		api = "filebrowser.read"
+	}
+	if strings.HasPrefix(method, "filebrowser.write") {
+		api = "filebrowser.write"
+	}
+	if strings.HasPrefix(method, "filebrowser.editor") || method == "filebrowser.openResult" {
+		api = "filebrowser.editor"
+	}
+	if strings.HasPrefix(method, "monaco.") {
+		api = "monaco"
+	}
+	if strings.HasPrefix(method, "ui.") {
+		api = "ui.window"
+	}
+	if err := a.plugins.RequireAPI(id, api); err != nil {
+		return nil, err
+	}
+	switch method {
+	case "pm.send":
+		playerID, err := pluginIntArg(args, 0)
+		if err != nil {
+			return nil, err
+		}
+		message, err := pluginStringArg(args, 1)
+		if err != nil {
+			return nil, err
+		}
+		return nil, a.sessions.SendPrivateMessage(playerID, message)
+	case "admin.send":
+		playerID, err := pluginIntArg(args, 0)
+		if err != nil {
+			return nil, err
+		}
+		message, err := pluginStringArg(args, 1)
+		if err != nil {
+			return nil, err
+		}
+		return nil, a.sessions.SendAdminMessage(playerID, message)
+	case "rc.execute":
+		message, err := pluginStringArg(args, 0)
+		if err != nil {
+			return nil, err
+		}
+		return nil, a.sessions.Execute(message)
+	case "nc.saveWeapon", "nc.saveClass":
+		name, err := pluginStringArg(args, 0)
+		if err != nil {
+			return nil, err
+		}
+		script, err := pluginStringArg(args, 1)
+		if err != nil {
+			return nil, err
+		}
+		if method == "nc.saveWeapon" {
+			return nil, a.sessions.SaveWeapon(name, script)
+		}
+		return nil, a.sessions.SaveClass(name, script)
+	case "nc.saveNPC":
+		idArg, err := pluginIntArg(args, 0)
+		if err != nil {
+			return nil, err
+		}
+		script, err := pluginStringArg(args, 1)
+		if err != nil {
+			return nil, err
+		}
+		return nil, a.sessions.SaveNPC(idArg, script)
+	case "nc.saveNPCFlags":
+		idArg, err := pluginIntArg(args, 0)
+		if err != nil {
+			return nil, err
+		}
+		flags, err := pluginStringArg(args, 1)
+		if err != nil {
+			return nil, err
+		}
+		return nil, a.sessions.SaveNPCFlags(idArg, flags)
+	case "nc.readWeapon", "nc.readClass":
+		name, err := pluginStringArg(args, 0)
+		if err != nil {
+			return nil, err
+		}
+		scriptType := "weapon"
+		if method == "nc.readClass" {
+			scriptType = "class"
+		}
+		return a.sessions.OpenScript(scriptType, name)
+	case "nc.readNPC":
+		idArg, err := pluginIntArg(args, 0)
+		if err != nil {
+			return nil, err
+		}
+		return a.sessions.OpenScript("npc", strconv.Itoa(idArg))
+	case "nc.readNPCFlags", "nc.readNPCAttributes":
+		idArg, err := pluginIntArg(args, 0)
+		if err != nil {
+			return nil, err
+		}
+		if method == "nc.readNPCFlags" {
+			return a.sessions.OpenNPCFlags(idArg)
+		}
+		return a.sessions.OpenNPCAttributes(idArg)
+	case "nc.list":
+		return a.sessions.GetScriptLists(true)
+	case "nc.createWeapon", "nc.deleteWeapon":
+		name, err := pluginStringArg(args, 0)
+		if err != nil {
+			return nil, err
+		}
+		if method == "nc.createWeapon" {
+			return nil, a.sessions.AddWeapon(name)
+		}
+		return nil, a.sessions.DeleteWeapon(name)
+	case "nc.createClass", "nc.deleteClass":
+		name, err := pluginStringArg(args, 0)
+		if err != nil {
+			return nil, err
+		}
+		if method == "nc.createClass" {
+			return nil, a.sessions.AddClass(name)
+		}
+		return nil, a.sessions.DeleteClass(name)
+	case "nc.createNPC":
+		var options struct {
+			Name     string `json:"name"`
+			ID       int    `json:"id"`
+			Type     string `json:"type"`
+			Scripter string `json:"scripter"`
+			Level    string `json:"level"`
+			X        string `json:"x"`
+			Y        string `json:"y"`
+		}
+		if err := pluginJSONArg(args, 0, &options); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(options.Name) == "" {
+			return nil, errors.New("NPC name is required")
+		}
+		return nil, a.sessions.CreateNPC(options.Name, options.ID, options.Type, options.Scripter, options.Level, options.X, options.Y)
+	case "nc.deleteNPC", "nc.resetNPC":
+		idArg, err := pluginIntArg(args, 0)
+		if err != nil {
+			return nil, err
+		}
+		if method == "nc.deleteNPC" {
+			return nil, a.sessions.DeleteNPC(idArg)
+		}
+		return nil, a.sessions.ResetNPC(idArg)
+	case "sockets.open":
+		var request pluginlib.SocketRequest
+		if err := pluginJSONArg(args, 0, &request); err != nil {
+			return nil, err
+		}
+		return a.plugins.OpenSocket(id, request)
+	case "sockets.send":
+		socketID, err := pluginStringArg(args, 0)
+		if err != nil {
+			return nil, err
+		}
+		data, err := pluginStringArg(args, 1)
+		if err != nil {
+			return nil, err
+		}
+		return nil, a.plugins.SendSocket(id, socketID, data)
+	case "sockets.close":
+		socketID, err := pluginStringArg(args, 0)
+		if err != nil {
+			return nil, err
+		}
+		return nil, a.plugins.CloseSocket(id, socketID)
+	case "sockets.closeAll":
+		a.plugins.ClosePluginSockets(id)
+		return nil, nil
+	case "plugins.list":
+		return a.plugins.ListPeers(id)
+	case "plugins.authorize":
+		targetID, err := pluginStringArg(args, 0)
+		if err != nil {
+			return nil, err
+		}
+		return nil, a.plugins.AuthorizePluginMessage(id, targetID)
+	case "express.listen":
+		return a.plugins.ExpressListen(id)
+	case "express.register":
+		methodName, err := pluginStringArg(args, 0)
+		if err != nil {
+			return nil, err
+		}
+		path, err := pluginStringArg(args, 1)
+		if err != nil {
+			return nil, err
+		}
+		return a.plugins.RegisterExpressRoute(id, methodName, path)
+	case "express.unregister":
+		routeID, err := pluginStringArg(args, 0)
+		if err != nil {
+			return nil, err
+		}
+		return nil, a.plugins.UnregisterExpressRoute(id, routeID)
+	case "express.respond":
+		requestID, err := pluginStringArg(args, 0)
+		if err != nil {
+			return nil, err
+		}
+		var response pluginlib.ExpressResponse
+		if err := pluginJSONArg(args, 1, &response); err != nil {
+			return nil, err
+		}
+		return nil, a.plugins.RespondExpressRequest(id, requestID, response)
+	case "express.close":
+		a.plugins.ClosePluginHTTP(id)
+		return nil, nil
+	case "filebrowser.readText":
+		path, err := pluginStringArg(args, 0)
+		if err != nil {
+			return nil, err
+		}
+		return a.pluginReadRemoteText(id, path)
+	case "filebrowser.writeText":
+		var request pluginFileWriteRequest
+		if err := pluginJSONArg(args, 0, &request); err != nil {
+			return nil, err
+		}
+		return a.pluginWriteRemoteText(id, request)
+	case "filebrowser.editor.register":
+		var editor pluginlib.FileEditorRegistration
+		if err := pluginJSONArg(args, 0, &editor); err != nil {
+			return nil, err
+		}
+		return nil, a.plugins.RegisterFileEditor(id, editor)
+	case "filebrowser.editor.unregister":
+		editorID, err := pluginStringArg(args, 0)
+		if err != nil {
+			return nil, err
+		}
+		return nil, a.plugins.UnregisterFileEditor(id, editorID)
+	case "filebrowser.editor.closeAll":
+		a.plugins.ClosePluginEditors(id)
+		return nil, nil
+	case "filebrowser.openResult":
+		requestID, err := pluginStringArg(args, 0)
+		if err != nil {
+			return nil, err
+		}
+		handled := false
+		if len(args) > 1 {
+			if value, ok := args[1].(bool); ok {
+				handled = value
+			}
+		}
+		return nil, a.pluginFileOpenResult(id, requestID, handled)
+	case "monaco.language.register":
+		var language PluginMonacoLanguage
+		if err := pluginJSONArg(args, 0, &language); err != nil {
+			return nil, err
+		}
+		if err := a.PluginMonacoLanguageRegister(id, language); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	case "monaco.language.unregister":
+		languageID, err := pluginStringArg(args, 0)
+		if err != nil {
+			return nil, err
+		}
+		return nil, a.PluginMonacoLanguageUnregister(id, languageID)
+	case "monaco.language.closeAll":
+		return nil, a.PluginMonacoLanguageCloseAll(id)
+	case "monaco.provider.register":
+		kind, err := pluginStringArg(args, 0)
+		if err != nil {
+			return nil, err
+		}
+		language, err := pluginStringArg(args, 1)
+		if err != nil {
+			return nil, err
+		}
+		if kind != "diagnostics" && kind != "completions" {
+			return nil, errors.New("unsupported Monaco provider kind")
+		}
+		if strings.TrimSpace(language) == "" || len(language) > 96 {
+			return nil, errors.New("Monaco language is required")
+		}
+		return nil, nil
+	case "monaco.provider.unregister":
+		return nil, nil
+	case "ui.window.open":
+		var options PluginUIWindowOptions
+		if err := pluginJSONArg(args, 0, &options); err != nil {
+			return nil, err
+		}
+		return a.PluginUIWindowOpen(id, options)
+	case "ui.window.update":
+		windowID, err := pluginStringArg(args, 0)
+		if err != nil {
+			return nil, err
+		}
+		if len(args) < 2 {
+			return nil, errors.New("plugin UI view is required")
+		}
+		return nil, a.PluginUIWindowUpdate(id, windowID, args[1])
+	case "ui.window.close":
+		windowID, err := pluginStringArg(args, 0)
+		if err != nil {
+			return nil, err
+		}
+		return nil, a.PluginUIWindowClose(id, windowID)
+	case "ui.window.closeAll":
+		return nil, a.PluginUIWindowCloseAll(id)
+	default:
+		return nil, errors.New("unknown plugin action: " + method)
+	}
+}
+
+func (a *App) PluginRequest(id string, request PluginHTTPRequest) (PluginHTTPResponse, error) {
+	if a.plugins == nil {
+		return PluginHTTPResponse{}, errors.New("plugin manager is unavailable")
+	}
+	return a.plugins.Request(id, request)
 }
 
 // migrateLegacyCredentials imports the old plaintext credentials.json (written
@@ -673,7 +1432,11 @@ func (a *App) CreateNPC(name string, id int, npcType, scripter, level, x, y stri
 
 // OpenScript fetches a script (weapon/class/npc) and returns its content.
 func (a *App) OpenScript(scriptType, key string) (rclib.ScriptReply, error) {
-	return a.sessions.OpenScript(scriptType, key)
+	reply, err := a.sessions.OpenScript(scriptType, key)
+	if err == nil {
+		a.emitPluginEvent("script.opened", reply)
+	}
+	return reply, err
 }
 
 // SaveWeapon writes a weapon's script back.
@@ -702,6 +1465,7 @@ func (a *App) saveScriptWithSyncExpectation(kind, key, script string, save func(
 		}
 		return err
 	}
+	a.emitPluginEvent("script.saved", kind, key)
 	return nil
 }
 
@@ -717,7 +1481,13 @@ func (a *App) OpenNPCAttributes(id int) (rclib.ScriptReply, error) {
 }
 
 // SaveNPCFlags writes an NPC's flags back.
-func (a *App) SaveNPCFlags(id int, flags string) error { return a.sessions.SaveNPCFlags(id, flags) }
+func (a *App) SaveNPCFlags(id int, flags string) error {
+	if err := a.sessions.SaveNPCFlags(id, flags); err != nil {
+		return err
+	}
+	a.emitPluginEvent("script.saved", "npcflags", strconv.Itoa(id))
+	return nil
+}
 
 // SaveServerText uploads a server-side text config (options/folder_config/
 // flags) edited in a ScriptEditor window back to the server.
@@ -736,10 +1506,22 @@ func (a *App) RefreshWeapons() error { return a.sessions.RefreshWeapons() }
 // --- File browser (main server socket) ---
 
 // FileBrowserStart begins a file-browser session.
-func (a *App) FileBrowserStart() error { return a.sessions.StartFileBrowser() }
+func (a *App) FileBrowserStart() error {
+	if err := a.sessions.StartFileBrowser(); err != nil {
+		return err
+	}
+	a.emitPluginEvent("filebrowser.started")
+	return nil
+}
 
 // FileBrowserCd changes the current browser folder.
-func (a *App) FileBrowserCd(folder string) error { return a.sessions.FileBrowserCd(folder) }
+func (a *App) FileBrowserCd(folder string) error {
+	if err := a.sessions.FileBrowserCd(folder); err != nil {
+		return err
+	}
+	a.emitPluginEvent("filebrowser.selection.changed", folder)
+	return nil
+}
 
 // FileBrowserDelete deletes a remote file.
 func (a *App) FileBrowserDelete(path string) error { return a.sessions.FileBrowserDelete(path) }
@@ -904,6 +1686,15 @@ func osOpenPath(path string) error {
 // OpenRemoteFile downloads a file and opens it by type. Returns a short kind
 // label for the toast. Called on a file double-click.
 func (a *App) OpenRemoteFile(remotePath string) (string, error) {
+	if handled, err := a.requestPluginFileOpen(remotePath); err != nil {
+		return "", err
+	} else if handled {
+		path, pathErr := normalizePluginRemotePath(remotePath)
+		if pathErr == nil {
+			a.emitPluginEvent("filebrowser.file.opened", pluginFileEvent{Path: path, Name: filepath.Base(path), Extension: strings.ToLower(filepath.Ext(path)), Kind: "plugin"})
+		}
+		return "plugin", nil
+	}
 	content, err := a.sessions.DownloadFile(remotePath)
 	if err != nil {
 		return "", err
@@ -923,6 +1714,7 @@ func (a *App) OpenRemoteFile(remotePath string) (string, error) {
 		if err := osOpenPath(local); err != nil {
 			return "", err
 		}
+		a.emitPluginEvent("filebrowser.file.opened", pluginFileEvent{Path: remotePath, Name: name, Extension: "." + ext, Size: int64(len(content)), Kind: "media"})
 		return "media", nil
 	case dbExts[ext]:
 		dir, err := fileCacheDir()
@@ -944,6 +1736,7 @@ func (a *App) OpenRemoteFile(remotePath string) (string, error) {
 		if err := a.openSqliteWindow(remotePath); err != nil {
 			return "", err
 		}
+		a.emitPluginEvent("filebrowser.file.opened", pluginFileEvent{Path: remotePath, Name: name, Extension: "." + ext, Size: int64(len(content)), Kind: "database"})
 		return "database", nil
 	case textExts[ext]:
 		a.openMu.Lock()
@@ -952,6 +1745,7 @@ func (a *App) OpenRemoteFile(remotePath string) (string, error) {
 		if err := a.openTextWindow(remotePath); err != nil {
 			return "", err
 		}
+		a.emitPluginEvent("filebrowser.file.opened", pluginFileEvent{Path: remotePath, Name: name, Extension: "." + ext, Size: int64(len(content)), Kind: "text"})
 		return "text", nil
 	default:
 		// Unknown binary → plain download to the configured folder.
@@ -962,6 +1756,7 @@ func (a *App) OpenRemoteFile(remotePath string) (string, error) {
 		if saved != "" {
 			osOpenPath(saved)
 		}
+		a.emitPluginEvent("filebrowser.file.opened", pluginFileEvent{Path: remotePath, Name: name, Extension: "." + ext, Size: int64(len(content)), Kind: "download"})
 		return "download", nil
 	}
 }
@@ -1500,6 +2295,68 @@ func (a *App) OpenSettings() {
 		a.settingsMu.Lock()
 		a.settingsWindow = nil
 		a.settingsMu.Unlock()
+	})
+}
+
+// OpenPluginManager opens the dedicated, large plugin workspace window.
+func (a *App) OpenPluginManager() {
+	a.pluginWindowMu.Lock()
+	defer a.pluginWindowMu.Unlock()
+	if a.pluginWindow != nil {
+		a.pluginWindow.Show()
+		a.pluginWindow.Focus()
+		return
+	}
+	w := a.app.Window.NewWithOptions(application.WebviewWindowOptions{
+		Name:             "plugins",
+		Title:            "Plugins",
+		URL:              "/#plugins",
+		Width:            1280,
+		Height:           820,
+		MinWidth:         760,
+		MinHeight:        560,
+		Frameless:        true,
+		BackgroundColour: application.NewRGB(15, 17, 21),
+	})
+	a.pluginWindow = w
+	w.Show()
+	w.Focus()
+	w.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
+		a.pluginWindowMu.Lock()
+		a.pluginWindow = nil
+		a.pluginWindowMu.Unlock()
+	})
+}
+
+// OpenPluginDocumentation opens (or focuses) the standalone plugin SDK
+// reference. Keeping documentation in its own window lets authors read the
+// API while the editor stays visible in the plugin workspace.
+func (a *App) OpenPluginDocumentation() {
+	a.pluginDocsWindowMu.Lock()
+	defer a.pluginDocsWindowMu.Unlock()
+	if a.pluginDocsWindow != nil {
+		a.pluginDocsWindow.Show()
+		a.pluginDocsWindow.Focus()
+		return
+	}
+	w := a.app.Window.NewWithOptions(application.WebviewWindowOptions{
+		Name:             "plugin-documentation",
+		Title:            "Plugin Documentation",
+		URL:              "/#plugin-docs",
+		Width:            1040,
+		Height:           820,
+		MinWidth:         680,
+		MinHeight:        560,
+		Frameless:        true,
+		BackgroundColour: application.NewRGB(15, 17, 21),
+	})
+	a.pluginDocsWindow = w
+	w.Show()
+	w.Focus()
+	w.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
+		a.pluginDocsWindowMu.Lock()
+		a.pluginDocsWindow = nil
+		a.pluginDocsWindowMu.Unlock()
 	})
 }
 

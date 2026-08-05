@@ -1,13 +1,13 @@
 [Desktop Entry]
 Version=1.0
-Name=My Product
-Comment=A v3ref application
+Name=Graal Remote Control
+Comment=Graal Remote Control client
 # The Exec line includes %u to pass the URL to the application
-Exec=/usr/local/bin/v3ref.exe %u
+Exec=/usr/local/bin/graal-rc %u
 Terminal=false
 Type=Application
-Icon=v3ref.exe
+Icon=graal-rc
 Categories=Utility;
-StartupWMClass=v3ref.exe
+StartupWMClass=graal-rc
 
  

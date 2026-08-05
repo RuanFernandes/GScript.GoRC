@@ -5,6 +5,7 @@ package rclib
 import (
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"unsafe"
 )
@@ -56,6 +57,7 @@ func loadProcs(path string) error {
 	// directory to the search path makes them resolve.
 	if dirUTF16, e := syscall.UTF16PtrFromString(filepath.Dir(path)); e == nil {
 		procSetDllDirectoryW.Call(uintptr(unsafe.Pointer(dirUTF16)))
+		runtime.KeepAlive(dirUTF16)
 	}
 	h, err := syscall.LoadLibrary(path)
 	if err != nil {

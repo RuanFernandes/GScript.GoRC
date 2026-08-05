@@ -33,7 +33,7 @@ interface MonacoInstance {
     setModelMarkers(model: unknown, owner: string, markers: MonacoMarker[]): void
   }
   languages: {
-    register(language: {id: string}): void
+    register(language: {id: string; extensions?: string[]; aliases?: string[]}): {dispose(): void}
     setMonarchTokensProvider(languageId: string, provider: unknown): void
     setLanguageConfiguration(languageId: string, config: unknown): void
     registerCompletionItemProvider(languageId: string, provider: unknown): {dispose(): void}
@@ -86,6 +86,9 @@ export function ScriptEditorWindowScreen() {
   const monacoRef = useRef<MonacoInstance | null>(null)
   const lspClientRef = useRef<GraalScriptLspClient | null>(null)
   const lspRegistrationRef = useRef<{dispose(): void} | null>(null)
+  const pluginCompletionRegistrationRef = useRef<{dispose(): void} | null>(null)
+  const pluginDiagnosticsTimerRef = useRef<number | null>(null)
+  const pluginDiagnosticsGenerationRef = useRef(0)
   const applyDiagnosticsRef = useRef<(diagnostics: GraalScriptDiagnostic[]) => void>(() => {})
   const diagnosticsRef = useRef<GraalScriptDiagnostic[]>([])
   const pendingLspUpdateRef = useRef<Promise<void>>(Promise.resolve())
@@ -105,6 +108,35 @@ export function ScriptEditorWindowScreen() {
   const [confirmSaveWithErrors, setConfirmSaveWithErrors] = useState(false)
   const [saveDiagnostics, setSaveDiagnostics] = useState<GraalScriptDiagnostic[]>([])
   const [closingAfterSave, setClosingAfterSave] = useState(false)
+  const pluginLanguage = kind === "options" || kind === "folder_config" || kind === "flags" || kind === "npcflags"
+    ? "serverconfig"
+    : kind === "npcattr" ? "ini" : "graalscript"
+
+  const requestPluginDiagnostics = useCallback(async () => {
+    const model = editorRef.current?.getModel()
+    if (!model || !monacoRef.current) return
+    const generation = ++pluginDiagnosticsGenerationRef.current
+    try {
+      const response = await rcService.pluginMonacoRequest("diagnostics", pluginLanguage, {
+        language: pluginLanguage,
+        uri: model.uri.toString(),
+        text: model.getValue(),
+      })
+      if (generation !== pluginDiagnosticsGenerationRef.current || !monacoRef.current) return
+      const diagnostics = Array.isArray(response) ? response : []
+      monacoRef.current.editor.setModelMarkers(model, "gorc-plugin", diagnostics.map(toPluginMarker).filter((marker): marker is MonacoMarker => marker !== null))
+    } catch {
+      // Plugin diagnostics are optional; the built-in LSP remains authoritative.
+    }
+  }, [pluginLanguage])
+
+  const schedulePluginDiagnostics = useCallback(() => {
+    if (pluginDiagnosticsTimerRef.current !== null) window.clearTimeout(pluginDiagnosticsTimerRef.current)
+    pluginDiagnosticsTimerRef.current = window.setTimeout(() => {
+      pluginDiagnosticsTimerRef.current = null
+      void requestPluginDiagnostics()
+    }, 220)
+  }, [requestPluginDiagnostics])
 
   // The script payload was already fetched by OpenScriptEditor before this
   // window was created (so a no-permission/no-response script never opens a
@@ -246,6 +278,35 @@ export function ScriptEditorWindowScreen() {
 
       const m = monaco as unknown as MonacoInstance
       const model = (editor as unknown as EditorInstance).getModel()
+      if (model) {
+        pluginCompletionRegistrationRef.current?.dispose()
+        pluginCompletionRegistrationRef.current = m.languages.registerCompletionItemProvider(pluginLanguage, {
+          triggerCharacters: [".", ":", "@"],
+          provideCompletionItems: async (_currentModel: unknown, position: {lineNumber: number; column: number}) => {
+            try {
+              const response = await rcService.pluginMonacoRequest("completions", pluginLanguage, {
+                language: pluginLanguage,
+                uri: model.uri.toString(),
+                text: model.getValue(),
+                position: {line: position.lineNumber, column: position.column},
+              })
+              const suggestions = Array.isArray(response) ? response.filter(value => value && typeof value === "object") : []
+              return {suggestions: suggestions.map(value => {
+                const item = value as {label?: unknown; insertText?: unknown; detail?: unknown; documentation?: unknown}
+                return {
+                  label: typeof item.label === "string" ? item.label : "plugin completion",
+                  insertText: typeof item.insertText === "string" ? item.insertText : String(item.label ?? ""),
+                  detail: typeof item.detail === "string" ? item.detail : undefined,
+                  documentation: typeof item.documentation === "string" ? item.documentation : undefined,
+                }
+              })}
+            } catch {
+              return {suggestions: []}
+            }
+          },
+        })
+        void requestPluginDiagnostics()
+      }
       const supportsGraalScriptLsp = kind === "weapon" || kind === "class" || kind === "npc"
       if (model && supportsGraalScriptLsp) {
         const client = new GraalScriptLspClient()
@@ -281,7 +342,7 @@ export function ScriptEditorWindowScreen() {
         })()
       }
     },
-    [doSave, key, kind],
+    [doSave, key, kind, pluginLanguage, requestPluginDiagnostics],
   )
 
   useEffect(() => {
@@ -290,6 +351,13 @@ export function ScriptEditorWindowScreen() {
       applyDiagnosticsRef.current = () => {}
       lspRegistrationRef.current?.dispose()
       lspRegistrationRef.current = null
+      pluginCompletionRegistrationRef.current?.dispose()
+      pluginCompletionRegistrationRef.current = null
+      if (pluginDiagnosticsTimerRef.current !== null) window.clearTimeout(pluginDiagnosticsTimerRef.current)
+      pluginDiagnosticsTimerRef.current = null
+      pluginDiagnosticsGenerationRef.current++
+      const model = editorRef.current?.getModel()
+      if (model && monacoRef.current) monacoRef.current.editor.setModelMarkers(model, "gorc-plugin", [])
       const client = lspClientRef.current
       lspClientRef.current = null
       diagnosticsRef.current = []
@@ -302,6 +370,30 @@ export function ScriptEditorWindowScreen() {
   useEffect(() => {
     editorRef.current?.updateOptions({fontFamily: settings.fontFamily, fontSize: settings.fontSize})
   }, [settings.fontFamily, settings.fontSize])
+
+  useEffect(() => {
+    if (!editorReady || !monacoRef.current) return
+    let active = true
+    const registrations: Array<{dispose(): void}> = []
+    const refreshLanguages = async () => {
+      registrations.splice(0).forEach(registration => registration.dispose())
+      try {
+        const languages = await rcService.getPluginMonacoLanguages()
+        if (!active || !monacoRef.current) return
+        for (const language of languages ?? []) {
+          if (!language.id.trim()) continue
+          try { registrations.push(monacoRef.current.languages.register(language)) } catch { /* another provider may own this global language id */ }
+        }
+      } catch { /* plugin language metadata is optional */ }
+    }
+    void refreshLanguages()
+    const offLanguages = Events.On("plugin:monaco-languages", () => void refreshLanguages())
+    return () => {
+      active = false
+      offLanguages()
+      registrations.forEach(registration => registration.dispose())
+    }
+  }, [editorReady])
 
   // Cached remote theme definition (from the gallery), loaded on mount + on the
   // rc:remoteTheme broadcast so a newly picked theme applies live.
@@ -459,6 +551,7 @@ export function ScriptEditorWindowScreen() {
                   })
                   .catch(() => {})
               }
+              schedulePluginDiagnostics()
             }}
             options={{
               fontFamily: settings.fontFamily,
@@ -545,6 +638,43 @@ function toMonacoMarker(diagnostic: GraalScriptDiagnostic): MonacoMarker {
 
 function monacoMarkerSeverity(severity: number | undefined): number {
   switch (severity) {
+    case 2: return 4 // Warning
+    case 3: return 2 // Info
+    case 4: return 1 // Hint
+    default: return 8 // Error
+  }
+}
+
+function toPluginMarker(value: unknown): MonacoMarker | null {
+  if (!value || typeof value !== "object") return null
+  const diagnostic = value as {
+    message?: unknown
+    severity?: unknown
+    startLine?: unknown
+    startColumn?: unknown
+    endLine?: unknown
+    endColumn?: unknown
+    source?: unknown
+  }
+  if (typeof diagnostic.message !== "string") return null
+  const startLine = Number(diagnostic.startLine)
+  const startColumn = Number(diagnostic.startColumn)
+  const endLine = Number(diagnostic.endLine)
+  const endColumn = Number(diagnostic.endColumn)
+  if (![startLine, startColumn, endLine, endColumn].every(Number.isFinite)) return null
+  return {
+    startLineNumber: Math.max(1, Math.floor(startLine)),
+    startColumn: Math.max(1, Math.floor(startColumn)),
+    endLineNumber: Math.max(1, Math.floor(endLine)),
+    endColumn: Math.max(1, Math.floor(endColumn)),
+    severity: pluginMarkerSeverity(diagnostic.severity),
+    message: diagnostic.message,
+    source: typeof diagnostic.source === "string" ? diagnostic.source : "gorc-plugin",
+  }
+}
+
+function pluginMarkerSeverity(value: unknown): number {
+  switch (Number(value)) {
     case 2: return 4 // Warning
     case 3: return 2 // Info
     case 4: return 1 // Hint

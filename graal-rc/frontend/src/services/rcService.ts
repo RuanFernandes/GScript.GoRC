@@ -32,6 +32,7 @@ import type {
   PMState,
   CustomTheme,
 } from "@/types"
+import type {PluginBuildResult, PluginFile, PluginInfo, PluginLogEntry, PluginMonacoLanguage, PluginUIWindowInfo} from "@/plugins/types"
 
 // The v3 bindings resolve to null on the "no result" path and reject on error;
 // callers treat null as "empty/none" and rely on try/catch for real errors.
@@ -130,6 +131,41 @@ export interface RcService {
   getRemoteTheme(): Promise<RemoteTheme | null>
   saveRemoteTheme(name: string, definition: string): Promise<void>
   openSettings(): Promise<void>
+  openPluginManager(): Promise<void>
+  openPluginDocumentation(): Promise<void>
+  openPluginsFolder(): Promise<void>
+  createPluginTemplate(name: string): Promise<PluginInfo | null>
+  getPluginFiles(id: string): Promise<string[] | null>
+  readPluginFile(id: string, path: string): Promise<PluginFile | null>
+  writePluginFile(id: string, path: string, content: string): Promise<void>
+  buildPlugin(id: string): Promise<PluginBuildResult | null>
+  reloadPlugin(id: string): Promise<void>
+  getPluginLogs(id: string): Promise<PluginLogEntry[] | null>
+  clearPluginLogs(id: string): Promise<void>
+  appendPluginLog(id: string, level: string, message: string): Promise<void>
+  exportPlugin(id: string): Promise<string>
+  getPlugins(): Promise<PluginInfo[] | null>
+  refreshPlugins(): Promise<void>
+  setPluginEnabled(id: string, enabled: boolean): Promise<void>
+  recordPluginFailure(id: string): Promise<boolean>
+  recordPluginSuccess(id: string): Promise<void>
+  approvePluginPermissions(id: string, permissions: {events?: string[]; apis?: string[]; network?: string[]; plugins?: string[]; files?: {read?: string[]; write?: string[]}}): Promise<void>
+  removePlugin(id: string): Promise<void>
+  getPluginDirectory(): Promise<string>
+  getPluginBundle(id: string): Promise<string>
+  pluginStorageGet(id: string, key: string): Promise<string | null>
+  pluginStorageSet(id: string, key: string, value: string): Promise<void>
+  pluginStorageDelete(id: string, key: string): Promise<void>
+  pluginSecretGet(id: string, key: string): Promise<string | null>
+  pluginSecretSet(id: string, key: string, value: string): Promise<void>
+  pluginSecretDelete(id: string, key: string): Promise<void>
+  pluginCall(id: string, method: string, args: unknown[]): Promise<unknown>
+  pluginRequest(id: string, request: {url: string; method?: string; headers?: Record<string, string>; body?: string}): Promise<{status: number; headers: Record<string, string>; body: string}>
+  pluginMonacoRequest(kind: "diagnostics" | "completions", language: string, context: unknown): Promise<unknown>
+  pluginMonacoResult(requestId: string, pluginId: string, value: unknown, errorMessage?: string): Promise<void>
+  getPluginMonacoLanguages(): Promise<PluginMonacoLanguage[] | null>
+  getPluginUIWindow(pluginId: string, windowId: string): Promise<PluginUIWindowInfo>
+  pluginUIAction(pluginId: string, windowId: string, action: string, value: unknown): Promise<void>
   // File browser (main server socket).
   openFileBrowser(): Promise<void>
   fileBrowserStart(): Promise<void>
@@ -287,6 +323,133 @@ export const rcService: RcService = {
   getRemoteTheme: () => App.GetRemoteTheme(),
   saveRemoteTheme: (name, definition) => App.SaveRemoteTheme(name, definition),
   openSettings: () => App.OpenSettings(),
+  openPluginManager: () => App.OpenPluginManager(),
+  openPluginDocumentation: () => App.OpenPluginDocumentation(),
+  openPluginsFolder: () => App.OpenPluginsFolder(),
+  createPluginTemplate: async (name) => {
+    const info = await App.CreatePluginTemplate(name)
+    if (!info) return null
+    return {
+      manifest: {
+        id: info.manifest?.id ?? "",
+        name: info.manifest?.name ?? "",
+        version: info.manifest?.version ?? "",
+        apiVersion: info.manifest?.apiVersion ?? 0,
+        main: info.manifest?.main ?? "",
+        description: info.manifest?.description ?? undefined,
+        permissions: info.manifest?.permissions ? {
+          events: info.manifest.permissions.events ?? undefined,
+          apis: info.manifest.permissions.apis ?? undefined,
+          network: info.manifest.permissions.network ?? undefined,
+          plugins: info.manifest.permissions.plugins ?? undefined,
+          files: info.manifest.permissions.files ? {read: info.manifest.permissions.files.read ?? undefined, write: info.manifest.permissions.files.write ?? undefined} : undefined,
+        } : undefined,
+      },
+      directory: info.directory ?? "",
+      enabled: info.enabled,
+      status: info.status,
+      error: info.error ?? undefined,
+      approvedEvents: info.approvedEvents ?? undefined,
+      approvedApis: info.approvedApis ?? undefined,
+      approvedHosts: info.approvedHosts ?? undefined,
+      approvedPlugins: info.approvedPlugins ?? undefined,
+      approvedFileRead: info.approvedFileRead ?? undefined,
+      approvedFileWrite: info.approvedFileWrite ?? undefined,
+      failureCount: info.failureCount,
+    }
+  },
+  getPluginFiles: (id) => App.GetPluginFiles(id),
+  readPluginFile: async (id, path) => {
+    const file = await App.ReadPluginFile(id, path)
+    return file ? {path: file.path, content: file.content} : null
+  },
+  writePluginFile: (id, path, content) => App.WritePluginFile(id, path, content),
+  buildPlugin: async (id) => {
+    const result = await App.BuildPlugin(id)
+    if (!result) return null
+    return {
+      plugin: result.plugin as unknown as PluginInfo,
+      success: result.success,
+      message: result.message,
+    }
+  },
+  reloadPlugin: (id) => App.ReloadPlugin(id),
+  getPluginLogs: async (id) => {
+    const logs = await App.GetPluginLogs(id)
+    return (logs ?? []).map((entry): PluginLogEntry => ({timestamp: entry.timestamp, level: entry.level, message: entry.message}))
+  },
+  clearPluginLogs: (id) => App.ClearPluginLogs(id),
+  appendPluginLog: (id, level, message) => App.AppendPluginLog(id, level, message),
+  exportPlugin: (id) => App.ExportPlugin(id),
+  getPlugins: async () => {
+    const list = await App.GetPlugins()
+    return (list ?? []).map((item) => ({
+      manifest: {
+        id: item.manifest?.id ?? "",
+        name: item.manifest?.name ?? "",
+        version: item.manifest?.version ?? "",
+        apiVersion: item.manifest?.apiVersion ?? 0,
+        main: item.manifest?.main ?? "",
+        description: item.manifest?.description ?? undefined,
+        permissions: item.manifest?.permissions ? {
+          events: item.manifest.permissions.events ?? undefined,
+          apis: item.manifest.permissions.apis ?? undefined,
+          network: item.manifest.permissions.network ?? undefined,
+          plugins: item.manifest.permissions.plugins ?? undefined,
+          files: item.manifest.permissions.files ? {read: item.manifest.permissions.files.read ?? undefined, write: item.manifest.permissions.files.write ?? undefined} : undefined,
+        } : undefined,
+      },
+      directory: item.directory ?? "",
+      enabled: item.enabled,
+      status: item.status,
+      error: item.error ?? undefined,
+      approvedEvents: item.approvedEvents ?? undefined,
+      approvedApis: item.approvedApis ?? undefined,
+      approvedHosts: item.approvedHosts ?? undefined,
+      approvedPlugins: item.approvedPlugins ?? undefined,
+      approvedFileRead: item.approvedFileRead ?? undefined,
+      approvedFileWrite: item.approvedFileWrite ?? undefined,
+      failureCount: item.failureCount,
+    }))
+  },
+  refreshPlugins: () => App.RefreshPlugins(),
+  setPluginEnabled: (id, enabled) => App.SetPluginEnabled(id, enabled),
+  recordPluginFailure: async (id) => {
+    const result = await App.RecordPluginFailure(id)
+    return result ?? false
+  },
+  recordPluginSuccess: (id) => App.RecordPluginSuccess(id),
+  approvePluginPermissions: (id, permissions) => App.ApprovePluginPermissions(id, permissions),
+  removePlugin: (id) => App.RemovePlugin(id),
+  getPluginDirectory: () => App.GetPluginDirectory(),
+  getPluginBundle: (id) => App.GetPluginBundle(id),
+  pluginStorageGet: async (id, key) => {
+    const result = await App.PluginStorageGet(id, key)
+    return result?.[1] ? result[0] : null
+  },
+  pluginStorageSet: (id, key, value) => App.PluginStorageSet(id, key, value),
+  pluginStorageDelete: (id, key) => App.PluginStorageDelete(id, key),
+  pluginSecretGet: async (id, key) => {
+    const result = await App.PluginSecretGet(id, key)
+    return result?.[1] ? result[0] : null
+  },
+  pluginSecretSet: (id, key, value) => App.PluginSecretSet(id, key, value),
+  pluginSecretDelete: (id, key) => App.PluginSecretDelete(id, key),
+  pluginCall: (id, method, args) => App.PluginCall(id, method, args),
+  pluginRequest: async (id, request) => {
+    const response = await App.PluginRequest(id, request)
+    const headers: Record<string, string> = {}
+    for (const [key, value] of Object.entries(response.headers ?? {})) if (value !== undefined) headers[key] = value
+    return {status: response.status, headers, body: response.body ?? ""}
+  },
+  pluginMonacoRequest: (kind, language, context) => App.PluginMonacoRequest(kind, language, context),
+  pluginMonacoResult: (requestId, pluginId, value, errorMessage = "") => App.PluginMonacoResult(requestId, pluginId, value, errorMessage),
+  getPluginMonacoLanguages: async () => {
+    const languages = await App.GetPluginMonacoLanguages()
+    return (languages ?? []).map(language => ({id: language.id ?? "", extensions: language.extensions ?? undefined, aliases: language.aliases ?? undefined}))
+  },
+  getPluginUIWindow: async (pluginId, windowId) => App.GetPluginUIWindow(pluginId, windowId) as Promise<PluginUIWindowInfo>,
+  pluginUIAction: (pluginId, windowId, action, value) => App.PluginUIAction(pluginId, windowId, action, value),
   // File browser (main server socket).
   openFileBrowser: () => App.OpenFileBrowser(),
   fileBrowserStart: () => App.FileBrowserStart(),

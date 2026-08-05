@@ -12,10 +12,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+
+	"graal-rc/internal/fileutil"
 )
 
 // errEmpty mirrors dpapi_windows.go for zero-length inputs.
 var errEmpty = errors.New("dpapi: empty data")
+var vaultKeyMu sync.Mutex
 
 // Windows binds the vault key to the OS user via DPAPI (CryptProtectData). There
 // is no DPAPI equivalent on Linux/macOS, so a random AES-256 key is generated
@@ -41,20 +45,41 @@ func keyPath() (string, error) {
 // loadKey returns the per-user master key, generating + persisting it on first
 // use. The key is hex-encoded on disk so it is not raw bytes sitting in a file.
 func loadKey() ([]byte, error) {
+	vaultKeyMu.Lock()
+	defer vaultKeyMu.Unlock()
+
 	p, err := keyPath()
 	if err != nil {
 		return nil, err
 	}
-	if raw, rerr := os.ReadFile(p); rerr == nil {
-		if k, derr := hex.DecodeString(strings.TrimSpace(string(raw))); derr == nil && len(k) == 32 {
-			return k, nil
+	raw, ok, err := fileutil.ReadAndRecover(p, 0o600, func(data []byte) error {
+		decoded, decodeErr := hex.DecodeString(strings.TrimSpace(string(data)))
+		if decodeErr != nil || len(decoded) != 32 {
+			return errors.New("invalid vault key")
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		key, err := hex.DecodeString(strings.TrimSpace(string(raw)))
+		if err != nil || len(key) != 32 {
+			return nil, errors.New("invalid vault key")
+		}
+		return key, nil
 	}
 	k := make([]byte, 32)
 	if _, err := rand.Read(k); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(p, []byte(hex.EncodeToString(k)), 0o600); err != nil {
+	if err := fileutil.AtomicWriteFileWithValidator(p, []byte(hex.EncodeToString(k)), 0o600, func(current []byte) error {
+		decoded, decodeErr := hex.DecodeString(strings.TrimSpace(string(current)))
+		if decodeErr != nil || len(decoded) != 32 {
+			return errors.New("invalid vault key")
+		}
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 	return k, nil

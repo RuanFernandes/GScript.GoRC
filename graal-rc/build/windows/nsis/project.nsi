@@ -10,20 +10,19 @@ Unicode true
 ## For development first make a wails nsis build to populate the "wails_tools.nsh":
 ## > wails build --target windows/amd64 --nsis
 ## Then you can call makensis on this file with specifying the path to your binary:
-## For a AMD64 only installer:
-## > makensis -DARG_WAILS_AMD64_BINARY=..\..\bin\app.exe
-## For a ARM64 only installer:
-## > makensis -DARG_WAILS_ARM64_BINARY=..\..\bin\app.exe
-## For a installer with both architectures:
-## > makensis -DARG_WAILS_AMD64_BINARY=..\..\bin\app-amd64.exe -DARG_WAILS_ARM64_BINARY=..\..\bin\app-arm64.exe
+## Graal RC currently ships an amd64 executable and rclib/grclib64.dll only.
+## Use the Windows Taskfile to supply the binary, native library, and metadata.
 ####
-## The following information is taken from the wails_tools.nsh file, but they can be overwritten here.
+## The supported build path is `wails3 task windows:create:nsis:installer`.
+## compile-nsis.ps1 supplies the INFO_* defines from build/windows/info.json,
+## which is generated from build/config.yml. Keep installer behavior here and
+## do not duplicate the product version in this file.
 ####
-## !define INFO_PROJECTNAME    "my-project" # Default "v3ref"
-## !define INFO_COMPANYNAME    "My Company" # Default "My Company"
-## !define INFO_PRODUCTNAME    "My Product Name" # Default "My Product"
-## !define INFO_PRODUCTVERSION "1.0.0"     # Default "0.1.0"
-## !define INFO_COPYRIGHT      "(c) Now, My Company" # Default "© 2026, My Company"
+## !define INFO_PROJECTNAME    "my-project"
+## !define INFO_COMPANYNAME    "Company Name"
+## !define INFO_PRODUCTNAME    "Product Name"
+## INFO_PRODUCTVERSION is supplied by the generated Windows metadata.
+## !define INFO_COPYRIGHT      "(c) 2026, Company Name"
 ###
 ## !define PRODUCT_EXECUTABLE  "Application.exe"      # Default "${INFO_PROJECTNAME}.exe"
 ## !define UNINST_KEY_NAME     "UninstKeyInRegistry"  # Default "${INFO_COMPANYNAME}${INFO_PRODUCTNAME}"
@@ -34,14 +33,13 @@ Unicode true
 ## Include the wails tools
 ####
 
-# Project branding (override the wails_tools.nsh template defaults so the
-# installer is named and registered as graal-rc, not "v3ref"/"My Product").
-!define INFO_PROJECTNAME    "graal-rc"
-!define INFO_COMPANYNAME    "RuanFernandes"
-!define INFO_PRODUCTNAME    "Graal Remote Control"
-!define INFO_PRODUCTVERSION "0.1.0"
-!define INFO_COPYRIGHT      "© 2026, RuanFernandes"
-!define PRODUCT_EXECUTABLE  "graal-rc.exe"
+!ifndef ARG_GRCLIB_DLL
+    !error "Graal RC: ARG_GRCLIB_DLL must point to the native amd64 rclib/grclib64.dll file."
+!endif
+
+!ifndef ARG_GRCLIB_FILE
+    !define ARG_GRCLIB_FILE "grclib64.dll"
+!endif
 
 !include "wails_tools.nsh"
 
@@ -92,10 +90,16 @@ ShowInstDetails show # This will always show the installation details.
 
 Function .onInit
    !insertmacro wails.checkArchitecture
+   !insertmacro wails.checkAppClosed StrStr
+FunctionEnd
+
+Function un.onInit
+   !insertmacro wails.checkAppClosed UnStrStr
 FunctionEnd
 
 Section
     !insertmacro wails.setShellContext
+    !insertmacro wails.checkAppClosed StrStr
 
     !insertmacro wails.webview2runtime
 
@@ -105,7 +109,7 @@ Section
 
     # Bundle grclib.dll (the RC C library) next to the executable so the Go
     # runtime finds it via its exe-dir search path at startup.
-    File "${ARG_GRCLIB_DLL}"
+    File "/oname=${ARG_GRCLIB_FILE}" "${ARG_GRCLIB_DLL}"
 
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
     CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
@@ -118,8 +122,7 @@ SectionEnd
 
 Section "uninstall" 
     !insertmacro wails.setShellContext
-
-    RMDir /r "$AppData\${PRODUCT_EXECUTABLE}" # Remove the WebView2 DataPath
+    !insertmacro wails.checkAppClosed UnStrStr
 
     RMDir /r $INSTDIR
 
