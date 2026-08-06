@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -41,9 +42,10 @@ var (
 // frontend. It delegates session logic to the connection Service and account
 // storage to the credentials Vault (Single Responsibility).
 type App struct {
-	app      *application.App
-	sessions *connection.Service
-	vault    *credentials.Vault
+	app       *application.App
+	sessions  *connection.Service
+	vault     *credentials.Vault
+	mcpServer *http.Server
 
 	// mainWindow is the account/server/RC window; hidden to the tray instead of
 	// quit when a server session is active. quitting bypasses the hide hook.
@@ -202,6 +204,7 @@ func NewApp() *App {
 // ordering (the chat burst otherwise scrambles).
 func (a *App) attach(app *application.App) {
 	a.app = app
+	a.startMCPServer()
 	if a.plugins != nil {
 		a.plugins.SetRuntimeEmitter(func(name string, data any) {
 			payload, err := json.Marshal(data)
@@ -1416,8 +1419,31 @@ func (a *App) AddWeapon(name string) error { return a.sessions.AddWeapon(name) }
 // DeleteWeapon deletes a weapon by name.
 func (a *App) DeleteWeapon(name string) error { return a.sessions.DeleteWeapon(name) }
 
-// AddClass creates a class by name.
-func (a *App) AddClass(name string) error { return a.sessions.AddClass(name) }
+// AddClass creates a class by name and immediately gives it a valid first line.
+// Some servers reject a newly-created class whose script body is empty.
+func (a *App) AddClass(name string) error {
+	if err := a.sessions.AddClass(name); err != nil {
+		return err
+	}
+	if err := a.sessions.SaveClass(name, initialClassScript(a.sessions.Status())); err != nil {
+		return fmt.Errorf("class %q was created but its initial script could not be written: %w", name, err)
+	}
+	return nil
+}
+
+func initialClassScript(status connection.Status) string {
+	author := strings.TrimSpace(status.CommunityName)
+	if author == "" {
+		author = strings.TrimSpace(status.Account)
+	}
+	if author == "" {
+		author = strings.TrimSpace(status.RealAccount)
+	}
+	if author == "" {
+		author = "unknown"
+	}
+	return "// Scripted by " + author
+}
 
 // DeleteClass deletes a class by name.
 func (a *App) DeleteClass(name string) error { return a.sessions.DeleteClass(name) }

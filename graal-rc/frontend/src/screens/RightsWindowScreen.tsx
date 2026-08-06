@@ -15,6 +15,7 @@ import {Tabs, TabsContent, TabsList, TabsTrigger} from "@/components/ui/tabs"
 import {rcService} from "@/services/rcService"
 import type {RightsData} from "@/types"
 import {cn} from "@/lib/utils"
+import {useLanguage} from "@/hooks/useLanguage"
 
 const RIGHTS_LAYOUT: {label: string; bit: number}[] = [
   {label: "Warpto XY", bit: 0},
@@ -46,6 +47,7 @@ function readAccount(): string {
 }
 
 export function RightsWindowScreen() {
+  const {t} = useLanguage()
   const account = readAccount()
   const [data, setData] = useState<RightsData | null>(null)
   const [loading, setLoading] = useState(true)
@@ -81,9 +83,9 @@ export function RightsWindowScreen() {
     setSaving(true)
     try {
       await rcService.setRights(target, flags, ipRange, folders)
-      toast.success(`Rights saved for ${target}`)
+      toast.success(t("rights.saved", {account: target}))
     } catch (e) {
-      toast.error("Save failed", {description: e instanceof Error ? e.message : String(e)})
+      toast.error(t("common.saveFailed"), {description: e instanceof Error ? e.message : String(e)})
     } finally {
       setSaving(false)
     }

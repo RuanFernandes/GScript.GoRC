@@ -22,6 +22,8 @@ export type {
   SqliteInfo,
   SqliteResult,
   SqliteTable,
+  MCPAgentStatus,
+  MCPSetupResult,
 } from "../../bindings/graal-rc/models"
 export type {
   SyncConfig,

@@ -63,6 +63,8 @@ type Service struct {
 	ncRequestMu     sync.Mutex // serializes brief NC sends and synchronous mutations
 	emitMu          sync.RWMutex
 	emit            func(name string, data ...any)
+	chatMu          sync.RWMutex
+	chatHistory     []ChatLine
 
 	// maxUpload is the latest server-reported max upload size (bytes), pushed via
 	// the MaxUploadSize callback. 0 means unknown. Guarded by mu.
@@ -503,12 +505,48 @@ type channelState struct {
 	leaveAt time.Time
 }
 
+// ChatLine is an RC Chat message captured by the active session.
+type ChatLine struct {
+	Text      string
+	Timestamp time.Time
+}
+
 // channelLeaveCooldown is how long a PART waits before it actually removes the
 // channel, giving a rejoin (JOIN) time to cancel it.
 const channelLeaveCooldown = 600 * time.Millisecond
 
 // NewService returns an empty service.
 func NewService() *Service { return &Service{} }
+
+// ChatHistory returns the most recent RC chat lines with capture timestamps.
+// The returned slice is a copy and is safe for callers to retain.
+func (s *Service) ChatHistory(limit int) []ChatLine {
+	if limit <= 0 || limit > 50 {
+		limit = 50
+	}
+	s.chatMu.RLock()
+	defer s.chatMu.RUnlock()
+	start := len(s.chatHistory) - limit
+	if start < 0 {
+		start = 0
+	}
+	return append([]ChatLine(nil), s.chatHistory[start:]...)
+}
+
+func (s *Service) appendChatHistory(text string) {
+	s.chatMu.Lock()
+	s.chatHistory = append(s.chatHistory, ChatLine{Text: text, Timestamp: time.Now().UTC()})
+	if len(s.chatHistory) > 1000 {
+		s.chatHistory = s.chatHistory[len(s.chatHistory)-1000:]
+	}
+	s.chatMu.Unlock()
+}
+
+func (s *Service) clearChatHistory() {
+	s.chatMu.Lock()
+	s.chatHistory = nil
+	s.chatMu.Unlock()
+}
 
 // displayServerName strips a raw listserver server name's single-letter type
 // prefix + space (e.g. "H Testbed3d" → "Testbed3d", "P …" gold, "U …" classic).
@@ -1187,11 +1225,13 @@ func (s *Service) connectToServer(ctx context.Context, index int) error {
 			s.serverName = ""
 			s.mu.Unlock()
 			s.clearSelfFolderRights()
+			s.clearChatHistory()
 			s.clearServerTextCacheIfCurrent(epoch)
 			s.emitEvent("rc:disconnected", reason)
 			s.emitEvent("rc:channels", s.resetChannels())
 		},
 		Message: func(text string) {
+			s.appendChatHistory(text)
 			s.handleRCMessage(text)
 			s.emitEvent("rc:message", text)
 		},
