@@ -67,6 +67,7 @@ func main() {
 
 	// System tray + hide-to-tray-on-close (while a server session is active).
 	a.setupTray(mainWindow)
+	startWebviewWakeWatchdog(a)
 
 	if err := app.Run(); err != nil {
 		log.Fatal(err)
