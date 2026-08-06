@@ -24,6 +24,7 @@ func applicationOptions(a *App) application.Options {
 				"--disable-background-timer-throttling",
 				"--disable-renderer-backgrounding",
 				"--disable-backgrounding-occluded-windows",
+				"--disable-features=CalculateNativeWinOcclusion",
 			},
 		},
 		OnShutdown:   a.shutdown,
@@ -46,6 +47,7 @@ func applicationOptions(a *App) application.Options {
 func main() {
 	initFileLogger()
 	InstallCrashHandler()
+	disableWindowsPowerThrottling()
 
 	a := NewApp()
 
