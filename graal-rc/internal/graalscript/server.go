@@ -781,7 +781,7 @@ func (s *LanguageServer) signatureHelp(params TextDocumentPositionParams) *Signa
 	}
 	parameters := make([]ParameterInformation, 0, len(definition.Params))
 	for _, param := range definition.Params {
-		parameters = append(parameters, ParameterInformation{Label: param})
+		parameters = append(parameters, ParameterInformation{Label: param, Documentation: definition.ParameterDocs[param]})
 	}
 	return &SignatureHelp{
 		Signatures: []SignatureInformation{{
@@ -959,7 +959,23 @@ func (s *LanguageServer) joinedClassFunctionDefinition(classNames []string, func
 }
 
 func definitionFromFunctionInScope(fn FunctionSymbol, scope string) Definition {
-	return Definition{Name: fn.Name, Kind: "function", Params: append([]string(nil), fn.Params...), Returns: fn.ReturnType, Scope: scope, Description: fn.Documentation}
+	return Definition{
+		Name: fn.Name, Kind: "function", Params: append([]string(nil), fn.Params...),
+		Returns: fn.ReturnType, Scope: scope, Description: fn.Documentation,
+		ParameterDocs: cloneStringMap(fn.ParameterDocs), ReturnDoc: fn.ReturnDoc,
+		DocTags: append([]JSDocTag(nil), fn.DocTags...),
+	}
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	clone := make(map[string]string, len(values))
+	for key, value := range values {
+		clone[key] = value
+	}
+	return clone
 }
 
 type receiverContext struct {

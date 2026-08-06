@@ -2,6 +2,7 @@ package graalscript
 
 import (
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -42,10 +43,28 @@ type FunctionSymbol struct {
 	BodyRange      Range
 	ReturnType     string
 	Documentation  string
+	ParameterDocs  map[string]string
+	ReturnDoc      string
+	DocTags        []JSDocTag
 	Visibility     string
 	Public         bool
 	Private        bool
 	Side           string
+}
+
+type JSDocTag struct {
+	Name        string
+	Subject     string
+	Description string
+}
+
+type parsedJSDoc struct {
+	Summary    string
+	Params     map[string]string
+	ParamOrder []string
+	ReturnType string
+	ReturnDoc  string
+	Tags       []JSDocTag
 }
 
 type VariableSymbol struct {
@@ -159,12 +178,17 @@ func (d *Document) parseFunctions() {
 			endToken := d.Tokens[bodyClose]
 			bodyRange = Range{Start: d.Tokens[bodyOpen].startPos, End: endToken.endPos}
 		}
+		doc := parseJSDoc(findFunctionDocumentation(d.Tokens, i))
 		fn := FunctionSymbol{
 			Name: nameToken.text, Params: params,
 			Range:          Range{Start: d.Tokens[i].startPos, End: bodyRange.End},
 			SelectionRange: Range{Start: nameToken.startPos, End: nameToken.endPos},
 			BodyRange:      bodyRange,
-			Documentation:  functionDocumentation(d.Tokens, i),
+			Documentation:  formatJSDoc(doc),
+			ParameterDocs:  doc.Params,
+			ReturnType:     doc.ReturnType,
+			ReturnDoc:      doc.ReturnDoc,
+			DocTags:        doc.Tags,
 			Visibility:     visibility,
 			Public:         visibility == "public",
 			Private:        visibility == "private",
@@ -179,17 +203,17 @@ func (d *Document) parseFunctions() {
 	}
 }
 
-// functionDocumentation returns the JSDoc block immediately preceding a
+// findFunctionDocumentation returns the JSDoc block immediately preceding a
 // function declaration. Visibility modifiers are allowed between the block
 // and the function keyword, as in `/** ... */ public function load() {}`.
 // Ordinary comments are deliberately ignored so a nearby implementation note
 // cannot be shown as API documentation by mistake.
-func functionDocumentation(tokens []token, functionIndex int) string {
+func findFunctionDocumentation(tokens []token, functionIndex int) string {
 	for i := functionIndex - 1; i >= 0; i-- {
 		tok := tokens[i]
 		if tok.kind == tokenComment {
 			if strings.HasPrefix(strings.TrimSpace(tok.text), "/**") {
-				return cleanJSDoc(tok.text)
+				return tok.text
 			}
 			return ""
 		}
@@ -210,19 +234,170 @@ func isFunctionModifier(value string) bool {
 	}
 }
 
-func cleanJSDoc(value string) string {
+var inlineJSDocTag = regexp.MustCompile(`\s+@([A-Za-z][A-Za-z0-9_-]*)`)
+
+func cleanJSDoc(value string) []string {
 	value = strings.TrimSpace(value)
 	value = strings.TrimPrefix(value, "/**")
 	value = strings.TrimSuffix(value, "*/")
+	value = inlineJSDocTag.ReplaceAllString(value, "\n@$1")
 	lines := strings.Split(value, "\n")
 	cleaned := make([]string, 0, len(lines))
 	for _, line := range lines {
 		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
 		line = strings.TrimPrefix(line, "*")
 		line = strings.TrimSpace(line)
-		cleaned = append(cleaned, line)
+		if line != "" || len(cleaned) == 0 {
+			cleaned = append(cleaned, line)
+		}
 	}
-	return strings.TrimSpace(strings.Join(cleaned, "\n"))
+	for len(cleaned) > 0 && cleaned[0] == "" {
+		cleaned = cleaned[1:]
+	}
+	for len(cleaned) > 0 && cleaned[len(cleaned)-1] == "" {
+		cleaned = cleaned[:len(cleaned)-1]
+	}
+	return cleaned
+}
+
+func parseJSDoc(value string) parsedJSDoc {
+	doc := parsedJSDoc{Params: map[string]string{}}
+	var summary []string
+	var current *JSDocTag
+	currentParam := ""
+	currentReturn := false
+	for _, line := range cleanJSDoc(value) {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "@") {
+			current = nil
+			currentParam = ""
+			currentReturn = false
+			name, rest := splitJSDocTag(line)
+			tag := JSDocTag{Name: strings.ToLower(name)}
+			switch tag.Name {
+			case "param", "arg", "argument":
+				tag.Subject, tag.Description = parseJSDocParam(rest)
+				if tag.Subject != "" {
+					doc.Params[tag.Subject] = tag.Description
+					doc.ParamOrder = append(doc.ParamOrder, tag.Subject)
+					currentParam = tag.Subject
+				}
+			case "return", "returns":
+				doc.ReturnType, doc.ReturnDoc = parseJSDocTypeAndDescription(rest)
+				tag.Description = doc.ReturnDoc
+				currentReturn = true
+			case "description", "desc":
+				if strings.TrimSpace(rest) != "" {
+					summary = append(summary, strings.TrimSpace(rest))
+				}
+			default:
+				tag.Description = strings.TrimSpace(rest)
+			}
+			if tag.Name != "param" && tag.Name != "arg" && tag.Name != "argument" && tag.Name != "return" && tag.Name != "returns" && tag.Name != "description" && tag.Name != "desc" {
+				doc.Tags = append(doc.Tags, tag)
+				current = &doc.Tags[len(doc.Tags)-1]
+			}
+			continue
+		}
+		if currentParam != "" && line != "" {
+			if doc.Params[currentParam] != "" {
+				doc.Params[currentParam] += "\n"
+			}
+			doc.Params[currentParam] += line
+			continue
+		}
+		if currentReturn && line != "" {
+			if doc.ReturnDoc != "" {
+				doc.ReturnDoc += "\n"
+			}
+			doc.ReturnDoc += line
+			continue
+		}
+		if current != nil && line != "" {
+			if current.Description != "" {
+				current.Description += "\n"
+			}
+			current.Description += line
+			continue
+		}
+		if line != "" {
+			summary = append(summary, line)
+		}
+	}
+	doc.Summary = strings.TrimSpace(strings.Join(summary, "\n"))
+	return doc
+}
+
+func splitJSDocTag(line string) (string, string) {
+	line = strings.TrimSpace(strings.TrimPrefix(line, "@"))
+	parts := strings.Fields(line)
+	if len(parts) == 0 {
+		return "", ""
+	}
+	name := parts[0]
+	return name, strings.TrimSpace(strings.TrimPrefix(line, name))
+}
+
+func parseJSDocParam(value string) (string, string) {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "{") {
+		if end := strings.Index(value, "}"); end >= 0 {
+			value = strings.TrimSpace(value[end+1:])
+		}
+	}
+	parts := strings.Fields(value)
+	if len(parts) == 0 {
+		return "", ""
+	}
+	name := strings.Trim(parts[0], "[]")
+	return name, strings.TrimSpace(strings.TrimPrefix(value, parts[0]))
+}
+
+func parseJSDocTypeAndDescription(value string) (string, string) {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "{") {
+		if end := strings.Index(value, "}"); end >= 0 {
+			return strings.TrimSpace(value[1:end]), strings.TrimSpace(value[end+1:])
+		}
+	}
+	return "", value
+}
+
+func formatJSDoc(doc parsedJSDoc) string {
+	var out []string
+	if doc.Summary != "" {
+		out = append(out, doc.Summary)
+	}
+	if len(doc.Params) > 0 {
+		params := make([]string, 0, len(doc.Params))
+		seen := map[string]bool{}
+		for _, name := range doc.ParamOrder {
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			params = append(params, "- `"+name+"`: "+doc.Params[name])
+		}
+		out = append(out, "**Parameters**\n\n"+strings.Join(params, "\n"))
+	}
+	if doc.ReturnDoc != "" {
+		label := "**Returns**"
+		if doc.ReturnType != "" {
+			label += " (`" + doc.ReturnType + "`)"
+		}
+		out = append(out, label+": "+doc.ReturnDoc)
+	}
+	for _, tag := range doc.Tags {
+		if tag.Description == "" {
+			continue
+		}
+		label := strings.ToUpper(tag.Name[:1]) + tag.Name[1:]
+		if tag.Subject != "" {
+			label += " `" + tag.Subject + "`"
+		}
+		out = append(out, "**"+label+"**: "+tag.Description)
+	}
+	return strings.Join(out, "\n\n")
 }
 
 func (d *Document) parseJoinsAndVariables() {

@@ -19,6 +19,9 @@ type Definition struct {
 	Returns           string
 	Scope             string
 	Description       string
+	ParameterDocs     map[string]string
+	ReturnDoc         string
+	DocTags           []JSDocTag
 	Example           string
 	Dynamic           bool
 	DynamicExpression string

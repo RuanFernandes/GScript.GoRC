@@ -41,17 +41,41 @@ function onPlayerChats(message, count) {
 func TestParseDocumentExtractsJSDocForFunctions(t *testing.T) {
 	doc := parseDocument("memory://jsdoc", `/**
  * Registers an entity.
- * @param name Entity name.
+ * @param {string} name Entity name.
+ * @return {Entity} The registered entity.
+ * @throws Error when the entity is invalid.
  */
 public function registerEntity(name) {}
 
 // This is not API documentation.
 function internalHelper() {}`, 1)
-	if got := doc.Functions[0].Documentation; got != "Registers an entity.\n@param name Entity name." {
+	if got := doc.Functions[0].Documentation; got != "Registers an entity.\n\n**Parameters**\n\n- `name`: Entity name.\n\n**Returns** (`Entity`): The registered entity.\n\n**Throws**: Error when the entity is invalid." {
 		t.Fatalf("documentation = %q", got)
+	}
+	if got := doc.Functions[0].ParameterDocs["name"]; got != "Entity name." {
+		t.Fatalf("parameter documentation = %q", got)
+	}
+	if got := doc.Functions[0].ReturnDoc; got != "The registered entity." {
+		t.Fatalf("return documentation = %q", got)
 	}
 	if got := doc.Functions[1].Documentation; got != "" {
 		t.Fatalf("ordinary comment was treated as documentation: %q", got)
+	}
+}
+
+func TestParseJSDocSupportsInlineTagsAndMultilineDescriptions(t *testing.T) {
+	doc := parseDocument("memory://inline-jsdoc", `/** Creates a query. @param eName Entity key.
+ * @param [options] Optional settings.
+ * @returns {Query} Query builder.
+ * @see Query.where
+ */
+function table(eName, options) {}`, 1)
+	fn := doc.Functions[0]
+	if fn.Documentation != "Creates a query.\n\n**Parameters**\n\n- `eName`: Entity key.\n- `options`: Optional settings.\n\n**Returns** (`Query`): Query builder.\n\n**See**: Query.where" {
+		t.Fatalf("inline documentation = %q", fn.Documentation)
+	}
+	if fn.ParameterDocs["options"] != "Optional settings." {
+		t.Fatalf("optional parameter documentation = %q", fn.ParameterDocs["options"])
 	}
 }
 
