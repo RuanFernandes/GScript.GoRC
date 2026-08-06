@@ -794,6 +794,42 @@ func TestCompletionPlacesVariablesBeforeFunctions(t *testing.T) {
 	}
 }
 
+func TestWorkspacePropagatesFindNPCArgumentIntoFunctionParameter(t *testing.T) {
+	root := t.TempDir()
+	npcDir := filepath.Join(root, "npcs")
+	if err := os.MkdirAll(npcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(npcDir, "EmotesDB.gs2"), []byte("public function GetDefaultEmotes() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := NewLanguageServer()
+	if err := server.workspace.setRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	uri := "memory://npc-parameter-context"
+	text := `function loadDefaultEmotes(db) {
+  db.GetDefaultEmotes();
+}
+function onCreated() {
+  loadDefaultEmotes(findnpc("EmotesDB"));
+}`
+	doc := parseDocument(uri, text, 1)
+	server.workspace.upsert(uri, doc)
+	list := server.completion(CompletionParams{
+		TextDocument: TextDocumentIdentifier{URI: uri},
+		Position:     Position{Line: 1, Character: utf16Length("  db.GetDefaultEmotes")},
+	})
+	if !hasCompletion(list.Items, "GetDefaultEmotes") {
+		t.Fatalf("parameter NPC completion is missing GetDefaultEmotes: %#v", list.Items)
+	}
+	fn := doc.Functions[0]
+	if fn.ParameterTypes["db"] != "npc" || fn.ParameterValues["db"] != "EmotesDB" {
+		t.Fatalf("parameter inference = types:%#v values:%#v", fn.ParameterTypes, fn.ParameterValues)
+	}
+}
+
 func TestDynamicNPCVariablesResolveWorkspaceFunctions(t *testing.T) {
 	root := t.TempDir()
 	npcDir := filepath.Join(root, "npcs")
