@@ -1,9 +1,13 @@
 package sync
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"graal-rc/rclib"
 )
 
 type recordingBackend struct {
@@ -12,6 +16,18 @@ type recordingBackend struct {
 	addedWeapons []string
 	savedClasses map[string]string
 	savedWeapons map[string]string
+}
+
+type blockingFetchBackend struct {
+	permissionBackendStub
+	started chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingFetchBackend) FetchAllScripts(context.Context, func(string, string) bool, func(int, int)) ([]rclib.ScriptReply, error) {
+	close(b.started)
+	<-b.release
+	return b.fetchReplies, nil
 }
 
 func (b *recordingBackend) AddClass(name string) error {
@@ -111,6 +127,81 @@ func TestWriteServerVersionDoesNotOverwriteLocalEditMadeDuringSync(t *testing.T)
 	}
 	if string(got) != "local edit" {
 		t.Fatalf("local edit was overwritten: %q", got)
+	}
+}
+
+func TestLocalChangesSinceSyncBaselineAreProtected(t *testing.T) {
+	engine := NewEngine(&permissionBackendStub{}, "TestServer", nil)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "classes", "Example.gs2")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("old local version"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	baseline := snapshotLocalScripts(dir)
+	if err := os.WriteFile(path, []byte("edit made during sync"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if !localChangedSince(path, baseline) {
+		t.Fatal("local edit was not detected against sync baseline")
+	}
+	engine.hashes[path] = HashScript("stale server snapshot")
+	engine.preserveLocalChange(path, baseline)
+	if engine.hashes[path] != baseline[path] {
+		t.Fatalf("watcher baseline hash = %q, want %q", engine.hashes[path], baseline[path])
+	}
+	protected := changedLocalPaths(dir, baseline)
+	if !protected[path] {
+		t.Fatal("edited local path was not protected from server cleanup")
+	}
+}
+
+func TestReconcilePreservesEditMadeDuringServerFetch(t *testing.T) {
+	backend := &blockingFetchBackend{
+		permissionBackendStub: permissionBackendStub{
+			fetchReplies: []rclib.ScriptReply{{Type: "class", Name: "Example", Script: "server version"}},
+		},
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "classes", "Example.gs2")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("old local version"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	engine := NewEngine(backend, "TestServer", nil)
+	engine.ApplyConfig(SyncConfig{Enabled: true, OutputDir: dir, AutoPullServer: true, PollingMinutes: 1})
+	done := make(chan struct{})
+	go func() {
+		engine.ReconcileAll(context.Background())
+		close(done)
+	}()
+	select {
+	case <-backend.started:
+	case <-time.After(time.Second):
+		t.Fatal("server fetch did not start")
+	}
+	if err := os.WriteFile(path, []byte("edit made during sync"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	close(backend.release)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("sync did not finish")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "edit made during sync" {
+		t.Fatalf("local edit was overwritten after sync: %q", got)
 	}
 }
 
