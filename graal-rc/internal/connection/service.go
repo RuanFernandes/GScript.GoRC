@@ -962,7 +962,7 @@ const ncReconnectInterval = 2 * time.Second
 
 // ncKeepaliveInterval is how often a silent NC packet is sent to keep the NC
 // (script) socket alive. The server can drop an otherwise idle NC connection.
-const ncKeepaliveInterval = 30 * time.Second
+const ncKeepaliveInterval = 3 * time.Minute
 
 // ncFetchConcurrency bounds the number of in-flight OpenScript requests during
 // a bulk fetch. The send is serialized on dllMu, but the wait for the reply is
