@@ -164,6 +164,7 @@ func (d *Document) parseFunctions() {
 			Range:          Range{Start: d.Tokens[i].startPos, End: bodyRange.End},
 			SelectionRange: Range{Start: nameToken.startPos, End: nameToken.endPos},
 			BodyRange:      bodyRange,
+			Documentation:  functionDocumentation(d.Tokens, i),
 			Visibility:     visibility,
 			Public:         visibility == "public",
 			Private:        visibility == "private",
@@ -176,6 +177,52 @@ func (d *Document) parseFunctions() {
 		}
 		d.AST.Children = append(d.AST.Children, node)
 	}
+}
+
+// functionDocumentation returns the JSDoc block immediately preceding a
+// function declaration. Visibility modifiers are allowed between the block
+// and the function keyword, as in `/** ... */ public function load() {}`.
+// Ordinary comments are deliberately ignored so a nearby implementation note
+// cannot be shown as API documentation by mistake.
+func functionDocumentation(tokens []token, functionIndex int) string {
+	for i := functionIndex - 1; i >= 0; i-- {
+		tok := tokens[i]
+		if tok.kind == tokenComment {
+			if strings.HasPrefix(strings.TrimSpace(tok.text), "/**") {
+				return cleanJSDoc(tok.text)
+			}
+			return ""
+		}
+		if tok.kind == tokenIdentifier && isFunctionModifier(tok.text) {
+			continue
+		}
+		return ""
+	}
+	return ""
+}
+
+func isFunctionModifier(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "public", "private", "protected", "static", "final", "override":
+		return true
+	default:
+		return false
+	}
+}
+
+func cleanJSDoc(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.TrimPrefix(value, "/**")
+	value = strings.TrimSuffix(value, "*/")
+	lines := strings.Split(value, "\n")
+	cleaned := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+		line = strings.TrimPrefix(line, "*")
+		line = strings.TrimSpace(line)
+		cleaned = append(cleaned, line)
+	}
+	return strings.TrimSpace(strings.Join(cleaned, "\n"))
 }
 
 func (d *Document) parseJoinsAndVariables() {

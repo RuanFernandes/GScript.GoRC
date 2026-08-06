@@ -5,7 +5,7 @@
 import {useCallback, useEffect, useRef, useState} from "react"
 import type {ReactNode} from "react"
 import {Events} from "@wailsio/runtime"
-import {BookOpen, Check, ChevronDown, Code2, Copy, FolderDown, FolderOpen, Languages, ListTree, MessageSquareText, MousePointerClick, Package, PanelsTopLeft, Puzzle, Radio, RefreshCw, Server, ShieldCheck, Terminal, Waypoints} from "lucide-react"
+import {BookOpen, Check, ChevronDown, Code2, Copy, FolderDown, FolderOpen, Languages, ListTree, MessageSquareText, MousePointerClick, Package, PanelsTopLeft, Puzzle, Radio, RefreshCw, Server, ShieldCheck, Terminal, Waypoints, Bot} from "lucide-react"
 
 import {Button} from "@/components/ui/button"
 import {Input} from "@/components/ui/input"
@@ -20,6 +20,7 @@ import type {ChatSettings, FileBrowserConfig} from "@/types"
 import {useLanguage, type Language} from "@/hooks/useLanguage"
 import {CustomThemeDialog, NewThemeButton, ThemePreview} from "@/components/features/settings/ThemePreview"
 import type {CustomTheme} from "@/types"
+import {MCPSection} from "@/components/features/settings/MCPSection"
 
 export function SettingsWindowScreen() {
   const coding = useCodingSettings()
@@ -44,6 +45,9 @@ export function SettingsWindowScreen() {
           </TabsTrigger>
           <TabsTrigger value="plugins" className="justify-start border-b-0 border-l-2 border-transparent px-3 data-[state=active]:border-primary data-[state=active]:bg-accent">
             <Puzzle />{t("settings.plugins")}
+          </TabsTrigger>
+          <TabsTrigger value="mcp" className="justify-start border-b-0 border-l-2 border-transparent px-3 data-[state=active]:border-primary data-[state=active]:bg-accent">
+            <Bot />{t("settings.mcp")}
           </TabsTrigger>
         </TabsList>
         <TabsContent value="coding" className="mt-0 min-h-0 flex-1 overflow-y-auto p-5 sm:p-6">
@@ -72,6 +76,9 @@ export function SettingsWindowScreen() {
         </TabsContent>
         <TabsContent value="plugins" className="mt-0 min-h-0 flex-1 overflow-y-auto p-5 sm:p-6">
           <PluginsSection t={t} />
+        </TabsContent>
+        <TabsContent value="mcp" className="mt-0 min-h-0 flex-1 overflow-y-auto p-5 sm:p-6">
+          <MCPSection t={t} />
         </TabsContent>
       </Tabs>
     </div>

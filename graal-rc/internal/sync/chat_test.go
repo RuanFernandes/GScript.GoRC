@@ -17,3 +17,19 @@ func TestParseChatLineKeepsNonActivityMessagesIgnored(t *testing.T) {
 		t.Fatal("ordinary RC chat must not be treated as sync activity")
 	}
 }
+
+func TestParseChatLineDeleteActivities(t *testing.T) {
+	tests := []struct {
+		line, kind, name string
+	}{
+		{"Script personal_graal5766947_anc deleted by Repinho", "class", "personal_graal5766947_anc"},
+		{"Weapon Shared/Testtttttt deleted by Repinho", "weapon", "Shared/Testtttttt"},
+		{"The npc Graal5766947 has been deleted by Repinho", "npc", "Graal5766947"},
+	}
+	for _, test := range tests {
+		got, ok := ParseChatLine(test.line)
+		if !ok || got.Kind != test.kind || got.Name != test.name || got.Action != "deleted" {
+			t.Errorf("ParseChatLine(%q) = %+v, ok=%v", test.line, got, ok)
+		}
+	}
+}

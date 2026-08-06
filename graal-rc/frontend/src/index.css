@@ -276,6 +276,15 @@
   min-width: 0;
 }
 
+/* Frameless Wails windows need a small content-free strip at the bottom so
+   editor surfaces do not consume the native resize hit area. The padding is
+   inside the fixed content height, so the editor still shrinks with the
+   window instead of overflowing into the resize border. */
+.app-window-content {
+  box-sizing: border-box;
+  padding-bottom: 8px;
+}
+
 @media (max-width: 560px) {
   .app-window-content {
     font-size: 0.9375rem;

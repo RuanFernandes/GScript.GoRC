@@ -70,29 +70,30 @@ type expectedServerUpdate struct {
 // the only baseline: a path is changed only when its current MD5 differs from
 // the last successful server/local operation.
 type Engine struct {
-	mu               sync.RWMutex
-	cfg              SyncConfig
-	backend          ScriptBackend
-	server           string
-	hashes           map[string]string
-	refs             map[string]scriptRef
-	recentDownloads  map[string]time.Time
-	review           map[string]ReviewItem
-	lastSyncAt       int64
-	progress         SyncProgress
-	nextSyncAt       int64
-	permissionsReady bool
-	permissionsError string
-	running          bool
-	stop             chan struct{}
-	stopped          chan struct{}
-	watcher          *fsnotify.Watcher
-	emit             func(string, ...any)
-	now              func() time.Time
-	isEditing        func(string, string) bool
-	localActor       func() string
-	expectedUpdates  map[string]expectedServerUpdate
-	workMu           sync.Mutex
+	mu                sync.RWMutex
+	cfg               SyncConfig
+	backend           ScriptBackend
+	server            string
+	hashes            map[string]string
+	refs              map[string]scriptRef
+	recentDownloads   map[string]time.Time
+	review            map[string]ReviewItem
+	lastSyncAt        int64
+	progress          SyncProgress
+	nextSyncAt        int64
+	permissionsReady  bool
+	permissionsError  string
+	running           bool
+	stop              chan struct{}
+	stopped           chan struct{}
+	watcher           *fsnotify.Watcher
+	emit              func(string, ...any)
+	now               func() time.Time
+	isEditing         func(string, string) bool
+	localActor        func() string
+	classScriptHeader func() string
+	expectedUpdates   map[string]expectedServerUpdate
+	workMu            sync.Mutex
 }
 
 func NewEngine(backend ScriptBackend, server string, emit func(string, ...any)) *Engine {
@@ -110,6 +111,12 @@ func (e *Engine) SetEditorChecker(fn func(kind, key string) bool) {
 func (e *Engine) SetLocalActor(fn func() string) {
 	e.mu.Lock()
 	e.localActor = fn
+	e.mu.Unlock()
+}
+
+func (e *Engine) SetClassScriptHeader(fn func() string) {
+	e.mu.Lock()
+	e.classScriptHeader = fn
 	e.mu.Unlock()
 }
 
@@ -260,6 +267,7 @@ func (e *Engine) bootstrap(ctx context.Context, dir string) error {
 		// An account may legitimately have no readable scripts. Treat an empty
 		// permission-filtered result as a completed bootstrap; the next regular
 		// poll will pick up lists that were still warming up on the NC socket.
+		e.removeUnlistedLocalFiles(dir, serverPaths(nil))
 		e.markSynced()
 		e.finishProgress(0)
 		e.emitStatus()
@@ -282,7 +290,11 @@ func (e *Engine) bootstrap(ctx context.Context, dir string) error {
 		}
 		e.setProgress("Writing", i+1, len(replies), ref.name)
 		if err := writeFileAtomic(path, []byte(content)); err != nil {
-			return err
+			// One local path may be removed or temporarily unavailable while a
+			// snapshot is being materialized. Keep processing the rest of the
+			// server snapshot; the next poll can retry this path.
+			log.Printf("sync bootstrap write %s: %v", path, err)
+			continue
 		}
 		e.remember(ref, path, HashScript(content))
 		e.markDownload(path)
@@ -290,6 +302,7 @@ func (e *Engine) bootstrap(ctx context.Context, dir string) error {
 			log.Printf("[sync bootstrap compare] done %d/%d kind=%s name=%q elapsed=%s", i+1, len(replies), ref.kind, ref.name, time.Since(started))
 		}
 	}
+	e.removeUnlistedLocalFiles(dir, serverPaths(replies))
 	e.markSynced()
 	e.finishProgress(len(replies))
 	e.emitStatus()
@@ -398,9 +411,13 @@ func (e *Engine) loop(ctx context.Context, stop <-chan struct{}, stopped chan<- 
 			if ok {
 				e.scheduleLocal(ctx, ev, timers)
 			}
-		case _, ok := <-errs:
+		case watchErr, ok := <-errs:
 			if !ok {
 				errs = nil
+				continue
+			}
+			if watchErr != nil {
+				log.Printf("sync watcher: %v", watchErr)
 			}
 		}
 	}
@@ -421,6 +438,15 @@ func (e *Engine) scheduleLocal(ctx context.Context, ev fsnotify.Event, timers ma
 }
 
 func (e *Engine) pushLocal(ctx context.Context, path string) {
+	// A watcher callback can run while a scheduled/manual reconcile is
+	// comparing or removing files. Serialize it with the server-side pass so a
+	// newly edited file is not deleted or uploaded from a stale snapshot.
+	e.workMu.Lock()
+	defer e.workMu.Unlock()
+	e.pushLocalLocked(ctx, path)
+}
+
+func (e *Engine) pushLocalLocked(ctx context.Context, path string) {
 	if e.isRecentDownload(path) {
 		return
 	}
@@ -434,17 +460,55 @@ func (e *Engine) pushLocal(ctx context.Context, path string) {
 	ref := e.refs[path]
 	cfg := e.cfg
 	e.mu.RUnlock()
-	if old == hash || ref.kind == "" || !cfg.Enabled || !cfg.AutoPushLocal || e.paused() {
+	if old == hash || !cfg.Enabled || !cfg.AutoPushLocal || e.paused() {
 		return
 	}
 	if ctx.Err() != nil || !e.backend.IsNCConnected() {
 		return
+	}
+	if ref.kind == "" {
+		if kindFromDir(filepath.Dir(path)) != "weapon" && kindFromDir(filepath.Dir(path)) != "class" {
+			return
+		}
+		name := decodeName(strings.TrimSuffix(filepath.Base(path), scriptExt))
+		ref = scriptRef{kind: kindFromDir(filepath.Dir(path)), key: name, name: name, path: path}
+		if ref.kind == "class" && strings.TrimSpace(content) == "" {
+			e.mu.RLock()
+			header := e.classScriptHeader
+			e.mu.RUnlock()
+			if header == nil {
+				return
+			}
+			content = strings.TrimRight(header(), "\r\n")
+			if content == "" {
+				return
+			}
+			if err := writeFileAtomic(path, []byte(content)); err != nil {
+				log.Printf("sync initialize class %s: %v", name, err)
+				return
+			}
+			hash = HashScript(content)
+			e.markDownload(path)
+		}
+		if !e.backend.CanWriteScript(ref.kind, ref.name) {
+			return
+		}
+		if ref.kind == "weapon" {
+			if err := e.backend.AddWeapon(ref.name); err != nil {
+				log.Printf("sync create weapon %s: %v", ref.name, err)
+				return
+			}
+		} else if err := e.backend.AddClass(ref.name); err != nil {
+			log.Printf("sync create class %s: %v", ref.name, err)
+			return
+		}
 	}
 	if err := e.upload(ref, content); err != nil {
 		log.Printf("sync upload %s: %v", path, err)
 		return
 	}
 	e.mu.Lock()
+	e.refs[path] = ref
 	e.hashes[path] = hash
 	e.mu.Unlock()
 	e.markSynced()
@@ -518,6 +582,9 @@ func (e *Engine) pollLocked(ctx context.Context, refreshRights bool) {
 	}
 	if len(replies) == 0 {
 		log.Printf("sync poll: script lists are not ready")
+		if err == nil {
+			e.removeUnlistedLocalFiles(cfg.OutputDir, serverPaths(nil))
+		}
 		return
 	}
 	for i, r := range replies {
@@ -570,11 +637,14 @@ func (e *Engine) pollLocked(ctx context.Context, refreshRights bool) {
 				}
 				continue
 			}
-			e.writeServerVersion(ref, path, content, serverHash)
+			e.writeServerVersion(ref, path, content, serverHash, &local)
 		}
 		if trace {
 			log.Printf("[sync poll compare] done %d/%d kind=%s name=%q action=changed elapsed=%s", i+1, len(replies), ref.kind, ref.name, time.Since(started))
 		}
+	}
+	if err == nil {
+		e.removeUnlistedLocalFiles(cfg.OutputDir, serverPaths(replies))
 	}
 	e.markSynced()
 	e.finishProgress(len(replies))
@@ -664,6 +734,51 @@ func (e *Engine) remember(ref scriptRef, path, hash string) {
 	e.mu.Unlock()
 }
 
+func serverPaths(replies []rclib.ScriptReply) map[string]bool {
+	paths := make(map[string]bool, len(replies))
+	for _, reply := range replies {
+		ref := refFromReply(reply)
+		if ref.kind == "" {
+			continue
+		}
+		relative := filepath.Join(kindSubdir(ref.kind), fileNameFor(ref.kind, ref.key, ref.name)+scriptExt)
+		paths[filepath.ToSlash(relative)] = true
+	}
+	return paths
+}
+
+// removeUnlistedLocalFiles enforces server priority after a complete server
+// snapshot. Files created while the watcher is active are uploaded first, so
+// their paths appear in the next server snapshot.
+func (e *Engine) removeUnlistedLocalFiles(outputDir string, listed map[string]bool) {
+	for _, kind := range []string{"weapon", "class", "npc"} {
+		dir := filepath.Join(outputDir, kindSubdir(kind))
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || filepath.Ext(entry.Name()) != scriptExt {
+				continue
+			}
+			path := filepath.Join(dir, entry.Name())
+			relative, err := filepath.Rel(outputDir, path)
+			if err != nil || listed[filepath.ToSlash(relative)] {
+				continue
+			}
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				log.Printf("sync remove server-missing local script %q: %v", path, err)
+				continue
+			}
+			e.mu.Lock()
+			delete(e.hashes, path)
+			delete(e.refs, path)
+			delete(e.review, entryKey(kind, decodeName(strings.TrimSuffix(entry.Name(), scriptExt))))
+			e.mu.Unlock()
+		}
+	}
+}
+
 func (e *Engine) editorIsOpen(ref scriptRef) bool {
 	e.mu.RLock()
 	fn := e.isEditing
@@ -726,12 +841,42 @@ func (e *Engine) paused() bool {
 
 func (e *Engine) HandleChatLine(line string) {
 	act, ok := ParseChatLine(line)
-	if !ok || act.Kind == "delete" {
+	if !ok {
 		return
 	}
 	e.workMu.Lock()
 	defer e.workMu.Unlock()
+	if act.Action == "deleted" {
+		e.handleDeleteActivity(act)
+		return
+	}
 	e.handleActivity(act)
+}
+
+func (e *Engine) handleDeleteActivity(act Activity) {
+	e.mu.RLock()
+	var paths []string
+	for path, ref := range e.refs {
+		if ref.kind == act.Kind && (ref.name == act.Name || ref.key == act.Key) {
+			paths = append(paths, path)
+		}
+	}
+	e.mu.RUnlock()
+	for _, path := range paths {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			log.Printf("sync delete server-removed script %q: %v", path, err)
+			continue
+		}
+		e.mu.Lock()
+		delete(e.hashes, path)
+		delete(e.refs, path)
+		delete(e.review, entryKey(act.Kind, act.Key))
+		e.mu.Unlock()
+	}
+	if len(paths) > 0 {
+		e.markSynced()
+		e.emitStatus()
+	}
 }
 func (e *Engine) handleActivity(act Activity) {
 	if !e.backend.CanReadScript(act.Kind, act.Name) {
@@ -774,11 +919,18 @@ func (e *Engine) handleActivity(act Activity) {
 			e.enqueueReview(ref, path, local, content, act.Actor)
 			return
 		}
-		e.writeServerVersion(ref, path, content, serverHash)
+		e.writeServerVersion(ref, path, content, serverHash, &local)
 	}
 }
 
-func (e *Engine) writeServerVersion(ref scriptRef, path, content, hash string) {
+func (e *Engine) writeServerVersion(ref scriptRef, path, content, hash string, expectedLocal *string) {
+	if expectedLocal != nil {
+		current, exists := readScriptFile(path)
+		if exists && HashScript(current) != HashScript(*expectedLocal) {
+			log.Printf("sync download skipped %s: local file changed during sync", path)
+			return
+		}
+	}
 	if err := writeFileAtomic(path, []byte(content)); err != nil {
 		log.Printf("sync download %s: %v", path, err)
 		return

@@ -5,7 +5,7 @@
 // TRemoteFrame.
 import {useEffect, useRef, useState} from "react"
 import {Events} from "@wailsio/runtime"
-import {Bell, LogOut, Send, Settings, UserRound} from "lucide-react"
+import {Bell, LogOut, ScrollText, Send, Settings, UserRound} from "lucide-react"
 import {toast} from "sonner"
 
 import {Button} from "@/components/ui/button"
@@ -14,6 +14,7 @@ import {Tabs, TabsContent, TabsList, TabsTrigger} from "@/components/ui/tabs"
 import {ChatLine} from "@/components/features/chat/ChatLine"
 import {ScriptHelpResult} from "@/components/features/chat/ScriptHelpResult"
 import {RcSidebar} from "@/components/features/rc/RcSidebar"
+import {ChangelogPopover} from "@/components/features/rc/ChangelogPopover"
 import {useChat} from "@/hooks/useChat"
 import {useChatAutocomplete} from "@/hooks/useChatAutocomplete"
 import {useChatInputHistory} from "@/hooks/useChatInputHistory"
@@ -236,6 +237,7 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
   const {players} = usePlayers(rcService, true)
   const {state: pmState} = usePrivateMessages()
   const dragIndex = useRef<number>(-1)
+  const [changelogOpen, setChangelogOpen] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -339,7 +341,7 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
   // blank window.
   const openServerText = (kind: "options" | "folder_config" | "flags", label: string) => {
     rcService.openScriptEditor(kind, label).catch((err: unknown) => {
-      toast.error(`Couldn't open ${label}`, {description: String(err)})
+      toast.error(`${t("common.openFailed")}: ${label}`, {description: String(err)})
     })
   }
 
@@ -375,13 +377,13 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
             {t("rc.playersOnline", {count: players.length, suffix: players.length === 1 ? "" : "s"})}
           </span>
         </div>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="relative ml-auto flex items-center gap-2">
           <Button
             variant="ghost"
             size="icon"
             className="relative"
-            title={pmState.unreadTotal > 0 ? `${pmState.unreadTotal} unread private message${pmState.unreadTotal === 1 ? "" : "s"}` : "Private messages"}
-            aria-label="Private messages"
+            title={t("rc.privateMessages")}
+            aria-label={t("rc.privateMessages")}
             onClick={() => latestUnread && rcService.openPlayerListPM(latestUnread.playerId)}
           >
             <Bell className="size-4" />
@@ -391,6 +393,18 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
               </span>
             )}
           </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="relative"
+            title={t("rc.changelog")}
+            aria-label={t("rc.openChangelog")}
+            aria-expanded={changelogOpen}
+            onClick={() => setChangelogOpen((value) => !value)}
+          >
+            <ScrollText className="size-4" />
+          </Button>
+          <ChangelogPopover open={changelogOpen} onClose={() => setChangelogOpen(false)} />
           <Button variant="ghost" size="sm" onClick={() => rcService.openSettings()}>
             <Settings />
             {t("rc.settings")}

@@ -11,12 +11,13 @@ import {toast} from "sonner"
 
 import {Button} from "@/components/ui/button"
 import {rcService} from "@/services/rcService"
+import {useLanguage} from "@/hooks/useLanguage"
 
 type RecordKind = "banhistory" | "staffactivity"
 
 const KIND_META: Record<RecordKind, {label: string; fetch: (account: string) => Promise<string>}> = {
-  banhistory: {label: "Ban History", fetch: (a) => rcService.requestBanHistory(a)},
-  staffactivity: {label: "Staff Activity", fetch: (a) => rcService.requestStaffActivity(a)},
+  banhistory: {label: "record.banHistory", fetch: (a) => rcService.requestBanHistory(a)},
+  staffactivity: {label: "record.staffActivity", fetch: (a) => rcService.requestStaffActivity(a)},
 }
 
 function readKind(): RecordKind | null {
@@ -34,6 +35,7 @@ function readAccount(): string {
 }
 
 export function PlayerTextRecordWindowScreen() {
+  const {t} = useLanguage()
   const kind = readKind()
   const account = readAccount()
   const meta = kind ? KIND_META[kind] : null
@@ -62,7 +64,7 @@ export function PlayerTextRecordWindowScreen() {
   useEffect(() => {
     let cancelled = false
     if (!meta) {
-      setError("Unknown viewer route.")
+      setError(t("record.unknownViewer"))
       setLoading(false)
       return
     }
@@ -81,13 +83,13 @@ export function PlayerTextRecordWindowScreen() {
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(content)
-      toast.success("Copied to clipboard")
+      toast.success(t("record.copied"))
     } catch {
-      toast.error("Copy failed")
+      toast.error(t("record.copyFailed"))
     }
   }
 
-  const title = `${account || "(self)"}'s ${meta?.label ?? "Record"}`
+  const title = t("record.title", {account: account || t("record.self"), label: meta ? t(meta.label) : t("record.record")})
 
   return (
     <div className="bg-background flex h-svh flex-col">
@@ -97,18 +99,18 @@ export function PlayerTextRecordWindowScreen() {
           <Button variant="outline" size="sm" onClick={() => load(true)} disabled={!meta || loading || busy}>
             {(busy || loading) && <Loader2 className="size-4 animate-spin" />}
             {(!busy && !loading) && <RefreshCw className="size-4" />}
-            Refresh
+            {t("common.refreshAction")}
           </Button>
           <Button variant="outline" size="sm" onClick={copy} disabled={!content}>
             <Copy className="size-4" />
-            Copy
+            {t("common.copy")}
           </Button>
         </div>
       </header>
       <div className="min-h-0 flex-1">
         {loading ? (
           <div className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" /> Loading…
+            <Loader2 className="size-4 animate-spin" /> {t("record.loading")}
           </div>
         ) : error ? (
           <div className="p-4 text-sm text-destructive">{error}</div>

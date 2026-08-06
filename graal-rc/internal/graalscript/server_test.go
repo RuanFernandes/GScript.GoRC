@@ -38,6 +38,61 @@ function onPlayerChats(message, count) {
 	}
 }
 
+func TestParseDocumentExtractsJSDocForFunctions(t *testing.T) {
+	doc := parseDocument("memory://jsdoc", `/**
+ * Registers an entity.
+ * @param name Entity name.
+ */
+public function registerEntity(name) {}
+
+// This is not API documentation.
+function internalHelper() {}`, 1)
+	if got := doc.Functions[0].Documentation; got != "Registers an entity.\n@param name Entity name." {
+		t.Fatalf("documentation = %q", got)
+	}
+	if got := doc.Functions[1].Documentation; got != "" {
+		t.Fatalf("ordinary comment was treated as documentation: %q", got)
+	}
+}
+
+func TestHoverReturnsJSDocForImportedAndJoinedFunctions(t *testing.T) {
+	root := t.TempDir()
+	classDir := filepath.Join(root, "classes")
+	if err := os.MkdirAll(classDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	class := `/** Imported and joined helper. */
+public function helper(value) {}`
+	if err := os.WriteFile(filepath.Join(classDir, "Helpers.gs2"), []byte(class), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := NewLanguageServer()
+	if err := server.workspace.setRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{"import Helpers;\nhelper(value);", "join(\"Helpers\");\nhelper(value);"} {
+		doc := parseDocument("memory://hover-jsdoc", source, 1)
+		server.workspace.upsert(doc.URI, doc)
+		hover := server.hover(TextDocumentPositionParams{
+			TextDocument: TextDocumentIdentifier{URI: doc.URI},
+			Position:     Position{Line: 1, Character: 3},
+		})
+		contents, ok := hoverContents(hover)
+		if !ok || !strings.Contains(contents.Value, "Imported and joined helper.") {
+			t.Fatalf("hover for %q did not contain JSDoc: %#v", source, hover)
+		}
+	}
+}
+
+func hoverContents(hover *Hover) (MarkupContent, bool) {
+	if hover == nil {
+		return MarkupContent{}, false
+	}
+	contents, ok := hover.Contents.(MarkupContent)
+	return contents, ok
+}
+
 func TestParseDocumentTracksQualifiedImportsAndConstructors(t *testing.T) {
 	doc := parseDocument("memory://qualified-import", `import class_gsorm.entity;
 function onCreated() {

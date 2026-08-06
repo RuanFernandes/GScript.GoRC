@@ -32,6 +32,7 @@ import {Input} from "@/components/ui/input"
 import {Label} from "@/components/ui/label"
 import {ScrollArea} from "@/components/ui/scroll-area"
 import {Skeleton} from "@/components/ui/skeleton"
+import {useLanguage} from "@/hooks/useLanguage"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -148,6 +149,7 @@ function buildTree(folders: FileBrowserFolder[]): TreeNode[] {
 }
 
 export function FileBrowserWindowScreen() {
+  const {t} = useLanguage()
   const fb = useFileBrowser(rcService)
   const [dragging, setDragging] = useState(false)
   const [query, setQuery] = useState("")
@@ -256,11 +258,11 @@ export function FileBrowserWindowScreen() {
     }
     try {
       const kind = await rcService.openRemoteFile(entry.path)
-      if (kind === "media") toast.success("Opened in default app")
-      else if (kind === "text") toast.success("Opened in editor")
-      else if (kind === "database") toast.success("Opened SQLite explorer")
+      if (kind === "media") toast.success(t("file.openedDefault"))
+      else if (kind === "text") toast.success(t("file.openedEditor"))
+      else if (kind === "database") toast.success(t("file.openedSqlite"))
     } catch (err) {
-      toast.error("Could not open file", {description: String(err)})
+      toast.error(t("file.openFailed"), {description: String(err)})
     }
   }
 
@@ -268,9 +270,9 @@ export function FileBrowserWindowScreen() {
   const openAsText = async (entry: FileBrowserEntry) => {
     try {
       await rcService.openRemoteFileAsText(entry.path)
-      toast.success("Opened as text")
+      toast.success(t("file.openedText"))
     } catch (err) {
-      toast.error("Could not open file", {description: String(err)})
+      toast.error(t("file.openFailed"), {description: String(err)})
     }
   }
 
@@ -305,7 +307,7 @@ export function FileBrowserWindowScreen() {
     <div className="bg-background flex h-svh flex-col">
       {/* Toolbar: breadcrumb + actions */}
       <header className="flex flex-wrap items-center gap-2 border-b px-3 py-2">
-        <Button variant="ghost" size="sm" onClick={() => fb.cd("")} title="Root">
+        <Button variant="ghost" size="sm" onClick={() => fb.cd("")} title={t("file.root")}>
           <Home />
         </Button>
         <Breadcrumb path={fb.currentFolder} onNavigate={fb.cd} />
@@ -362,7 +364,7 @@ export function FileBrowserWindowScreen() {
                   ))}
                 </div>
               ) : tree.length === 0 ? (
-                <p className="text-muted-foreground p-2 text-xs">No folders.</p>
+              <p className="text-muted-foreground p-2 text-xs">{t("file.noFolders")}</p>
               ) : (
                 tree.map((node) => (
                   <FolderNode
@@ -415,7 +417,7 @@ export function FileBrowserWindowScreen() {
         <ScrollArea className="h-full">
           <div className="space-y-0.5 p-2 font-mono text-xs">
             {fb.messages.length === 0 ? (
-              <p className="text-muted-foreground">No messages.</p>
+              <p className="text-muted-foreground">{t("file.noMessages")}</p>
             ) : (
               fb.messages.map((m, i) => (
                 <div key={i} className="text-muted-foreground">
@@ -566,6 +568,7 @@ function FolderAutocomplete({
   options: string[]
   onChange: (v: string) => void
 }) {
+  const {t: translate} = useLanguage()
   const [open, setOpen] = useState(false)
   const [draft, setDraft] = useState<string | null>(null)
   const ref = useRef<HTMLDivElement>(null)
@@ -614,7 +617,7 @@ function FolderAutocomplete({
       <input
         className="border-input bg-input focus-visible:ring-ring h-9 w-full rounded-md border px-3 text-sm"
         value={shown}
-        placeholder="Type to search folders…"
+          placeholder={translate("file.searchPlaceholder")}
         onChange={(e) => {
           setDraft(e.target.value)
           setOpen(true)
@@ -638,7 +641,7 @@ function FolderAutocomplete({
           onMouseDown={(e) => e.preventDefault()}
         >
           {matches.length === 0 && (
-            <li className="text-muted-foreground px-3 py-2 text-sm">No matching folders</li>
+            <li className="text-muted-foreground px-3 py-2 text-sm">{translate("file.noMatchingFolders")}</li>
           )}
           {matches.map((o) => (
             <li key={o || "__root__"}>

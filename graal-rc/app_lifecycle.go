@@ -88,6 +88,7 @@ func (l *appLifecycle) stopBackground() {
 // already destroyed its native application at this point, so this hook only
 // records completion and performs no Wails calls.
 func (a *App) postShutdown() {
+	a.stopMCPServer()
 	lifecycle := lifecycleFor(a)
 	lifecycle.mu.Lock()
 	lifecycle.completed = true

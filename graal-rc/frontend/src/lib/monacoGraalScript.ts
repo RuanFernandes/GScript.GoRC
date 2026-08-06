@@ -51,6 +51,9 @@ export function registerGraalScript(monaco: MonacoLanguageAPI): void {
           // access instead of falling back to root tokens.
           [/\b(?:temp|server|client|clientr|player|this|thiso)(?=\.\s*\()/, "variable.language.prefix", "@dynamicMemberAccess"],
           [/\b(?:temp|server|client|clientr|player|this|thiso)(?=\.)/, "variable.language.prefix", "@memberAccess"],
+          // Standalone `this` is not a member-access prefix. Keep it colored
+          // when it is returned or terminated directly, e.g. `return this;`.
+          [/\bthis\b(?=\s*;)/, "variable.language"],
           [/\b(serverr)\b/, "variable.language.flag"],
           [/\b(name)\b/, "variable.language"],
           // ClassName::method() — the identifier before `::` is the object/class,

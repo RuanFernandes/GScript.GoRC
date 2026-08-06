@@ -354,6 +354,9 @@ func (a *App) startSyncEngine() {
 		}
 		return a.sessions.Status().Nickname
 	})
+	eng.SetClassScriptHeader(func() string {
+		return initialClassScript(a.sessions.Status())
+	})
 
 	a.syncEngineMu.Lock()
 	a.syncEngine = eng

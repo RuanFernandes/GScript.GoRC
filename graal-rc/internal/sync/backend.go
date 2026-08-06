@@ -4,8 +4,8 @@
 // The package depends only on a ScriptBackend interface (satisfied by
 // *connection.Service) so it does not import internal/connection, avoiding an
 // import cycle. Delete operations are deliberately absent from this interface:
-// the safety rules forbid propagating deletes in either direction, so the
-// engine can never reach the underlying Delete* calls.
+// local deletions never propagate to the server, while server deletions are
+// reflected by removing the corresponding local files.
 package sync
 
 import (
@@ -43,8 +43,8 @@ type ScriptBackend interface {
 	SaveClass(name, script string) error
 	SaveNPC(id int, script string) error
 
-	// Add (create brand-new — only reached after a user confirms a new-local
-	// review item, never automatically).
+	// Add creates a brand-new weapon/class. The watcher may call these for a
+	// genuinely new local file; NPC creation remains intentionally unsupported.
 	AddWeapon(name string) error
 	AddClass(name string) error
 	CreateNPC(name string, id int, npcType, scripter, level, x, y string) error

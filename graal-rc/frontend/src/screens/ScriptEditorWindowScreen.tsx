@@ -5,7 +5,7 @@
 // server. npcattr is read-only; npcflags edits flags; weapon/class/npc edit the
 // script body.
 import {useCallback, useEffect, useRef, useState} from "react"
-import Editor, {type BeforeMount, type OnMount} from "@monaco-editor/react"
+import Editor, {DiffEditor, type BeforeMount, type OnMount} from "@monaco-editor/react"
 import {Events} from "@wailsio/runtime"
 import {toast} from "sonner"
 
@@ -19,7 +19,7 @@ import {GraalScriptLspClient, graalScriptDocumentUri, registerGraalScriptLsp, ty
 import {registerServerConfig} from "@/lib/monacoServerConfig"
 import {adaptMonacoTheme} from "@/lib/adaptTheme"
 import {rcService} from "@/services/rcService"
-import type {EditorKind} from "@/types"
+import type {EditorKind, SyncReviewItem} from "@/types"
 import {useLanguage} from "@/hooks/useLanguage"
 
 // Minimal monaco surface used for keybindings (kept loose; monaco-editor is a
@@ -54,7 +54,8 @@ interface MonacoMarker {
 interface EditorInstance {
   addCommand(keybinding: number, handler: () => void): void
   updateOptions(opts: {fontFamily?: string; fontSize?: number; readOnly?: boolean}): void
-  getValue(): string
+	getValue(): string
+	setValue(value: string): void
   getModel(): {uri: {toString(): string}; getValue(): string} | null
 }
 
@@ -101,6 +102,8 @@ export function ScriptEditorWindowScreen() {
   const [editorReady, setEditorReady] = useState(false)
   const [remoteDef, setRemoteDef] = useState<unknown>(null)
   const [customDefs, setCustomDefs] = useState<Record<string, unknown>>({})
+  const [conflict, setConflict] = useState<SyncReviewItem | null>(null)
+  const [mergeContent, setMergeContent] = useState("")
 
   const {kind, key} = parsed.current ?? {kind: "weapon" as EditorKind, key: ""}
   const readOnly = kind === "npcattr"
@@ -162,6 +165,22 @@ export function ScriptEditorWindowScreen() {
     return () => {
       cancelled = true
     }
+  }, [kind, key])
+
+  // Sync conflicts are broadcast to every window. Only the editor matching
+  // the conflicted script claims the inline review surface.
+  useEffect(() => {
+    const off = Events.On("rc:syncConflict", (e: {data: string}) => {
+      try {
+        const item = JSON.parse(e.data) as SyncReviewItem
+        if (item.kind !== kind || item.key !== key) return
+        setConflict(item)
+        setMergeContent(item.local ?? "")
+      } catch {
+        // Ignore malformed sync events; the global review window remains available.
+      }
+    })
+    return () => off()
   }, [kind, key])
 
   // Push dirty state to the backend so the close-interception hook knows whether
@@ -255,6 +274,27 @@ export function ScriptEditorWindowScreen() {
       setSaving(false)
     }
   }, [diagnosticsBeforeSave, kind, key, readOnly, t])
+
+  const resolveInlineConflict = useCallback(async (choice: "local" | "server" | "merge") => {
+    if (!conflict) return
+    const nextContent = choice === "local" ? conflict.local : choice === "server" ? conflict.server : mergeContent
+    if (choice === "merge" && !nextContent) {
+      toast.error(t("editor.conflictMergeRequired"))
+      return
+    }
+    try {
+      await rcService.resolveConflict(kind, key, choice, choice === "merge" ? nextContent : undefined)
+      editorRef.current?.setValue(nextContent)
+      contentRef.current = nextContent
+      setContent(nextContent)
+      setOriginal(nextContent)
+      setDirty(false)
+      setConflict(null)
+      toast.success(t("editor.conflictResolved"))
+    } catch (err) {
+      toast.error(t("editor.conflictResolveFailed"), {description: String(err)})
+    }
+  }, [conflict, kind, key, mergeContent, t])
 
   const handleBeforeMount: BeforeMount = useCallback(
     (monaco) => {
@@ -513,6 +553,38 @@ export function ScriptEditorWindowScreen() {
         {dirty && !readOnly && <span className="text-amber-500 text-xs">• unsaved</span>}
         {saving && <Loader2 className="text-muted-foreground size-3.5 animate-spin" />}
       </header>
+      {conflict && (
+        <section className="border-b border-amber-500/30 bg-amber-500/5 p-3">
+          <div className="mb-2 flex flex-wrap items-start gap-2">
+            <div className="min-w-0 flex-1">
+              <h2 className="text-sm font-semibold text-amber-200">{t("editor.conflictTitle")}</h2>
+              <p className="text-muted-foreground mt-0.5 text-xs">{conflict.actor ? `${conflict.actor} changed this script.` : t("editor.conflictDescription")}</p>
+            </div>
+            <span className="rounded border border-amber-500/30 px-2 py-1 font-mono text-[10px] uppercase text-amber-300">{t("editor.conflictDiff")}</span>
+          </div>
+          <div className="h-56 overflow-hidden rounded-md border border-amber-500/20">
+            <DiffEditor
+              height="100%"
+              original={conflict.local ?? ""}
+              modified={conflict.server ?? ""}
+              language="graalscript"
+              theme={settings.theme === "remoteTheme" && !remoteDef ? "vs-dark" : settings.theme}
+              options={{readOnly: true, renderSideBySide: true, minimap: {enabled: false}, scrollBeyondLastLine: false, automaticLayout: true}}
+            />
+          </div>
+          <textarea
+            value={mergeContent}
+            onChange={(event) => setMergeContent(event.target.value)}
+            aria-label={t("editor.conflictMergeContent")}
+            className="mt-2 min-h-24 w-full resize-y rounded-md border bg-background p-2 font-mono text-xs outline-none focus:ring-2 focus:ring-ring"
+          />
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Button size="sm" variant="outline" onClick={() => void resolveInlineConflict("local")}>{t("editor.conflictKeepLocal")}</Button>
+            <Button size="sm" variant="outline" onClick={() => void resolveInlineConflict("server")}>{t("editor.conflictUseServer")}</Button>
+            <Button size="sm" onClick={() => void resolveInlineConflict("merge")}>{t("editor.conflictApplyMerge")}</Button>
+          </div>
+        </section>
+      )}
       <div className="min-h-0 flex-1">
         {loading ? (
           <div className="text-muted-foreground flex h-full items-center justify-center gap-2 text-sm">

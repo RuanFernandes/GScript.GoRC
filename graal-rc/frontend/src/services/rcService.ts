@@ -31,6 +31,8 @@ import type {
   SyncScriptPair,
   PMState,
   CustomTheme,
+  MCPAgentStatus,
+  MCPSetupResult,
 } from "@/types"
 import type {PluginBuildResult, PluginFile, PluginInfo, PluginLogEntry, PluginMonacoLanguage, PluginUIWindowInfo} from "@/plugins/types"
 
@@ -130,6 +132,9 @@ export interface RcService {
   setLanguage(language: string): Promise<void>
   getRemoteTheme(): Promise<RemoteTheme | null>
   saveRemoteTheme(name: string, definition: string): Promise<void>
+  getMCPAgentStatuses(): Promise<MCPAgentStatus[] | null>
+  setupMCP(name: string): Promise<MCPSetupResult>
+  openMCPAgentFile(name: string): Promise<void>
   openSettings(): Promise<void>
   openPluginManager(): Promise<void>
   openPluginDocumentation(): Promise<void>
@@ -322,6 +327,9 @@ export const rcService: RcService = {
   setLanguage: (language) => App.SetLanguage(language),
   getRemoteTheme: () => App.GetRemoteTheme(),
   saveRemoteTheme: (name, definition) => App.SaveRemoteTheme(name, definition),
+  getMCPAgentStatuses: () => App.GetMCPAgentStatuses(),
+  setupMCP: (name) => App.SetupMCP(name),
+  openMCPAgentFile: (name) => App.OpenMCPAgentFile(name),
   openSettings: () => App.OpenSettings(),
   openPluginManager: () => App.OpenPluginManager(),
   openPluginDocumentation: () => App.OpenPluginDocumentation(),
