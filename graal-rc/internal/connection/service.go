@@ -47,23 +47,24 @@ type Status struct {
 // Service manages the grclib connection handle and the credentials in use.
 // Methods are safe to call from Wails-bound goroutines.
 type Service struct {
-	mu            sync.Mutex
-	handle        rclib.Handle
-	creds         Credentials
-	serverName    string // name of the server selected in ConnectToServer; "" when none
-	serverEpoch   uint64 // increments whenever the active server/session changes
-	lifecycleMu   sync.Mutex
-	lifecycleOp   *connectionOperation
-	pumpMu        sync.Mutex
-	pumpCancel    context.CancelFunc
-	pumpDone      chan struct{}
-	pumpErr       error
-	lastNCAttempt time.Time  // last ConnectToNCServer attempt; throttles retries
-	ncRequestMu   sync.Mutex // serializes brief NC sends and synchronous mutations
-	emitMu        sync.RWMutex
-	emit          func(name string, data ...any)
-	chatMu        sync.RWMutex
-	chatHistory   []ChatLine
+	mu              sync.Mutex
+	handle          rclib.Handle
+	creds           Credentials
+	serverName      string // name of the server selected in ConnectToServer; "" when none
+	serverEpoch     uint64 // increments whenever the active server/session changes
+	lifecycleMu     sync.Mutex
+	lifecycleOp     *connectionOperation
+	pumpMu          sync.Mutex
+	pumpCancel      context.CancelFunc
+	pumpDone        chan struct{}
+	pumpErr         error
+	lastNCAttempt   time.Time  // last ConnectToNCServer attempt; throttles retries
+	lastNCKeepalive time.Time  // last silent NC keepalive (weapon-list ping)
+	ncRequestMu     sync.Mutex // serializes brief NC sends and synchronous mutations
+	emitMu          sync.RWMutex
+	emit            func(name string, data ...any)
+	chatMu          sync.RWMutex
+	chatHistory     []ChatLine
 
 	// maxUpload is the latest server-reported max upload size (bytes), pushed via
 	// the MaxUploadSize callback. 0 means unknown. Guarded by mu.
@@ -857,6 +858,7 @@ func (s *Service) startPump(h rclib.Handle) {
 	s.stopPump()
 	s.mu.Lock()
 	s.lastNCAttempt = time.Time{}
+	s.lastNCKeepalive = time.Time{}
 	s.mu.Unlock()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -902,6 +904,7 @@ func (s *Service) pumpTick(h rclib.Handle) (err error) {
 		return err
 	}
 	s.maybeConnectNC(h)
+	s.ncKeepalive(h)
 	s.settleChannelLeaves()
 	return nil
 }
@@ -957,6 +960,10 @@ func (s *Service) failPump(h rclib.Handle, done chan struct{}, err error) {
 // enter the retry loop at all.
 const ncReconnectInterval = 2 * time.Second
 
+// ncKeepaliveInterval is how often a silent NC packet is sent to keep the NC
+// (script) socket alive. The server can drop an otherwise idle NC connection.
+const ncKeepaliveInterval = 30 * time.Second
+
 // ncFetchConcurrency bounds the number of in-flight OpenScript requests during
 // a bulk fetch. The send is serialized on dllMu, but the wait for the reply is
 // not, so pipelining many requests is much faster than strict serial fetches.
@@ -984,6 +991,23 @@ func (s *Service) maybeConnectNC(h rclib.Handle) {
 	if err := rclib.ConnectToNCServer(h); err != nil {
 		log.Printf("nc connect (will retry in %s): %v", ncReconnectInterval, err)
 	}
+}
+
+// ncKeepalive sends a silent NC round-trip while NC is connected. The response
+// refreshes the socket without surfacing a chat line to the user.
+func (s *Service) ncKeepalive(h rclib.Handle) {
+	s.mu.Lock()
+	if !s.lastNCKeepalive.IsZero() && time.Since(s.lastNCKeepalive) < ncKeepaliveInterval {
+		s.mu.Unlock()
+		return
+	}
+	s.lastNCKeepalive = time.Now()
+	s.mu.Unlock()
+
+	if !rclib.HasNCServer(h) || !rclib.IsNCConnected(h) {
+		return
+	}
+	_ = rclib.SendNCPacket(h, weaponListGetPacket)
 }
 
 // stopPump stops the active event pump, if any.
@@ -2749,6 +2773,10 @@ func (s *Service) RefreshWeapons() error {
 	}
 	return rclib.RequestWeaponList(h)
 }
+
+// weaponListGetPacket is PLI_NC_WEAPONLISTGET (IEnums.h) — re-request the
+// weapon list from the NC server without surfacing a chat line.
+const weaponListGetPacket = 115
 
 // --- File browser (main server socket) ---
 
