@@ -14,8 +14,18 @@ var assets embed.FS
 
 func applicationOptions(a *App) application.Options {
 	return application.Options{
-		Name:         "graal-rc",
-		Description:  "Graal Remote Control client",
+		Name:        "graal-rc",
+		Description: "Graal Remote Control client",
+		Windows: application.WindowsOptions{
+			// RC is an interactive desktop client. WebView2 can otherwise
+			// throttle timers/background renderers after a long idle period,
+			// which makes Monaco and Wails IPC appear frozen on resume.
+			AdditionalBrowserArgs: []string{
+				"--disable-background-timer-throttling",
+				"--disable-renderer-backgrounding",
+				"--disable-backgrounding-occluded-windows",
+			},
+		},
 		OnShutdown:   a.shutdown,
 		PostShutdown: a.postShutdown,
 		SingleInstance: &application.SingleInstanceOptions{
