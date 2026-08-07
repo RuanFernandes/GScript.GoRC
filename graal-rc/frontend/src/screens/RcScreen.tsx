@@ -5,7 +5,7 @@
 // TRemoteFrame.
 import {useEffect, useMemo, useRef, useState} from "react"
 import {Events} from "@wailsio/runtime"
-import {Activity, Bell, LayoutDashboard, LogOut, RotateCcw, Search, ScrollText, Send, Settings, UserRound, WifiOff, X} from "lucide-react"
+import {Activity, Bell, BellRing, BookmarkPlus, Command, LayoutDashboard, LogOut, RotateCcw, Search, ScrollText, Send, Settings, Trash2, UserRound, WifiOff, X} from "lucide-react"
 import {toast} from "sonner"
 
 import {Button} from "@/components/ui/button"
@@ -17,6 +17,7 @@ import {RcSidebar} from "@/components/features/rc/RcSidebar"
 import {ChangelogPopover} from "@/components/features/rc/ChangelogPopover"
 import {GlobalSearchPalette} from "@/components/features/rc/GlobalSearchPalette"
 import {OperationsOverview} from "@/components/features/rc/OperationsOverview"
+import {NotificationCenterPopover} from "@/components/features/rc/NotificationCenterPopover"
 import {useChat} from "@/hooks/useChat"
 import {useChatAutocomplete} from "@/hooks/useChatAutocomplete"
 import {useChatInputHistory} from "@/hooks/useChatInputHistory"
@@ -30,6 +31,8 @@ import {useLanguage} from "@/hooks/useLanguage"
 import {usePrivateMessages} from "@/hooks/usePrivateMessages"
 import {useScriptLists} from "@/hooks/useScriptLists"
 import {useSync} from "@/hooks/useSync"
+import {useCommandMacros} from "@/hooks/useCommandMacros"
+import {useOperationalNotifications} from "@/hooks/useOperationalNotifications"
 
 interface RcScreenProps {
   serverName: string
@@ -63,17 +66,23 @@ function ChatPane({
   onSend,
   history,
   players,
+  serverName,
+  commandMacros,
 }: {
   messages: ChatMessage[]
   settings: ChatSettings
   onSend: (text: string) => Promise<boolean>
   history: ReturnType<typeof useChatInputHistory>
   players: Player[]
+  serverName: string
+  commandMacros: ReturnType<typeof useCommandMacros>
 }) {
   const {t} = useLanguage()
   const [text, setText] = useState("")
   const [ghostOff, setGhostOff] = useState(false)
   const autocomplete = useChatAutocomplete(players)
+  const [macrosOpen, setMacrosOpen] = useState(false)
+  const [macroName, setMacroName] = useState("")
   const scrollRef = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
   const lastLogged = useRef(0)
@@ -126,6 +135,85 @@ function ChatPane({
                 )}
               </div>
             ))
+          )}
+        </div>
+      </div>
+      <div className="flex items-center justify-end">
+        <div className="relative">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-7 gap-1.5 px-2 text-xs"
+            onClick={() => setMacrosOpen((value) => !value)}
+            aria-expanded={macrosOpen}
+            title={t("macros.title")}
+          >
+            <Command className="size-3.5" />{t("macros.title")}
+          </Button>
+          {macrosOpen && (
+            <div className="bg-popover text-popover-foreground absolute right-0 bottom-full z-40 mb-2 w-[min(23rem,calc(100vw-2rem))] overflow-hidden rounded-lg border shadow-xl">
+              <div className="flex items-center gap-2 border-b px-3 py-2">
+                <Command className="text-primary size-4" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-semibold">{t("macros.title")}</p>
+                  <p className="text-muted-foreground text-[10px]">{t("macros.subtitle", {server: serverName})}</p>
+                </div>
+              </div>
+              <div className="flex gap-1.5 border-b p-2">
+                <Input
+                  value={macroName}
+                  onChange={(event) => setMacroName(event.target.value)}
+                  placeholder={t("macros.namePlaceholder")}
+                  className="h-8 text-xs"
+                  maxLength={80}
+                />
+                <Button
+                  type="button"
+                  size="icon"
+                  className="size-8 shrink-0"
+                  disabled={!macroName.trim() || !text.trim()}
+                  onClick={() => {
+                    if (!commandMacros.save(macroName, text)) return
+                    setMacroName("")
+                  }}
+                  title={t("macros.save")}
+                  aria-label={t("macros.save")}
+                >
+                  <BookmarkPlus className="size-4" />
+                </Button>
+              </div>
+              <div className="max-h-56 overflow-y-auto p-1">
+                {commandMacros.macros.length === 0 ? (
+                  <p className="text-muted-foreground px-2 py-4 text-center text-xs">{t("macros.empty")}</p>
+                ) : commandMacros.macros.map((macro) => (
+                  <div key={macro.id} className="group flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-accent">
+                    <button
+                      type="button"
+                      className="min-w-0 flex-1 text-left"
+                      onClick={() => {
+                        setGhostOff(false)
+                        setText(macro.command)
+                        setMacrosOpen(false)
+                      }}
+                      title={macro.command}
+                    >
+                      <span className="block truncate text-xs font-medium">{macro.name}</span>
+                      <span className="text-muted-foreground block truncate font-mono text-[10px]">{macro.command}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="text-muted-foreground hover:text-destructive shrink-0 rounded p-1 opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100"
+                      onClick={() => commandMacros.remove(macro.id)}
+                      title={t("macros.delete")}
+                      aria-label={t("macros.delete")}
+                    >
+                      <Trash2 className="size-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
           )}
         </div>
       </div>
@@ -247,6 +335,8 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
   const [changelogOpen, setChangelogOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const [reconnect, setReconnect] = useState<ReconnectStatus | null>(null)
+  const [notificationsOpen, setNotificationsOpen] = useState(false)
+  const notificationCenter = useOperationalNotifications()
 
   const recentMessages = useMemo(
     () => tabs.flatMap((tab) => tab.messages).sort((a, b) => b.ts - a.ts).slice(0, 8),
@@ -360,6 +450,7 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
   }, [accountName])
 
   const {label: displayServer} = serverDisplay(serverName)
+  const commandMacros = useCommandMacros(displayServer || serverName)
   const realAccount = rightsIdentity.realAccount || ""
   const communityName = rightsIdentity.communityName || ""
   const rightsLabel = realAccount ? (communityName ? `${communityName} (${realAccount})` : realAccount) : ""
@@ -441,6 +532,33 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
               </span>
             )}
           </Button>
+          <div className="relative">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="relative"
+              title={t("notifications.title")}
+              aria-label={t("notifications.title")}
+              aria-expanded={notificationsOpen}
+              onClick={() => setNotificationsOpen((value) => !value)}
+            >
+              <BellRing className="size-4" />
+              {notificationCenter.unreadCount > 0 && (
+                <span className="bg-primary text-primary-foreground absolute -top-0.5 -right-0.5 min-w-4 rounded-full px-1 text-[10px] leading-4">
+                  {notificationCenter.unreadCount > 99 ? "99+" : notificationCenter.unreadCount}
+                </span>
+              )}
+            </Button>
+            <NotificationCenterPopover
+              open={notificationsOpen}
+              notifications={notificationCenter.notifications}
+              unreadCount={notificationCenter.unreadCount}
+              onClose={() => setNotificationsOpen(false)}
+              onMarkRead={notificationCenter.markRead}
+              onMarkAllRead={notificationCenter.markAllRead}
+              onClear={notificationCenter.clear}
+            />
+          </div>
           <Button
             variant="ghost"
             size="icon"
@@ -558,6 +676,8 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
                 onSend={(text) => send(t.channel, text)}
                 history={inputHistory}
                 players={players}
+                serverName={displayServer || serverName}
+                commandMacros={commandMacros}
               />
             </TabsContent>
           ))}

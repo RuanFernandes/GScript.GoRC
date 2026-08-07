@@ -44,6 +44,24 @@ export interface PMConversation { playerId: number; account: string; nick: strin
 export interface PMState { conversations: PMConversation[]; unreadTotal: number }
 export interface CustomTheme { key: string; name: string; definition: string }
 
+export type OperationalNotificationLevel = "info" | "success" | "warning" | "error"
+export interface OperationalNotification {
+  id: string
+  level: OperationalNotificationLevel
+  title: string
+  message: string
+  timestamp: number
+  read: boolean
+}
+
+export interface CommandMacro {
+  id: string
+  name: string
+  command: string
+  createdAt: number
+  updatedAt: number
+}
+
 // A single chat line. channel "" = server (RC) chat; otherwise the IRC channel.
 // source drives the prefix tag and coloring: "rc" ([RC], on_message), "nc"
 // ([NC], on_serverdata type=nc_message), "irc" ([IRC], on_irc_message), or
