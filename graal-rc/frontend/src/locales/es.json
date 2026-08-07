@@ -109,6 +109,7 @@
   "dashboard.recentActivity": "Actividad reciente",
   "dashboard.recentActivityDescription": "Los últimos mensajes recibidos en esta sesión.",
   "dashboard.noActivity": "Todavía no se recibió actividad.",
+  "dashboard.noResults": "No se encontraron resultados",
   "dashboard.quickActions": "Acciones rápidas",
   "dashboard.quickActionsDescription": "Abre las áreas de administración más usadas.",
   "dashboard.openScripts": "Abrir gestor de scripts",
