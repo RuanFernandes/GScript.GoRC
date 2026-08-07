@@ -3,9 +3,9 @@
 // command input, an NC (script socket) status badge, a toggleable player list
 // panel, and a chat-color settings dialog. Mirrors the reference client's
 // TRemoteFrame.
-import {useEffect, useRef, useState} from "react"
+import {useEffect, useMemo, useRef, useState} from "react"
 import {Events} from "@wailsio/runtime"
-import {Bell, LogOut, ScrollText, Send, Settings, UserRound} from "lucide-react"
+import {Bell, LayoutDashboard, LogOut, Search, ScrollText, Send, Settings, UserRound} from "lucide-react"
 import {toast} from "sonner"
 
 import {Button} from "@/components/ui/button"
@@ -15,6 +15,8 @@ import {ChatLine} from "@/components/features/chat/ChatLine"
 import {ScriptHelpResult} from "@/components/features/chat/ScriptHelpResult"
 import {RcSidebar} from "@/components/features/rc/RcSidebar"
 import {ChangelogPopover} from "@/components/features/rc/ChangelogPopover"
+import {GlobalSearchPalette} from "@/components/features/rc/GlobalSearchPalette"
+import {OperationsOverview} from "@/components/features/rc/OperationsOverview"
 import {useChat} from "@/hooks/useChat"
 import {useChatAutocomplete} from "@/hooks/useChatAutocomplete"
 import {useChatInputHistory} from "@/hooks/useChatInputHistory"
@@ -26,6 +28,8 @@ import {rcService} from "@/services/rcService"
 import type {AccountSummary, ChatMessage, ChatSettings, NCStatus, Player} from "@/types"
 import {useLanguage} from "@/hooks/useLanguage"
 import {usePrivateMessages} from "@/hooks/usePrivateMessages"
+import {useScriptLists} from "@/hooks/useScriptLists"
+import {useSync} from "@/hooks/useSync"
 
 interface RcScreenProps {
   serverName: string
@@ -229,15 +233,24 @@ function ChatPane({
 export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps) {
   const {t} = useLanguage()
   const {tabs, activeChannel, setActiveChannel, send, reorderTabs} = useChat(rcService)
+  const [surface, setSurface] = useState<"overview" | "chat">("overview")
   const inputHistory = useChatInputHistory()
   const {settings} = useChatSettings()
   const [nc, setNc] = useState<NCStatus>({hasNc: false, connected: false, authenticated: false})
   const [profile, setProfile] = useState<AccountSummary | null>(null)
   const [rightsIdentity, setRightsIdentity] = useState<RightsIdentityStatus>({})
   const {players} = usePlayers(rcService, true)
+  const scriptLists = useScriptLists(rcService, true)
+  const {status: syncStatus} = useSync()
   const {state: pmState} = usePrivateMessages()
   const dragIndex = useRef<number>(-1)
   const [changelogOpen, setChangelogOpen] = useState(false)
+  const [searchOpen, setSearchOpen] = useState(false)
+
+  const recentMessages = useMemo(
+    () => tabs.flatMap((tab) => tab.messages).sort((a, b) => b.ts - a.ts).slice(0, 8),
+    [tabs],
+  )
 
   useEffect(() => {
     let cancelled = false
@@ -405,6 +418,11 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
             <ScrollText className="size-4" />
           </Button>
           <ChangelogPopover open={changelogOpen} onClose={() => setChangelogOpen(false)} />
+          <Button variant="outline" size="sm" onClick={() => setSearchOpen(true)}>
+            <Search />
+            <span className="hidden sm:inline">{t("dashboard.search")}</span>
+            <kbd className="text-muted-foreground hidden rounded border px-1.5 py-0.5 text-[10px] lg:inline">Ctrl K</kbd>
+          </Button>
           <Button variant="ghost" size="sm" onClick={() => rcService.openSettings()}>
             <Settings />
             {t("rc.settings")}
@@ -423,9 +441,21 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
           openServerText={openServerText}
         />
         <div className="flex min-h-0 flex-1 flex-col p-3">
-        <Tabs value={activeChannel} onValueChange={setActiveChannel} className="flex min-h-0 flex-1 flex-col">
+        <Tabs
+          value={surface === "overview" ? "__overview__" : activeChannel}
+          onValueChange={(value) => {
+            if (value === "__overview__") {
+              setSurface("overview")
+              return
+            }
+            setActiveChannel(value)
+            setSurface("chat")
+          }}
+          className="flex min-h-0 flex-1 flex-col"
+        >
           <div className="flex items-center justify-between gap-2">
             <TabsList>
+              <TabsTrigger value="__overview__"><LayoutDashboard className="size-4" />{t("dashboard.overview")}</TabsTrigger>
               {tabs.map((t, i) => (
                 <TabsTrigger
                   key={t.channel || "server"}
@@ -445,6 +475,22 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
               ))}
             </TabsList>
           </div>
+          <TabsContent value="__overview__" className="mt-2 min-h-0 flex-1">
+            <OperationsOverview
+              serverName={displayServer || serverName}
+              players={players}
+              nc={nc}
+              sync={syncStatus}
+              unreadTotal={pmState.unreadTotal}
+              scriptCounts={{weapons: scriptLists.weapons.length, classes: scriptLists.classes.length, npcs: scriptLists.npcs.length}}
+              recentMessages={recentMessages}
+              onOpenPlayers={() => rcService.openPlayerList()}
+              onOpenScripts={() => rcService.openScriptManager()}
+              onOpenFiles={() => rcService.openFileBrowser()}
+              onOpenSync={() => rcService.openSyncReview()}
+              onOpenSettings={() => rcService.openSettings()}
+            />
+          </TabsContent>
           {tabs.map((t) => (
             <TabsContent key={t.channel || "server"} value={t.channel} className="mt-2 min-h-0 flex-1">
               <ChatPane
@@ -459,6 +505,18 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
         </Tabs>
         </div>
       </div>
+      <GlobalSearchPalette
+        open={searchOpen}
+        players={players}
+        onOpen={() => setSearchOpen(true)}
+        onClose={() => setSearchOpen(false)}
+        onOpenPlayers={() => rcService.openPlayerList()}
+        onOpenScripts={() => rcService.openScriptManager()}
+        onOpenFiles={() => rcService.openFileBrowser()}
+        onOpenSync={() => rcService.openSyncReview()}
+        onOpenSettings={() => rcService.openSettings()}
+        onOpenPlayerPM={(player) => rcService.openPlayerListPM(player.id)}
+      />
     </div>
   )
 }
