@@ -130,6 +130,7 @@ func (a *App) OpenDiagnostics() {
 		MinWidth:         560,
 		MinHeight:        420,
 		InitialPosition:  application.WindowCentered,
+		Frameless:        true,
 		BackgroundColour: application.NewRGB(18, 18, 20),
 	})
 	a.diagnosticsWindow = w
