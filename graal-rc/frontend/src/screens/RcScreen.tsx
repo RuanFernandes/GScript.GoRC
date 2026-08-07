@@ -3,9 +3,9 @@
 // command input, an NC (script socket) status badge, a toggleable player list
 // panel, and a chat-color settings dialog. Mirrors the reference client's
 // TRemoteFrame.
-import {useEffect, useMemo, useRef, useState} from "react"
+import {useEffect, useRef, useState} from "react"
 import {Events} from "@wailsio/runtime"
-import {Activity, Bell, BellRing, BookmarkPlus, Command, LayoutDashboard, LogOut, RotateCcw, Search, ScrollText, Send, Settings, Trash2, UserRound, WifiOff, X} from "lucide-react"
+import {Activity, Bell, BellRing, BookmarkPlus, Command, LogOut, RotateCcw, Search, ScrollText, Send, Settings, Trash2, UserRound, WifiOff, X} from "lucide-react"
 import {toast} from "sonner"
 
 import {Button} from "@/components/ui/button"
@@ -16,7 +16,6 @@ import {ScriptHelpResult} from "@/components/features/chat/ScriptHelpResult"
 import {RcSidebar} from "@/components/features/rc/RcSidebar"
 import {ChangelogPopover} from "@/components/features/rc/ChangelogPopover"
 import {GlobalSearchPalette} from "@/components/features/rc/GlobalSearchPalette"
-import {OperationsOverview} from "@/components/features/rc/OperationsOverview"
 import {NotificationCenterPopover} from "@/components/features/rc/NotificationCenterPopover"
 import {useChat} from "@/hooks/useChat"
 import {useChatAutocomplete} from "@/hooks/useChatAutocomplete"
@@ -29,8 +28,6 @@ import {rcService} from "@/services/rcService"
 import type {AccountSummary, ChatMessage, ChatSettings, NCStatus, Player, ReconnectStatus} from "@/types"
 import {useLanguage} from "@/hooks/useLanguage"
 import {usePrivateMessages} from "@/hooks/usePrivateMessages"
-import {useScriptLists} from "@/hooks/useScriptLists"
-import {useSync} from "@/hooks/useSync"
 import {useCommandMacros} from "@/hooks/useCommandMacros"
 import {useOperationalNotifications} from "@/hooks/useOperationalNotifications"
 
@@ -321,15 +318,12 @@ function ChatPane({
 export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps) {
   const {t} = useLanguage()
   const {tabs, activeChannel, setActiveChannel, send, reorderTabs} = useChat(rcService)
-  const [surface, setSurface] = useState<"overview" | "chat">("overview")
   const inputHistory = useChatInputHistory()
   const {settings} = useChatSettings()
   const [nc, setNc] = useState<NCStatus>({hasNc: false, connected: false, authenticated: false})
   const [profile, setProfile] = useState<AccountSummary | null>(null)
   const [rightsIdentity, setRightsIdentity] = useState<RightsIdentityStatus>({})
   const {players} = usePlayers(rcService, true)
-  const scriptLists = useScriptLists(rcService, true)
-  const {status: syncStatus} = useSync()
   const {state: pmState} = usePrivateMessages()
   const dragIndex = useRef<number>(-1)
   const [changelogOpen, setChangelogOpen] = useState(false)
@@ -337,11 +331,6 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
   const [reconnect, setReconnect] = useState<ReconnectStatus | null>(null)
   const [notificationsOpen, setNotificationsOpen] = useState(false)
   const notificationCenter = useOperationalNotifications()
-
-  const recentMessages = useMemo(
-    () => tabs.flatMap((tab) => tab.messages).sort((a, b) => b.ts - a.ts).slice(0, 8),
-    [tabs],
-  )
 
   useEffect(() => {
     let cancelled = false
@@ -616,72 +605,46 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
           openServerText={openServerText}
         />
         <div className="flex min-h-0 flex-1 flex-col p-3">
-        <Tabs
-          value={surface === "overview" ? "__overview__" : activeChannel}
-          onValueChange={(value) => {
-            if (value === "__overview__") {
-              setSurface("overview")
-              return
-            }
-            setActiveChannel(value)
-            setSurface("chat")
-          }}
-          className="flex min-h-0 flex-1 flex-col"
-        >
-          <div className="flex items-center justify-between gap-2">
-            <TabsList>
-              <TabsTrigger value="__overview__"><LayoutDashboard className="size-4" />{t("dashboard.overview")}</TabsTrigger>
-              {tabs.map((t, i) => (
-                <TabsTrigger
-                  key={t.channel || "server"}
-                  value={t.channel}
-                  draggable
-                  onDragStart={() => (dragIndex.current = i)}
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={() => {
-                    if (dragIndex.current >= 0) reorderTabs(dragIndex.current, i)
-                    dragIndex.current = -1
-                  }}
-                  onDragEnd={() => (dragIndex.current = -1)}
-                  className="cursor-grab active:cursor-grabbing"
-                >
-                  {t.label}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </div>
-          <TabsContent value="__overview__" className="mt-2 min-h-0 flex-1">
-            <OperationsOverview
-              serverName={displayServer || serverName}
-              players={players}
-              nc={nc}
-              sync={syncStatus}
-              unreadTotal={pmState.unreadTotal}
-              scriptCounts={{weapons: scriptLists.weapons.length, classes: scriptLists.classes.length, npcs: scriptLists.npcs.length}}
-              recentMessages={recentMessages}
-              onOpenPlayers={() => rcService.openPlayerList()}
-              onOpenScripts={() => rcService.openScriptManager()}
-              onOpenFiles={() => rcService.openFileBrowser()}
-              onOpenSync={() => rcService.openSyncReview()}
-              onOpenDeployments={() => rcService.openDeploymentCenter()}
-              onOpenDiagnostics={() => rcService.openDiagnostics()}
-              onOpenSettings={() => rcService.openSettings()}
-            />
-          </TabsContent>
-          {tabs.map((t) => (
-            <TabsContent key={t.channel || "server"} value={t.channel} className="mt-2 min-h-0 flex-1">
-              <ChatPane
-                messages={t.messages}
-                settings={settings}
-                onSend={(text) => send(t.channel, text)}
-                history={inputHistory}
-                players={players}
-                serverName={displayServer || serverName}
-                commandMacros={commandMacros}
-              />
-            </TabsContent>
-          ))}
-        </Tabs>
+          <Tabs
+            value={activeChannel}
+            onValueChange={setActiveChannel}
+            className="flex min-h-0 flex-1 flex-col"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <TabsList>
+                {tabs.map((t, i) => (
+                  <TabsTrigger
+                    key={t.channel || "server"}
+                    value={t.channel}
+                    draggable
+                    onDragStart={() => (dragIndex.current = i)}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={() => {
+                      if (dragIndex.current >= 0) reorderTabs(dragIndex.current, i)
+                      dragIndex.current = -1
+                    }}
+                    onDragEnd={() => (dragIndex.current = -1)}
+                    className="cursor-grab active:cursor-grabbing"
+                  >
+                    {t.label}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </div>
+            {tabs.map((t) => (
+              <TabsContent key={t.channel || "server"} value={t.channel} className="mt-2 min-h-0 flex-1">
+                <ChatPane
+                  messages={t.messages}
+                  settings={settings}
+                  onSend={(text) => send(t.channel, text)}
+                  history={inputHistory}
+                  players={players}
+                  serverName={displayServer || serverName}
+                  commandMacros={commandMacros}
+                />
+              </TabsContent>
+            ))}
+          </Tabs>
         </div>
       </div>
       <GlobalSearchPalette
