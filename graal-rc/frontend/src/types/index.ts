@@ -54,10 +54,18 @@ export interface OperationalNotification {
   read: boolean
 }
 
+export type CommandMacroParameterType = "text" | "number" | "boolean"
+
+export interface CommandMacroParameter {
+  name: string
+  type: CommandMacroParameterType
+}
+
 export interface CommandMacro {
   id: string
   name: string
   command: string
+  parameters?: CommandMacroParameter[]
   createdAt: number
   updatedAt: number
 }

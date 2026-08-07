@@ -5,7 +5,7 @@
 // TRemoteFrame.
 import {useEffect, useRef, useState} from "react"
 import {Events} from "@wailsio/runtime"
-import {Activity, Bell, BellRing, BookmarkPlus, Command, LogOut, RotateCcw, Search, ScrollText, Send, Settings, Trash2, UserRound, WifiOff, X} from "lucide-react"
+import {Activity, Bell, BellRing, BookmarkPlus, Command, LogOut, Plus, RotateCcw, Search, ScrollText, Send, Settings, Trash2, UserRound, WifiOff, X} from "lucide-react"
 import {toast} from "sonner"
 
 import {Button} from "@/components/ui/button"
@@ -25,7 +25,7 @@ import {usePlayers} from "@/hooks/usePlayers"
 import {serverDisplay} from "@/lib/server"
 import {formatLogLine} from "@/lib/chatLine"
 import {rcService} from "@/services/rcService"
-import type {AccountSummary, ChatMessage, ChatSettings, NCStatus, Player, ReconnectStatus} from "@/types"
+import type {AccountSummary, ChatMessage, ChatSettings, CommandMacro, CommandMacroParameter, CommandMacroParameterType, NCStatus, Player, ReconnectStatus} from "@/types"
 import {useLanguage} from "@/hooks/useLanguage"
 import {usePrivateMessages} from "@/hooks/usePrivateMessages"
 import {useCommandMacros} from "@/hooks/useCommandMacros"
@@ -49,6 +49,42 @@ function ncLabel(s: NCStatus, playerCount: number, t: (key: string, vars?: Recor
   }
   if (s.connected) return t("rc.connecting")
   return t("rc.ncOff")
+}
+
+type MacroParameterDraft = CommandMacroParameter & {id: string}
+
+function createMacroParameterId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID()
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+function isMacroParameterNameValid(name: string): boolean {
+  return /^[A-Za-z][A-Za-z0-9_-]*$/.test(name.trim())
+}
+
+function isMacroParameterValueValid(parameter: CommandMacroParameter, rawValue: string | undefined): boolean {
+  const value = rawValue?.trim() ?? ""
+  if (!value) return false
+  if (parameter.type === "boolean") return value === "true" || value === "false"
+  if (parameter.type === "number") return Number.isFinite(Number(value))
+  return true
+}
+
+function renderMacroCommand(macro: CommandMacro, values: Record<string, string>, showPlaceholders: boolean): string {
+  const parts = [macro.command.trim()]
+  for (const parameter of macro.parameters ?? []) {
+    const value = values[parameter.name]?.trim()
+    if (value) {
+      parts.push(value)
+    } else if (showPlaceholders) {
+      parts.push(`<${parameter.name}>`)
+    }
+  }
+  return parts.filter(Boolean).join(" ")
+}
+
+function macroSignature(macro: CommandMacro): string {
+  return renderMacroCommand(macro, {}, true)
 }
 
 // ChatPane is one tab's message log + input. Uses a plain overflow-auto div
@@ -80,6 +116,11 @@ function ChatPane({
   const autocomplete = useChatAutocomplete(players)
   const [macrosOpen, setMacrosOpen] = useState(false)
   const [macroName, setMacroName] = useState("")
+  const [macroCommand, setMacroCommand] = useState("")
+  const [macroParameters, setMacroParameters] = useState<MacroParameterDraft[]>([])
+  const [selectedMacro, setSelectedMacro] = useState<CommandMacro | null>(null)
+  const [macroValues, setMacroValues] = useState<Record<string, string>>({})
+  const firstMacroParameterRef = useRef<HTMLElement | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
   const lastLogged = useRef(0)
@@ -108,11 +149,28 @@ function ChatPane({
     stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24
   }
 
+  const macroParameterNames = macroParameters.map((parameter) => parameter.name.trim().toLocaleLowerCase())
+  const macroParametersValid = macroParameters.every((parameter) => isMacroParameterNameValid(parameter.name))
+    && new Set(macroParameterNames).size === macroParameterNames.length
+  const canSaveMacro = Boolean(macroName.trim() && macroCommand.trim() && macroParametersValid)
+  const missingMacroParameters = selectedMacro?.parameters?.filter((parameter) => !isMacroParameterValueValid(parameter, macroValues[parameter.name])) ?? []
+  const macroPreview = selectedMacro ? renderMacroCommand(selectedMacro, macroValues, true) : ""
+
+  useEffect(() => {
+    if (!selectedMacro?.parameters?.length) return
+    const frame = window.requestAnimationFrame(() => firstMacroParameterRef.current?.focus())
+    return () => window.cancelAnimationFrame(frame)
+  }, [selectedMacro])
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (await onSend(text)) {
-      history.record(text)
+    if (selectedMacro && missingMacroParameters.length > 0) return
+    const command = selectedMacro ? renderMacroCommand(selectedMacro, macroValues, false) : text.trim()
+    if (await onSend(command)) {
+      history.record(command)
       setText("")
+      setSelectedMacro(null)
+      setMacroValues({})
     }
   }
 
@@ -142,14 +200,17 @@ function ChatPane({
             variant="ghost"
             size="sm"
             className="h-7 gap-1.5 px-2 text-xs"
-            onClick={() => setMacrosOpen((value) => !value)}
+            onClick={() => setMacrosOpen((value) => {
+              if (!value && !macroName.trim() && macroParameters.length === 0) setMacroCommand(text.trim())
+              return !value
+            })}
             aria-expanded={macrosOpen}
             title={t("macros.title")}
           >
             <Command className="size-3.5" />{t("macros.title")}
           </Button>
           {macrosOpen && (
-            <div className="bg-popover text-popover-foreground absolute right-0 bottom-full z-40 mb-2 w-[min(23rem,calc(100vw-2rem))] overflow-hidden rounded-lg border shadow-xl">
+            <div className="bg-popover text-popover-foreground absolute right-0 bottom-full z-40 mb-2 max-h-[min(36rem,calc(100vh-4rem))] w-[min(23rem,calc(100vw-2rem))] overflow-y-auto rounded-lg border shadow-xl">
               <div className="flex items-center gap-2 border-b px-3 py-2">
                 <Command className="text-primary size-4" />
                 <div className="min-w-0 flex-1">
@@ -157,28 +218,92 @@ function ChatPane({
                   <p className="text-muted-foreground text-[10px]">{t("macros.subtitle", {server: serverName})}</p>
                 </div>
               </div>
-              <div className="flex gap-1.5 border-b p-2">
+              <div className="space-y-2 border-b p-2">
                 <Input
-                  value={macroName}
-                  onChange={(event) => setMacroName(event.target.value)}
-                  placeholder={t("macros.namePlaceholder")}
-                  className="h-8 text-xs"
-                  maxLength={80}
+                  value={macroCommand}
+                  onChange={(event) => setMacroCommand(event.target.value)}
+                  placeholder={t("macros.commandPlaceholder")}
+                  aria-label={t("macros.command")}
+                  className="h-8 font-mono text-xs"
+                  maxLength={2000}
                 />
-                <Button
-                  type="button"
-                  size="icon"
-                  className="size-8 shrink-0"
-                  disabled={!macroName.trim() || !text.trim()}
-                  onClick={() => {
-                    if (!commandMacros.save(macroName, text)) return
-                    setMacroName("")
-                  }}
-                  title={t("macros.save")}
-                  aria-label={t("macros.save")}
-                >
-                  <BookmarkPlus className="size-4" />
-                </Button>
+                <div className="flex gap-1.5">
+                  <Input
+                    value={macroName}
+                    onChange={(event) => setMacroName(event.target.value)}
+                    placeholder={t("macros.namePlaceholder")}
+                    className="h-8 text-xs"
+                    maxLength={80}
+                  />
+                  <Button
+                    type="button"
+                    size="icon"
+                    className="size-8 shrink-0"
+                    disabled={!canSaveMacro}
+                    onClick={() => {
+                      if (!commandMacros.save(macroName, macroCommand, macroParameters.map(({name, type}) => ({name, type})))) return
+                      setMacroName("")
+                      setMacroParameters([])
+                    }}
+                    title={t("macros.save")}
+                    aria-label={t("macros.save")}
+                  >
+                    <BookmarkPlus className="size-4" />
+                  </Button>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-muted-foreground text-[10px] font-medium">{t("macros.parameters")}</span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-[10px]"
+                    disabled={macroParameters.length >= 8}
+                    onClick={() => setMacroParameters((current) => [...current, {id: createMacroParameterId(), name: "", type: "text"}])}
+                  >
+                    <Plus className="size-3" />{t("macros.addParameter")}
+                  </Button>
+                </div>
+                {macroParameters.length > 0 && (
+                  <div className="grid gap-1.5">
+                    {macroParameters.map((parameter) => (
+                      <div key={parameter.id} className="flex min-w-0 gap-1.5">
+                        <Input
+                          value={parameter.name}
+                          onChange={(event) => setMacroParameters((current) => current.map((item) => item.id === parameter.id ? {...item, name: event.target.value} : item))}
+                          placeholder={t("macros.parameterName")}
+                          aria-label={t("macros.parameterName")}
+                          className="h-8 min-w-0 flex-1 text-xs"
+                          maxLength={40}
+                        />
+                        <select
+                          value={parameter.type}
+                          onChange={(event) => setMacroParameters((current) => current.map((item) => item.id === parameter.id ? {...item, type: event.target.value as CommandMacroParameterType} : item))}
+                          aria-label={t("macros.parameterType")}
+                          className="border-input bg-background text-foreground focus-visible:border-ring focus-visible:ring-ring/50 h-8 w-24 rounded-md border px-2 text-[11px] outline-none focus-visible:ring-[3px]"
+                        >
+                          <option value="text">{t("macros.parameterText")}</option>
+                          <option value="number">{t("macros.parameterNumber")}</option>
+                          <option value="boolean">{t("macros.parameterBoolean")}</option>
+                        </select>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="size-8 shrink-0"
+                          onClick={() => setMacroParameters((current) => current.filter((item) => item.id !== parameter.id))}
+                          title={t("macros.removeParameter")}
+                          aria-label={t("macros.removeParameter")}
+                        >
+                          <X className="size-3.5" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <p className={`${macroParameters.length > 0 && !macroParametersValid ? "text-destructive" : "text-muted-foreground"} text-[10px]`}>
+                  {macroParameters.length > 0 && !macroParametersValid ? t("macros.parameterNameHint") : t("macros.parameterHint")}
+                </p>
               </div>
               <div className="max-h-56 overflow-y-auto p-1">
                 {commandMacros.macros.length === 0 ? (
@@ -191,17 +316,26 @@ function ChatPane({
                       onClick={() => {
                         setGhostOff(false)
                         setText(macro.command)
+                        setMacroCommand(macro.command)
+                        setMacroValues({})
+                        setSelectedMacro(macro.parameters?.length ? macro : null)
                         setMacrosOpen(false)
                       }}
-                      title={macro.command}
+                      title={macroSignature(macro)}
                     >
                       <span className="block truncate text-xs font-medium">{macro.name}</span>
-                      <span className="text-muted-foreground block truncate font-mono text-[10px]">{macro.command}</span>
+                      <span className="text-muted-foreground block truncate font-mono text-[10px]">{macroSignature(macro)}</span>
                     </button>
                     <button
                       type="button"
                       className="text-muted-foreground hover:text-destructive shrink-0 rounded p-1 opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100"
-                      onClick={() => commandMacros.remove(macro.id)}
+                      onClick={() => {
+                        commandMacros.remove(macro.id)
+                        if (selectedMacro?.id === macro.id) {
+                          setSelectedMacro(null)
+                          setMacroValues({})
+                        }
+                      }}
                       title={t("macros.delete")}
                       aria-label={t("macros.delete")}
                     >
@@ -214,6 +348,84 @@ function ChatPane({
           )}
         </div>
       </div>
+      {selectedMacro && (
+        <div className="bg-muted/20 grid gap-2 rounded-md border p-2">
+          <div className="flex items-center gap-2">
+            <Command className="text-primary size-3.5 shrink-0" />
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-xs font-semibold">{selectedMacro.name}</p>
+              <p className="text-muted-foreground truncate font-mono text-[10px]">{macroPreview}</p>
+            </div>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-7 shrink-0"
+              onClick={() => {
+                setText(selectedMacro.command)
+                setMacroCommand(selectedMacro.command)
+                setSelectedMacro(null)
+                setMacroValues({})
+              }}
+              title={t("macros.cancel")}
+              aria-label={t("macros.cancel")}
+            >
+              <X className="size-3.5" />
+            </Button>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {(selectedMacro.parameters ?? []).map((parameter, index) => {
+              const inputId = `macro-${selectedMacro.id}-${parameter.name}`
+              const typeLabel = parameter.type === "number"
+                ? t("macros.parameterNumber")
+                : parameter.type === "boolean" ? t("macros.parameterBoolean") : t("macros.parameterText")
+              return (
+                <div key={parameter.name} className="grid gap-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <label htmlFor={inputId} className="truncate text-[11px] font-medium">{parameter.name}</label>
+                    <span className="text-muted-foreground text-[10px]">{typeLabel}</span>
+                  </div>
+                  {parameter.type === "boolean" ? (
+                    <select
+                      id={inputId}
+                      ref={(node) => {
+                        if (index === 0) firstMacroParameterRef.current = node
+                      }}
+                      value={macroValues[parameter.name] ?? ""}
+                      onChange={(event) => setMacroValues((current) => ({...current, [parameter.name]: event.target.value}))}
+                      className="border-input bg-background text-foreground focus-visible:border-ring focus-visible:ring-ring/50 h-9 w-full rounded-md border px-3 py-1 text-sm outline-none focus-visible:ring-[3px]"
+                    >
+                      <option value="">{t("macros.chooseValue")}</option>
+                      <option value="true">{t("macros.true")}</option>
+                      <option value="false">{t("macros.false")}</option>
+                    </select>
+                  ) : (
+                    <Input
+                      id={inputId}
+                      ref={(node) => {
+                        if (index === 0) firstMacroParameterRef.current = node
+                      }}
+                      type={parameter.type === "number" ? "number" : "text"}
+                      value={macroValues[parameter.name] ?? ""}
+                      onChange={(event) => setMacroValues((current) => ({...current, [parameter.name]: event.target.value}))}
+                      placeholder={parameter.name}
+                      autoComplete="off"
+                    />
+                  )}
+                </div>
+              )
+            })}
+          </div>
+          <p className="text-muted-foreground truncate font-mono text-[10px]">
+            {t("macros.preview")}: {macroPreview}
+          </p>
+          {missingMacroParameters.length > 0 && (
+            <p className="text-destructive text-[10px]">
+              {t("macros.fillParameters", {parameters: missingMacroParameters.map((parameter) => parameter.name).join(", ")})}
+            </p>
+          )}
+        </div>
+      )}
       <form onSubmit={submit} className="flex gap-2">
         {/* Ghost-text completion: the suggestion renders behind the input as a
             transparent copy of the typed text (reserving its exact width) plus a
@@ -222,7 +434,7 @@ function ChatPane({
             transparent run is the same glyphs at the same font, so the suffix
             always starts where the caret is. */}
         <div className="relative flex-1">
-          {(() => {
+          {!selectedMacro && (() => {
             const options = autocomplete.options(text)
             if (!options.length) return null
             const accountPhase = /^\/\S+\s/.test(text)
@@ -259,7 +471,7 @@ function ChatPane({
               </div>
             )
           })()}
-          {(() => {
+          {!selectedMacro && (() => {
             const ghost = !ghostOff ? autocomplete.suggest(text) : null
             if (!ghost) return null
             // Split at the first case-sensitive divergence between typed text
@@ -282,12 +494,15 @@ function ChatPane({
           })()}
           <Input
             className="relative z-10"
-            value={text}
+            value={selectedMacro ? macroPreview : text}
+            readOnly={Boolean(selectedMacro)}
             onChange={(e) => {
+              if (selectedMacro) return
               setGhostOff(false)
               setText(history.onTextChange(e.target.value))
             }}
             onKeyDown={(e) => {
+              if (selectedMacro) return
               // Escape hides the ghost preview until the next edit.
               if (e.key === "Escape") {
                 if (!ghostOff && autocomplete.suggest(text)) {
@@ -309,7 +524,15 @@ function ChatPane({
             autoComplete="off"
           />
         </div>
-        <Button type="submit" size="icon" aria-label={t("common.send")} title={t("common.send")}><Send className="size-4" /></Button>
+        <Button
+          type="submit"
+          size="icon"
+          disabled={Boolean(selectedMacro && missingMacroParameters.length > 0)}
+          aria-label={t("common.send")}
+          title={t("common.send")}
+        >
+          <Send className="size-4" />
+        </Button>
       </form>
     </div>
   )
