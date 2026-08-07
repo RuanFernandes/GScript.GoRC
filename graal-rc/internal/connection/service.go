@@ -2966,3 +2966,15 @@ func (s *Service) Status() Status {
 	s.rightsMu.RUnlock()
 	return st
 }
+
+// PumpError returns the last terminal event-pump error, if any. It is kept
+// separate from Status so the existing session contract remains stable while
+// diagnostics can explain why a live handle stopped producing events.
+func (s *Service) PumpError() string {
+	s.pumpMu.Lock()
+	defer s.pumpMu.Unlock()
+	if s.pumpErr == nil {
+		return ""
+	}
+	return s.pumpErr.Error()
+}

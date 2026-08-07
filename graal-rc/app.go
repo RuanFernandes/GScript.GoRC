@@ -142,8 +142,22 @@ type App struct {
 	syncReviewMu     sync.Mutex
 	syncReviewWindow *application.WebviewWindow
 
-	deploymentMu     sync.Mutex
-	deploymentWindow *application.WebviewWindow
+	deploymentMu      sync.Mutex
+	deploymentWindow  *application.WebviewWindow
+	diagnosticsMu     sync.Mutex
+	diagnosticsWindow *application.WebviewWindow
+
+	// Reconnection is coordinated at the App boundary so a user-initiated
+	// server switch or logout cannot race an automatic recovery attempt.
+	connectionMu        sync.Mutex
+	reconnectMu         sync.Mutex
+	reconnectCancel     context.CancelFunc
+	reconnectState      ReconnectStatus
+	reconnectGeneration uint64
+	selectedServer      int
+	selectedServerName  string
+	selectedServerSet   bool
+	sessionActive       atomic.Bool
 
 	// Opened-file caches for the type-aware open behavior (double-click a file):
 	// textCache holds .txt content for the editor window; dbFiles maps a remote
@@ -228,6 +242,9 @@ func (a *App) attach(app *application.App) {
 	}
 	var seq uint64
 	a.sessions.SetEmitter(func(name string, data ...any) {
+		if name == "rc:disconnected" || name == "rc:pumpError" {
+			a.startReconnect(false)
+		}
 		if name == "rc:pm" && len(data) >= 4 {
 			id, idOK := data[0].(int)
 			account, accountOK := data[1].(string)
@@ -1184,6 +1201,10 @@ func (a *App) GetServers() ([]rclib.Server, error) { return a.sessions.GetServer
 // ConnectToServer authenticates to the server at the given index. On success it
 // brands the window titles and tray tooltip with the server name.
 func (a *App) ConnectToServer(index int) error {
+	a.stopReconnect()
+	a.connectionMu.Lock()
+	defer a.connectionMu.Unlock()
+	a.sessionActive.Store(false)
 	// A running sync engine uses the shared connection backend. Tear it down
 	// before switching the underlying NC session; otherwise an in-flight poll
 	// from the previous server can continue after the handle starts serving the
@@ -1192,6 +1213,13 @@ func (a *App) ConnectToServer(index int) error {
 	err := a.sessions.ConnectToServer(index)
 	a.refreshServerChrome()
 	if err == nil {
+		status := a.sessions.Status()
+		a.reconnectMu.Lock()
+		a.selectedServer = index
+		a.selectedServerName = status.ServerName
+		a.selectedServerSet = true
+		a.reconnectMu.Unlock()
+		a.sessionActive.Store(true)
 		a.startSyncEngine()
 	}
 	return err
@@ -1202,9 +1230,19 @@ func (a *App) SetNewProtocol(enable bool) error { return a.sessions.SetNewProtoc
 
 // Logout drops the active session and restores default window/tray titles.
 func (a *App) Logout() {
+	a.stopReconnect()
+	a.connectionMu.Lock()
+	defer a.connectionMu.Unlock()
+	a.sessionActive.Store(false)
 	a.stopSyncEngine()
 	a.sessions.Logout()
 	a.clearPMState()
+	a.reconnectMu.Lock()
+	a.selectedServer = 0
+	a.selectedServerName = ""
+	a.selectedServerSet = false
+	a.reconnectState = ReconnectStatus{}
+	a.reconnectMu.Unlock()
 	a.refreshServerChrome()
 }
 

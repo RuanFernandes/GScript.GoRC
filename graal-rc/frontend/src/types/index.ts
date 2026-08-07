@@ -35,6 +35,7 @@ export type {
 } from "../../bindings/graal-rc/internal/sync/models"
 export type {Entry as AuditEntry} from "../../bindings/graal-rc/internal/audit/models"
 export type {Backup as DeploymentBackup} from "../../bindings/graal-rc/internal/deploy/models"
+export type {DiagnosticsSnapshot, ReconnectStatus, SyncDiagnostics} from "../../bindings/graal-rc/models"
 import type {GsFunction} from "@/lib/gscriptApi"
 export type {GsFunction}
 
