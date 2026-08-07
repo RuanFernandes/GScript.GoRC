@@ -1,5 +1,5 @@
 import {useEffect, useMemo, useRef, useState} from "react"
-import {Code2, FileSearch, FolderOpen, MessageSquare, RefreshCw, Search, Settings, Users, X} from "lucide-react"
+import {ArchiveRestore, Code2, FileSearch, FolderOpen, MessageSquare, RefreshCw, Search, Settings, Users, X} from "lucide-react"
 
 import {Button} from "@/components/ui/button"
 import {Input} from "@/components/ui/input"
@@ -15,6 +15,7 @@ interface GlobalSearchPaletteProps {
   onOpenScripts: () => void
   onOpenFiles: () => void
   onOpenSync: () => void
+  onOpenDeployments: () => void
   onOpenSettings: () => void
   onOpenPlayerPM: (player: Player) => void
 }
@@ -37,6 +38,7 @@ export function GlobalSearchPalette({
   onOpenScripts,
   onOpenFiles,
   onOpenSync,
+  onOpenDeployments,
   onOpenSettings,
   onOpenPlayerPM,
 }: GlobalSearchPaletteProps) {
@@ -75,6 +77,7 @@ export function GlobalSearchPalette({
       {id: "scripts", title: t("dashboard.openScripts"), description: t("dashboard.searchScriptsDescription"), group: t("dashboard.commands"), icon: Code2, run: onOpenScripts},
       {id: "files", title: t("dashboard.openFiles"), description: t("dashboard.searchFilesDescription"), group: t("dashboard.commands"), icon: FolderOpen, run: onOpenFiles},
       {id: "sync", title: t("dashboard.openSync"), description: t("dashboard.searchSyncDescription"), group: t("dashboard.commands"), icon: RefreshCw, run: onOpenSync},
+      {id: "history", title: t("dashboard.openHistory"), description: t("dashboard.searchHistoryDescription"), group: t("dashboard.commands"), icon: ArchiveRestore, run: onOpenDeployments},
       {id: "settings", title: t("rc.settings"), description: t("dashboard.searchSettingsDescription"), group: t("dashboard.commands"), icon: Settings, run: onOpenSettings},
     ]
     const q = query.trim().toLocaleLowerCase()
@@ -91,7 +94,7 @@ export function GlobalSearchPalette({
         run: () => onOpenPlayerPM(player),
       }))
     return [...actions.filter((action) => matches(`${action.title} ${action.description}`)), ...playerResults]
-  }, [onOpenFiles, onOpenPlayerPM, onOpenPlayers, onOpenScripts, onOpenSettings, onOpenSync, players, query, t])
+  }, [onOpenDeployments, onOpenFiles, onOpenPlayerPM, onOpenPlayers, onOpenScripts, onOpenSettings, onOpenSync, players, query, t])
 
   useEffect(() => {
     setActiveIndex((current) => Math.min(current, Math.max(0, results.length - 1)))

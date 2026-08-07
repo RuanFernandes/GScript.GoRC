@@ -26,6 +26,7 @@ import {ScriptManagerWindowScreen} from "@/screens/ScriptManagerWindowScreen"
 import {ServerListScreen} from "@/screens/ServerListScreen"
 import {SettingsWindowScreen} from "@/screens/SettingsWindowScreen"
 import {SyncReviewWindowScreen} from "@/screens/SyncReviewWindowScreen"
+import {DeploymentCenterWindowScreen} from "@/screens/DeploymentCenterWindowScreen"
 import {SqliteExplorerWindowScreen} from "@/screens/SqliteExplorerWindowScreen"
 import {TextEditorWindowScreen} from "@/screens/TextEditorWindowScreen"
 import type {AppView, LoginRequest} from "@/types"
@@ -323,8 +324,10 @@ function App() {
         ? {title: "Plugin Documentation", content: <PluginDocumentationWindowScreen />}
       : hash.startsWith("#plugin-ui")
         ? {title: "Plugin UI", content: <PluginUIWindowScreen />}
-      : hash.startsWith("#sync")
+                      : hash.startsWith("#sync")
                       ? {title: "Sync Review", content: <SyncReviewWindowScreen />}
+                      : hash.startsWith("#deployments")
+                        ? {title: "Change History", content: <DeploymentCenterWindowScreen />}
                       : hash.startsWith("#editor")
                         ? {title: "Script Editor", content: <ScriptEditorWindowScreen />}
                         : hash.startsWith("#textfile")

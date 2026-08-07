@@ -1,4 +1,4 @@
-import {Activity, AlertTriangle, CheckCircle2, Code2, Database, FileText, FolderOpen, MessageSquare, RefreshCw, Search, Server, Settings, Users, Wifi, WifiOff} from "lucide-react"
+import {Activity, AlertTriangle, ArchiveRestore, CheckCircle2, Code2, Database, FileText, FolderOpen, MessageSquare, RefreshCw, Search, Server, Settings, Users, Wifi, WifiOff} from "lucide-react"
 
 import {Badge} from "@/components/ui/badge"
 import {Button} from "@/components/ui/button"
@@ -18,6 +18,7 @@ interface OperationsOverviewProps {
   onOpenScripts: () => void
   onOpenFiles: () => void
   onOpenSync: () => void
+  onOpenDeployments: () => void
   onOpenSettings: () => void
 }
 
@@ -46,6 +47,7 @@ export function OperationsOverview({
   onOpenScripts,
   onOpenFiles,
   onOpenSync,
+  onOpenDeployments,
   onOpenSettings,
 }: OperationsOverviewProps) {
   const {t, language} = useLanguage()
@@ -147,6 +149,7 @@ export function OperationsOverview({
             <Button variant="ghost" className="justify-start" onClick={onOpenScripts}><Code2 className="size-4" />{t("dashboard.openScripts")}</Button>
             <Button variant="ghost" className="justify-start" onClick={onOpenFiles}><FolderOpen className="size-4" />{t("dashboard.openFiles")}</Button>
             <Button variant="ghost" className="justify-start" onClick={onOpenSync}><RefreshCw className="size-4" />{t("dashboard.openSync")}</Button>
+            <Button variant="ghost" className="justify-start" onClick={onOpenDeployments}><ArchiveRestore className="size-4" />{t("dashboard.openHistory")}</Button>
             <div className="text-muted-foreground mt-2 flex items-center gap-2 border-t pt-3 text-xs">
               <Wifi className="size-3.5" />
               {unreadTotal > 0 ? t("dashboard.unreadMessages", {count: unreadTotal, suffix: unreadTotal === 1 ? "" : "s"}) : t("dashboard.noUnreadMessages")}

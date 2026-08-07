@@ -9,7 +9,7 @@ import Editor, {DiffEditor, type BeforeMount, type OnMount} from "@monaco-editor
 import {Events} from "@wailsio/runtime"
 import {toast} from "sonner"
 
-import {Loader2} from "lucide-react"
+import {GitCompare, Loader2, X} from "lucide-react"
 import {AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogHeader, AlertDialogTitle} from "@/components/ui/alert-dialog"
 import {Button} from "@/components/ui/button"
 import {useCodingSettings} from "@/hooks/useCodingSettings"
@@ -111,6 +111,7 @@ export function ScriptEditorWindowScreen() {
   const [confirmSaveWithErrors, setConfirmSaveWithErrors] = useState(false)
   const [saveDiagnostics, setSaveDiagnostics] = useState<GraalScriptDiagnostic[]>([])
   const [closingAfterSave, setClosingAfterSave] = useState(false)
+  const [showChanges, setShowChanges] = useState(false)
   const pluginLanguage = kind === "options" || kind === "folder_config" || kind === "flags" || kind === "npcflags"
     ? "serverconfig"
     : kind === "npcattr" ? "ini" : "graalscript"
@@ -552,7 +553,36 @@ export function ScriptEditorWindowScreen() {
         {readOnly && <span className="text-muted-foreground text-xs">(read-only)</span>}
         {dirty && !readOnly && <span className="text-amber-500 text-xs">• unsaved</span>}
         {saving && <Loader2 className="text-muted-foreground size-3.5 animate-spin" />}
+        {!readOnly && dirty && (
+          <div className="ml-auto flex items-center gap-1.5">
+            <Button variant="outline" size="sm" onClick={() => setShowChanges((value) => !value)}>
+              <GitCompare className="size-4" />{t("editor.reviewChanges")}
+            </Button>
+            <Button size="sm" onClick={() => void doSave()} disabled={saving}>{t("editor.deployChanges")}</Button>
+          </div>
+        )}
       </header>
+      {showChanges && dirty && !readOnly && (
+        <section className="border-b bg-muted/10 p-3">
+          <div className="mb-2 flex items-center gap-2">
+            <div className="min-w-0 flex-1">
+              <h2 className="text-sm font-semibold">{t("editor.reviewChanges")}</h2>
+              <p className="text-muted-foreground text-xs">{t("editor.reviewChangesDescription")}</p>
+            </div>
+            <Button variant="ghost" size="icon" className="size-7" onClick={() => setShowChanges(false)} aria-label={t("common.close")}><X className="size-4" /></Button>
+          </div>
+          <div className="h-64 overflow-hidden rounded-md border">
+            <DiffEditor
+              height="100%"
+              original={original}
+              modified={content}
+              language={pluginLanguage}
+              theme={settings.theme === "remoteTheme" && !remoteDef ? "vs-dark" : settings.theme}
+              options={{readOnly: true, renderSideBySide: true, minimap: {enabled: false}, scrollBeyondLastLine: false, automaticLayout: true}}
+            />
+          </div>
+        </section>
+      )}
       {conflict && (
         <section className="border-b border-amber-500/30 bg-amber-500/5 p-3">
           <div className="mb-2 flex flex-wrap items-start gap-2">

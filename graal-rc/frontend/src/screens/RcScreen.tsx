@@ -488,6 +488,7 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
               onOpenScripts={() => rcService.openScriptManager()}
               onOpenFiles={() => rcService.openFileBrowser()}
               onOpenSync={() => rcService.openSyncReview()}
+              onOpenDeployments={() => rcService.openDeploymentCenter()}
               onOpenSettings={() => rcService.openSettings()}
             />
           </TabsContent>
@@ -514,6 +515,7 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
         onOpenScripts={() => rcService.openScriptManager()}
         onOpenFiles={() => rcService.openFileBrowser()}
         onOpenSync={() => rcService.openSyncReview()}
+        onOpenDeployments={() => rcService.openDeploymentCenter()}
         onOpenSettings={() => rcService.openSettings()}
         onOpenPlayerPM={(player) => rcService.openPlayerListPM(player.id)}
       />

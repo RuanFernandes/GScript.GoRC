@@ -33,6 +33,8 @@ export type {
   ScriptPair as SyncScriptPair,
   State as SyncState,
 } from "../../bindings/graal-rc/internal/sync/models"
+export type {Entry as AuditEntry} from "../../bindings/graal-rc/internal/audit/models"
+export type {Backup as DeploymentBackup} from "../../bindings/graal-rc/internal/deploy/models"
 import type {GsFunction} from "@/lib/gscriptApi"
 export type {GsFunction}
 
