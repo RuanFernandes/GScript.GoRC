@@ -64,8 +64,8 @@ export function OperationsOverview({
         : t("dashboard.syncDisabled")
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-3 overflow-y-auto pr-1">
-      <section className="flex flex-wrap items-start justify-between gap-3 border-b pb-3">
+    <div className="flex h-full min-h-0 flex-col gap-3 overflow-y-auto pr-1 pb-1">
+      <section className="flex flex-none flex-wrap items-start justify-between gap-3 border-b pb-3">
         <div>
           <div className="text-muted-foreground flex items-center gap-2 text-xs font-medium">
             <Activity className="size-3.5" />
@@ -80,7 +80,7 @@ export function OperationsOverview({
         </Button>
       </section>
 
-      <section className="grid gap-3 md:grid-cols-3" aria-label={t("dashboard.statusSummary")}>
+      <section className="grid flex-none gap-3 md:grid-cols-3" aria-label={t("dashboard.statusSummary")}>
         <Card className="gap-3 py-4">
           <CardHeader className="gap-1 px-4">
             <CardDescription className="flex items-center gap-2"><Server className="size-3.5" />{t("dashboard.connection")}</CardDescription>
@@ -118,13 +118,13 @@ export function OperationsOverview({
         </Card>
       </section>
 
-      <section className="grid min-h-0 gap-3 lg:grid-cols-[minmax(0,1.1fr)_minmax(18rem,0.9fr)]">
-        <Card className="min-h-0 gap-3 py-4">
+      <section className="grid min-h-0 flex-none gap-3 lg:grid-cols-[minmax(0,1.1fr)_minmax(18rem,0.9fr)]">
+        <Card className="min-w-0 min-h-0 gap-3 overflow-hidden py-4">
           <CardHeader className="gap-1 px-4">
             <CardTitle className="flex items-center gap-2 text-sm"><MessageSquare className="size-4" />{t("dashboard.recentActivity")}</CardTitle>
             <CardDescription>{t("dashboard.recentActivityDescription")}</CardDescription>
           </CardHeader>
-          <CardContent className="min-h-0 px-4">
+          <CardContent className="min-h-0 flex-1 overflow-y-auto px-4">
             {recentMessages.length === 0 ? (
               <div className="text-muted-foreground flex min-h-28 items-center justify-center text-sm">{t("dashboard.noActivity")}</div>
             ) : (
@@ -141,7 +141,7 @@ export function OperationsOverview({
           </CardContent>
         </Card>
 
-        <Card className="gap-3 py-4">
+        <Card className="min-w-0 gap-3 overflow-hidden py-4">
           <CardHeader className="gap-1 px-4">
             <CardTitle className="text-sm">{t("dashboard.quickActions")}</CardTitle>
             <CardDescription>{t("dashboard.quickActionsDescription")}</CardDescription>
@@ -161,7 +161,7 @@ export function OperationsOverview({
         </Card>
       </section>
 
-      <section className="text-muted-foreground flex items-center gap-2 border-t pt-3 text-xs">
+      <section className="text-muted-foreground flex flex-none items-center gap-2 border-t pt-3 text-xs">
         <Database className="size-3.5" />
         {t("dashboard.scriptBreakdown", {weapons: scriptCounts.weapons, classes: scriptCounts.classes, npcs: scriptCounts.npcs})}
         <FileText className="ml-auto size-3.5" />
