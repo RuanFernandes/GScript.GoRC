@@ -21,6 +21,9 @@ interface PlayerTableProps {
   unreadById: Record<number, number>
   loading?: boolean
   onPM: (player: Player) => void
+  selectedIds?: Set<number>
+  onSelect?: (player: Player) => void
+  onToggleSelection?: (player: Player) => void
   onEdit: (player: Player, kind: PlayerEditKind) => void
 }
 
@@ -31,6 +34,9 @@ interface GroupProps {
   unreadById: Record<number, number>
   onPM: (player: Player) => void
   onContext: (e: React.MouseEvent, player: Player) => void
+  selectedIds: Set<number>
+  onSelect?: (player: Player) => void
+  onToggleSelection?: (player: Player) => void
   defaultOpen?: boolean
 }
 
@@ -48,15 +54,35 @@ function hueFor(name: string): number {
   return h
 }
 
-function PlayerRow({player, unread, onPM, onContext}: {player: Player; unread: number; onPM: (p: Player) => void; onContext: (e: React.MouseEvent, p: Player) => void}) {
+function PlayerRow({player, unread, onPM, onContext, selected, onSelect, onToggleSelection}: {player: Player; unread: number; onPM: (p: Player) => void; onContext: (e: React.MouseEvent, p: Player) => void; selected: boolean; onSelect?: (p: Player) => void; onToggleSelection?: (p: Player) => void}) {
   const tag = parsePlayerTag(player.level)
   const nick = player.nick || player.account
   const hue = hueFor(nick)
   return (
     <div
       className="group hover:bg-accent/50 flex items-center gap-3 rounded-lg px-2.5 py-2"
+      role="button"
+      tabIndex={0}
+      aria-pressed={selected}
+      onClick={() => onSelect?.(player)}
+      onKeyDown={(event) => {
+        if ((event.key === "Enter" || event.key === " ") && onSelect) {
+          event.preventDefault()
+          onSelect(player)
+        }
+      }}
       onContextMenu={(e) => onContext(e, player)}
     >
+      {onToggleSelection && (
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={() => onToggleSelection(player)}
+          onClick={(event) => event.stopPropagation()}
+          aria-label={`Select ${nick}`}
+          className="size-4 shrink-0 accent-[var(--primary)]"
+        />
+      )}
       <div className="relative shrink-0">
         <div
           className="text-primary-foreground flex size-9 items-center justify-center rounded-full text-xs font-semibold shadow-sm"
@@ -105,7 +131,7 @@ function PlayerRow({player, unread, onPM, onContext}: {player: Player; unread: n
   )
 }
 
-function Group({label, icon: Icon, rows, unreadById, onPM, onContext, defaultOpen = true}: GroupProps) {
+function Group({label, icon: Icon, rows, unreadById, onPM, onContext, selectedIds, onSelect, onToggleSelection, defaultOpen = true}: GroupProps) {
   const [open, setOpen] = useState(defaultOpen)
   const totalUnread = rows.reduce((sum, p) => sum + (unreadById[p.id] ?? 0), 0)
   const Chevron = open ? ChevronDown : ChevronRight
@@ -129,7 +155,7 @@ function Group({label, icon: Icon, rows, unreadById, onPM, onContext, defaultOpe
       {open && (
         <div className="flex flex-col gap-0.5">
           {rows.map((p) => (
-            <PlayerRow key={`${p.account}-${p.id}`} player={p} unread={unreadById[p.id] ?? 0} onPM={onPM} onContext={onContext} />
+            <PlayerRow key={`${p.account}-${p.id}`} player={p} unread={unreadById[p.id] ?? 0} onPM={onPM} onContext={onContext} selected={selectedIds.has(p.id)} onSelect={onSelect} onToggleSelection={onToggleSelection} />
           ))}
         </div>
       )}
@@ -137,7 +163,7 @@ function Group({label, icon: Icon, rows, unreadById, onPM, onContext, defaultOpe
   )
 }
 
-export function PlayerTable({players, unreadById, loading, onPM, onEdit}: PlayerTableProps) {
+export function PlayerTable({players, unreadById, loading, onPM, selectedIds = new Set<number>(), onSelect, onToggleSelection, onEdit}: PlayerTableProps) {
   const [menu, setMenu] = useState<{x: number; y: number; player: Player} | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   // Clamp the menu inside the viewport so a right-click near a window edge
@@ -223,9 +249,9 @@ export function PlayerTable({players, unreadById, loading, onPM, onEdit}: Player
     <>
       <div className="flex flex-col gap-3">
         {admins.length > 0 && (
-          <Group label="Admins" icon={Shield} rows={admins} unreadById={unreadById} onPM={onPM} onContext={openContext} />
+          <Group label="Admins" icon={Shield} rows={admins} unreadById={unreadById} onPM={onPM} onContext={openContext} selectedIds={selectedIds} onSelect={onSelect} onToggleSelection={onToggleSelection} />
         )}
-        <Group label="Players" icon={Users} rows={regular} unreadById={unreadById} onPM={onPM} onContext={openContext} />
+        <Group label="Players" icon={Users} rows={regular} unreadById={unreadById} onPM={onPM} onContext={openContext} selectedIds={selectedIds} onSelect={onSelect} onToggleSelection={onToggleSelection} />
       </div>
 
       {menu && (

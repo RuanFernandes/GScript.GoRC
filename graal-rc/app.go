@@ -23,8 +23,10 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 
+	auditlib "graal-rc/internal/audit"
 	"graal-rc/internal/connection"
 	"graal-rc/internal/credentials"
+	deploylib "graal-rc/internal/deploy"
 	"graal-rc/internal/graalscript"
 	pluginlib "graal-rc/internal/plugins"
 	"graal-rc/internal/sqlite"
@@ -117,6 +119,8 @@ type App struct {
 
 	graalScriptLSP *graalscript.LanguageServer
 	plugins        *pluginlib.Manager
+	audit          *auditlib.Store
+	backups        *deploylib.Store
 
 	languageMu sync.Mutex
 	language   string
@@ -138,17 +142,35 @@ type App struct {
 	syncReviewMu     sync.Mutex
 	syncReviewWindow *application.WebviewWindow
 
+	deploymentMu      sync.Mutex
+	deploymentWindow  *application.WebviewWindow
+	diagnosticsMu     sync.Mutex
+	diagnosticsWindow *application.WebviewWindow
+
+	// Reconnection is coordinated at the App boundary so a user-initiated
+	// server switch or logout cannot race an automatic recovery attempt.
+	connectionMu        sync.Mutex
+	reconnectMu         sync.Mutex
+	reconnectCancel     context.CancelFunc
+	reconnectState      ReconnectStatus
+	reconnectGeneration uint64
+	selectedServer      int
+	selectedServerName  string
+	selectedServerSet   bool
+	sessionActive       atomic.Bool
+
 	// Opened-file caches for the type-aware open behavior (double-click a file):
 	// textCache holds .txt content for the editor window; dbFiles maps a remote
 	// .db path to its local cache file (operated on by the SQLite explorer);
 	// dbHeaders keeps the original 100-byte header for version preservation on
 	// save. textWindows/sqliteWindows track one window per remote path.
-	openMu        sync.Mutex
-	textCache     map[string][]byte
-	dbFiles       map[string]string
-	dbHeaders     map[string][]byte
-	textWindows   map[string]*application.WebviewWindow
-	sqliteWindows map[string]*application.WebviewWindow
+	openMu            sync.Mutex
+	textCache         map[string][]byte
+	textOriginalCache map[string][]byte
+	dbFiles           map[string]string
+	dbHeaders         map[string][]byte
+	textWindows       map[string]*application.WebviewWindow
+	sqliteWindows     map[string]*application.WebviewWindow
 }
 
 // NewApp creates a new App with a fresh connection service and an encrypted
@@ -170,6 +192,7 @@ func NewApp() *App {
 	if pluginErr != nil {
 		log.Printf("plugins: %v", pluginErr)
 	}
+	auditStore, backupStore := newLocalChangeStores()
 	return &App{
 		sessions:              connection.NewService(),
 		vault:                 vault,
@@ -177,6 +200,7 @@ func NewApp() *App {
 		editorCache:           map[string]rclib.ScriptReply{},
 		editorDirty:           map[string]bool{},
 		textCache:             map[string][]byte{},
+		textOriginalCache:     map[string][]byte{},
 		dbFiles:               map[string]string{},
 		dbHeaders:             map[string][]byte{},
 		textWindows:           map[string]*application.WebviewWindow{},
@@ -189,6 +213,8 @@ func NewApp() *App {
 		pmConversations:       map[int]PMConversation{},
 		graalScriptLSP:        lsp,
 		plugins:               pluginManager,
+		audit:                 auditStore,
+		backups:               backupStore,
 	}
 }
 
@@ -216,6 +242,9 @@ func (a *App) attach(app *application.App) {
 	}
 	var seq uint64
 	a.sessions.SetEmitter(func(name string, data ...any) {
+		if name == "rc:disconnected" || name == "rc:pumpError" {
+			a.startReconnect(false)
+		}
 		if name == "rc:pm" && len(data) >= 4 {
 			id, idOK := data[0].(int)
 			account, accountOK := data[1].(string)
@@ -1172,6 +1201,10 @@ func (a *App) GetServers() ([]rclib.Server, error) { return a.sessions.GetServer
 // ConnectToServer authenticates to the server at the given index. On success it
 // brands the window titles and tray tooltip with the server name.
 func (a *App) ConnectToServer(index int) error {
+	a.stopReconnect()
+	a.connectionMu.Lock()
+	defer a.connectionMu.Unlock()
+	a.sessionActive.Store(false)
 	// A running sync engine uses the shared connection backend. Tear it down
 	// before switching the underlying NC session; otherwise an in-flight poll
 	// from the previous server can continue after the handle starts serving the
@@ -1180,6 +1213,13 @@ func (a *App) ConnectToServer(index int) error {
 	err := a.sessions.ConnectToServer(index)
 	a.refreshServerChrome()
 	if err == nil {
+		status := a.sessions.Status()
+		a.reconnectMu.Lock()
+		a.selectedServer = index
+		a.selectedServerName = status.ServerName
+		a.selectedServerSet = true
+		a.reconnectMu.Unlock()
+		a.sessionActive.Store(true)
 		a.startSyncEngine()
 	}
 	return err
@@ -1190,9 +1230,19 @@ func (a *App) SetNewProtocol(enable bool) error { return a.sessions.SetNewProtoc
 
 // Logout drops the active session and restores default window/tray titles.
 func (a *App) Logout() {
+	a.stopReconnect()
+	a.connectionMu.Lock()
+	defer a.connectionMu.Unlock()
+	a.sessionActive.Store(false)
 	a.stopSyncEngine()
 	a.sessions.Logout()
 	a.clearPMState()
+	a.reconnectMu.Lock()
+	a.selectedServer = 0
+	a.selectedServerName = ""
+	a.selectedServerSet = false
+	a.reconnectState = ReconnectStatus{}
+	a.reconnectMu.Unlock()
 	a.refreshServerChrome()
 }
 
@@ -1481,6 +1531,21 @@ func (a *App) SaveNPC(id int, script string) error {
 }
 
 func (a *App) saveScriptWithSyncExpectation(kind, key, script string, save func() error) error {
+	previous, hasPrevious := a.editorOriginal(kind, key)
+	if !hasPrevious {
+		reply, err := a.fetchScript(kind, key)
+		if err != nil {
+			a.recordAudit("save", "script", kind+":"+key, "failed", "could not read the current version for a safety backup: "+err.Error())
+			return fmt.Errorf("read current %s before saving: %w", kind, err)
+		}
+		previous = []byte(reply.Script)
+		hasPrevious = true
+	}
+	backup, hasBackup, err := a.saveDeploymentBackup("script", kind+":"+key, previous, hasPrevious)
+	if err != nil {
+		a.recordAudit("save", "script", kind+":"+key, "failed", "safety backup failed: "+err.Error())
+		return fmt.Errorf("create safety backup before saving: %w", err)
+	}
 	eng := a.currentSyncEngine()
 	if eng != nil {
 		eng.ExpectServerUpdate(kind, key, script)
@@ -1489,8 +1554,15 @@ func (a *App) saveScriptWithSyncExpectation(kind, key, script string, save func(
 		if eng != nil {
 			eng.CancelExpectedServerUpdate(kind, key)
 		}
+		a.recordAudit("save", "script", kind+":"+key, "failed", err.Error())
 		return err
 	}
+	a.updateEditorContent(kind, key, script)
+	detail := "no previous remote content was available"
+	if hasBackup {
+		detail = "backup " + backup.ID
+	}
+	a.recordAudit("save", "script", kind+":"+key, "success", detail)
 	a.emitPluginEvent("script.saved", kind, key)
 	return nil
 }
@@ -1508,17 +1580,67 @@ func (a *App) OpenNPCAttributes(id int) (rclib.ScriptReply, error) {
 
 // SaveNPCFlags writes an NPC's flags back.
 func (a *App) SaveNPCFlags(id int, flags string) error {
+	key := strconv.Itoa(id)
+	previous, hasPrevious := a.editorOriginal("npcflags", key)
+	if !hasPrevious {
+		reply, err := a.sessions.OpenNPCFlags(id)
+		if err != nil {
+			a.recordAudit("save", "npcflags", key, "failed", "could not read the current version for a safety backup: "+err.Error())
+			return fmt.Errorf("read NPC flags before saving: %w", err)
+		}
+		previous = []byte(reply.Script)
+		hasPrevious = true
+	}
+	backup, hasBackup, err := a.saveDeploymentBackup("npcflags", key, previous, hasPrevious)
+	if err != nil {
+		a.recordAudit("save", "npcflags", key, "failed", "safety backup failed: "+err.Error())
+		return fmt.Errorf("create safety backup before saving: %w", err)
+	}
 	if err := a.sessions.SaveNPCFlags(id, flags); err != nil {
+		a.recordAudit("save", "npcflags", key, "failed", err.Error())
 		return err
 	}
-	a.emitPluginEvent("script.saved", "npcflags", strconv.Itoa(id))
+	a.updateEditorContent("npcflags", key, flags)
+	detail := "no previous remote content was available"
+	if hasBackup {
+		detail = "backup " + backup.ID
+	}
+	a.recordAudit("save", "npcflags", key, "success", detail)
+	a.emitPluginEvent("script.saved", "npcflags", key)
 	return nil
 }
 
 // SaveServerText uploads a server-side text config (options/folder_config/
 // flags) edited in a ScriptEditor window back to the server.
 func (a *App) SaveServerText(kind, content string) error {
-	return a.sessions.UploadServerText(kind, content)
+	previous, cacheKey, hasPrevious := a.editorOriginalForKind(kind)
+	if !hasPrevious {
+		reply, err := a.sessions.OpenServerText(kind)
+		if err != nil {
+			a.recordAudit("save", "servertext", kind, "failed", "could not read the current version for a safety backup: "+err.Error())
+			return fmt.Errorf("read server text before saving: %w", err)
+		}
+		previous = []byte(reply.Script)
+		hasPrevious = true
+	}
+	backup, hasBackup, err := a.saveDeploymentBackup("servertext", kind, previous, hasPrevious)
+	if err != nil {
+		a.recordAudit("save", "servertext", kind, "failed", "safety backup failed: "+err.Error())
+		return fmt.Errorf("create safety backup before saving: %w", err)
+	}
+	if err := a.sessions.UploadServerText(kind, content); err != nil {
+		a.recordAudit("save", "servertext", kind, "failed", err.Error())
+		return err
+	}
+	if cacheKey != "" {
+		a.updateEditorContent(kind, cacheKey, content)
+	}
+	detail := "no previous remote content was available"
+	if hasBackup {
+		detail = "backup " + backup.ID
+	}
+	a.recordAudit("save", "servertext", kind, "success", detail)
+	return nil
 }
 
 // WarpNPC warps an NPC to (x, y) on the given level.
@@ -1549,17 +1671,44 @@ func (a *App) FileBrowserCd(folder string) error {
 	return nil
 }
 
-// FileBrowserDelete deletes a remote file.
-func (a *App) FileBrowserDelete(path string) error { return a.sessions.FileBrowserDelete(path) }
+// FileBrowserDelete deletes a remote file. A best-effort snapshot is kept when
+// the current entry can be downloaded before the destructive operation.
+func (a *App) FileBrowserDelete(path string) error {
+	backup, hasBackup, backupErr := a.backupRemoteContent("file", path)
+	if backupErr != nil {
+		a.recordAudit("delete", "file", path, "failed", "safety backup failed: "+backupErr.Error())
+		return fmt.Errorf("create safety backup before deleting: %w", backupErr)
+	}
+	if err := a.sessions.FileBrowserDelete(path); err != nil {
+		a.recordAudit("delete", "file", path, "failed", err.Error())
+		return err
+	}
+	detail := "remote entry was not readable for backup"
+	if hasBackup {
+		detail = "backup " + backup.ID
+	}
+	a.recordAudit("delete", "file", path, "success", detail)
+	return nil
+}
 
 // FileBrowserRename renames a remote file.
 func (a *App) FileBrowserRename(oldPath, newPath string) error {
-	return a.sessions.FileBrowserRename(oldPath, newPath)
+	if err := a.sessions.FileBrowserRename(oldPath, newPath); err != nil {
+		a.recordAudit("rename", "file", oldPath+" -> "+newPath, "failed", err.Error())
+		return err
+	}
+	a.recordAudit("rename", "file", oldPath+" -> "+newPath, "success", "")
+	return nil
 }
 
 // FileBrowserMove moves a file into a destination folder.
 func (a *App) FileBrowserMove(destFolder, filePath string) error {
-	return a.sessions.FileBrowserMove(destFolder, filePath)
+	if err := a.sessions.FileBrowserMove(destFolder, filePath); err != nil {
+		a.recordAudit("move", "file", filePath+" -> "+destFolder, "failed", err.Error())
+		return err
+	}
+	a.recordAudit("move", "file", filePath+" -> "+destFolder, "success", "")
+	return nil
 }
 
 // GetFileBrowserFolders returns the current browser folders.
@@ -1631,7 +1780,21 @@ func (a *App) UploadFileViaDialog() error {
 	if err != nil {
 		return err
 	}
-	return a.sessions.UploadFile(filepath.Base(chosen), content)
+	remotePath := filepath.Base(chosen)
+	backup, hasBackup, backupErr := a.backupRemoteContent("file", remotePath)
+	if backupErr != nil {
+		return fmt.Errorf("create safety backup before uploading: %w", backupErr)
+	}
+	if err := a.sessions.UploadFile(remotePath, content); err != nil {
+		a.recordAudit("upload", "file", remotePath, "failed", err.Error())
+		return err
+	}
+	detail := "new remote file"
+	if hasBackup {
+		detail = "backup " + backup.ID
+	}
+	a.recordAudit("upload", "file", remotePath, "success", detail)
+	return nil
 }
 
 // UploadFileBytes uploads base64-encoded content (used for drag-in uploads from
@@ -1641,7 +1804,20 @@ func (a *App) UploadFileBytes(remotePath, b64 string) error {
 	if err != nil {
 		return fmt.Errorf("invalid file data: %w", err)
 	}
-	return a.sessions.UploadFile(remotePath, content)
+	backup, hasBackup, backupErr := a.backupRemoteContent("file", remotePath)
+	if backupErr != nil {
+		return fmt.Errorf("create safety backup before uploading: %w", backupErr)
+	}
+	if err := a.sessions.UploadFile(remotePath, content); err != nil {
+		a.recordAudit("upload", "file", remotePath, "failed", err.Error())
+		return err
+	}
+	detail := "new remote file"
+	if hasBackup {
+		detail = "backup " + backup.ID
+	}
+	a.recordAudit("upload", "file", remotePath, "success", detail)
+	return nil
 }
 
 // uniqueDownloadPath returns a non-colliding path inside dir for a file named
@@ -1767,6 +1943,7 @@ func (a *App) OpenRemoteFile(remotePath string) (string, error) {
 	case textExts[ext]:
 		a.openMu.Lock()
 		a.textCache[remotePath] = content
+		a.textOriginalCache[remotePath] = append([]byte(nil), content...)
 		a.openMu.Unlock()
 		if err := a.openTextWindow(remotePath); err != nil {
 			return "", err
@@ -1797,6 +1974,7 @@ func (a *App) OpenRemoteFileAsText(remotePath string) error {
 	}
 	a.openMu.Lock()
 	a.textCache[remotePath] = content
+	a.textOriginalCache[remotePath] = append([]byte(nil), content...)
 	a.openMu.Unlock()
 	return a.openTextWindow(remotePath)
 }
@@ -1814,12 +1992,36 @@ func (a *App) GetTextFile(remotePath string) (string, error) {
 
 // SaveTextFile uploads edited text content back to the remote path.
 func (a *App) SaveTextFile(remotePath, content string) error {
+	a.openMu.Lock()
+	previous, hasPrevious := a.textOriginalCache[remotePath]
+	previous = append([]byte(nil), previous...)
+	a.openMu.Unlock()
+	if !hasPrevious {
+		var loadErr error
+		previous, hasPrevious, loadErr = a.loadRemoteTextForBackup(remotePath)
+		if loadErr != nil {
+			a.recordAudit("save", "textfile", remotePath, "failed", "could not read the current version for a safety backup: "+loadErr.Error())
+			return fmt.Errorf("read remote file before saving: %w", loadErr)
+		}
+	}
+	backup, hasBackup, backupErr := a.saveDeploymentBackup("textfile", remotePath, previous, hasPrevious)
+	if backupErr != nil {
+		a.recordAudit("save", "textfile", remotePath, "failed", "safety backup failed: "+backupErr.Error())
+		return fmt.Errorf("create safety backup before saving: %w", backupErr)
+	}
 	if err := a.sessions.UploadFile(remotePath, []byte(content)); err != nil {
+		a.recordAudit("save", "textfile", remotePath, "failed", err.Error())
 		return err
 	}
 	a.openMu.Lock()
 	a.textCache[remotePath] = []byte(content)
+	a.textOriginalCache[remotePath] = []byte(content)
 	a.openMu.Unlock()
+	detail := "new remote file"
+	if hasBackup {
+		detail = "backup " + backup.ID
+	}
+	a.recordAudit("save", "textfile", remotePath, "success", detail)
 	return nil
 }
 
@@ -1864,6 +2066,7 @@ func (a *App) openTextWindow(remotePath string) error {
 		a.editorCacheMu.Unlock()
 		a.openMu.Lock()
 		delete(a.textCache, remotePath)
+		delete(a.textOriginalCache, remotePath)
 		a.openMu.Unlock()
 	})
 	return nil
@@ -1940,6 +2143,11 @@ func (a *App) GetSqliteSchema(remotePath string) ([]sqlite.TableSchema, error) {
 // best-effort preserves the SQLite version, and uploads it. A failing statement
 // rolls back (nothing written, no upload) and returns an error naming the op.
 func (a *App) CommitSqlite(remotePath string, changes sqlite.Changes) error {
+	backup, hasBackup, backupErr := a.backupRemoteContent("sqlite", remotePath)
+	if backupErr != nil {
+		a.recordAudit("save", "sqlite", remotePath, "failed", "safety backup failed: "+backupErr.Error())
+		return fmt.Errorf("create safety backup before committing SQLite changes: %w", backupErr)
+	}
 	h, err := a.sqliteDB(remotePath)
 	if err != nil {
 		return err
@@ -1961,7 +2169,16 @@ func (a *App) CommitSqlite(remotePath string, changes sqlite.Changes) error {
 	if hdr != nil && len(content) >= 100 {
 		copy(content[96:100], hdr[96:100]) // preserve version-valid-for
 	}
-	return a.sessions.UploadFile(remotePath, content)
+	if err := a.sessions.UploadFile(remotePath, content); err != nil {
+		a.recordAudit("save", "sqlite", remotePath, "failed", err.Error())
+		return err
+	}
+	detail := "new remote database"
+	if hasBackup {
+		detail = "backup " + backup.ID
+	}
+	a.recordAudit("save", "sqlite", remotePath, "success", detail)
+	return nil
 }
 func (a *App) SqliteQuery(remotePath, query string, args []any) (SqliteResult, error) {
 	h, err := a.sqliteDB(remotePath)
@@ -2006,6 +2223,11 @@ func (a *App) SqliteDeleteRow(remotePath, table string, rowid int64) error {
 // original SQLite version (copy the header's version-valid-for bytes), and
 // uploads it. modernc preserves the schema-format version it read.
 func (a *App) SaveSqliteFile(remotePath string) error {
+	backup, hasBackup, backupErr := a.backupRemoteContent("sqlite", remotePath)
+	if backupErr != nil {
+		a.recordAudit("save", "sqlite", remotePath, "failed", "safety backup failed: "+backupErr.Error())
+		return fmt.Errorf("create safety backup before saving SQLite file: %w", backupErr)
+	}
 	h, err := a.sqliteDB(remotePath)
 	if err != nil {
 		return err
@@ -2023,7 +2245,16 @@ func (a *App) SaveSqliteFile(remotePath string) error {
 		// Bytes 96–99 = "version valid for" (SQLite version that last wrote).
 		copy(content[96:100], hdr[96:100])
 	}
-	return a.sessions.UploadFile(remotePath, content)
+	if err := a.sessions.UploadFile(remotePath, content); err != nil {
+		a.recordAudit("save", "sqlite", remotePath, "failed", err.Error())
+		return err
+	}
+	detail := "new remote database"
+	if hasBackup {
+		detail = "backup " + backup.ID
+	}
+	a.recordAudit("save", "sqlite", remotePath, "success", detail)
+	return nil
 }
 
 // openSqliteWindow opens (or focuses) the SQLite explorer for remotePath.

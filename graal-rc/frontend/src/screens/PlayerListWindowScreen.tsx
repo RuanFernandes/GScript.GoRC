@@ -12,6 +12,7 @@ import {toast} from "sonner"
 
 import {MessageComposeDialog} from "@/components/features/playerlist/MessageComposeDialog"
 import {PmDialog, type PmLine, type PmTarget} from "@/components/features/playerlist/PmDialog"
+import {PlayerInspector} from "@/components/features/playerlist/PlayerInspector"
 import {PlayerTable, type PlayerEditKind} from "@/components/features/playerlist/PlayerTable"
 import {Button} from "@/components/ui/button"
 import {Input} from "@/components/ui/input"
@@ -28,6 +29,8 @@ export function PlayerListWindowScreen() {
   const {players, loading} = usePlayers(rcService, true)
   const chat = useChatSettings()
   const [query, setQuery] = useState("")
+  const [selectedPlayerId, setSelectedPlayerId] = useState<number | null>(null)
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
 
   const {state: pmState, unreadById, markRead, recordOutgoing} = usePrivateMessages()
   const [pmTarget, setPmTarget] = useState<PmTarget | null>(null)
@@ -59,6 +62,17 @@ export function PlayerListWindowScreen() {
     )
   }, [players, query])
 
+  const selectedPlayer = players.find((player) => player.id === selectedPlayerId) ?? null
+
+  useEffect(() => {
+    const online = new Set(players.map((player) => player.id))
+    setSelectedIds((current) => {
+      const next = new Set([...current].filter((id) => online.has(id)))
+      return next.size === current.size ? current : next
+    })
+    if (selectedPlayerId !== null && !online.has(selectedPlayerId)) setSelectedPlayerId(null)
+  }, [players, selectedPlayerId])
+
   useEffect(() => {
     const off = Events.On("rc:openPM", (e: {data: number}) => {
       const player = players.find((p) => p.id === Number(e.data))
@@ -85,27 +99,47 @@ export function PlayerListWindowScreen() {
       toast.error(t("player.noAccount"))
       return
     }
-    switch (kind) {
-      case "rights":
-        void rcService.openRightsWindow(account)
-        break
-      case "ban":
-        void rcService.openBanWindow(account)
-        break
-      case "attrs":
-        void rcService.openAttrsWindow(account)
-        break
-      case "comments":
-        void rcService.openCommentsWindow(account)
-        break
-      case "banhistory":
-        void rcService.openBanHistoryWindow(account)
-        break
-      case "staffactivity":
-        void rcService.openStaffActivityWindow(account)
-        break
+    const open = async () => {
+      switch (kind) {
+        case "rights":
+          await rcService.openRightsWindow(account)
+          break
+        case "ban":
+          await rcService.openBanWindow(account)
+          break
+        case "attrs":
+          await rcService.openAttrsWindow(account)
+          break
+        case "comments":
+          await rcService.openCommentsWindow(account)
+          break
+        case "banhistory":
+          await rcService.openBanHistoryWindow(account)
+          break
+        case "staffactivity":
+          await rcService.openStaffActivityWindow(account)
+          break
+      }
     }
+    void open().catch((err) => {
+      toast.error(t("player.actionFailed"), {description: err instanceof Error ? err.message : String(err)})
+    })
   }
+
+  const toggleSelection = (player: Player) => {
+    setSelectedIds((current) => {
+      const next = new Set(current)
+      if (next.has(player.id)) next.delete(player.id)
+      else next.add(player.id)
+      return next
+    })
+  }
+
+  const clearSelection = () => setSelectedIds(new Set())
+  const selectedRecipients = selectedIds.size > 0 ? players.filter((player) => selectedIds.has(player.id)) : players
+  const selectionLabel = selectedIds.size > 0
+    ? t("player.selectedCount", {count: selectedIds.size, suffix: selectedIds.size === 1 ? "" : "s"})
+    : t("player.allPlayers")
 
   const sendPM = async (message: string) => {
     if (!pmTarget) return
@@ -119,14 +153,15 @@ export function PlayerListWindowScreen() {
   }
 
   const sendMassPM = async (message: string) => {
-    const ids = players.map((p) => p.id)
+    const ids = selectedRecipients.map((p) => p.id)
     if (ids.length === 0) {
       toast.error(t("player.noPlayersMessage"))
       return
     }
     try {
       await rcService.sendMassPM(ids, message)
-      toast.success(`Mass PM sent to ${ids.length} player${ids.length === 1 ? "" : "s"}`)
+      toast.success(t("player.massPmSent", {count: ids.length, suffix: ids.length === 1 ? "" : "s"}))
+      clearSelection()
     } catch (err) {
       toast.error(t("player.massPmFailed"), {description: err instanceof Error ? err.message : String(err)})
     }
@@ -150,9 +185,10 @@ export function PlayerListWindowScreen() {
           <span className="text-muted-foreground text-sm">({players.length})</span>
           {loading && <Loader2 className="text-muted-foreground size-4 animate-spin" />}
           <div className="ml-auto flex items-center gap-1.5">
+            {selectedIds.size > 0 && <Button variant="ghost" size="sm" onClick={clearSelection}>{t("player.clearSelection")}</Button>}
             <Button variant="outline" size="sm" onClick={() => setMassPmOpen(true)} disabled={players.length === 0}>
               <Send className="size-4" />
-              {t("player.massPm")}
+              {t("player.massPm")} {selectedIds.size > 0 ? `(${selectedIds.size})` : ""}
             </Button>
             <Button variant="outline" size="sm" onClick={() => setAdminOpen(true)}>
               <Megaphone className="size-4" />
@@ -172,9 +208,12 @@ export function PlayerListWindowScreen() {
           </div>
         </div>
       </header>
-      <ScrollArea className="min-h-0 flex-1 p-2">
-        <PlayerTable players={filtered} loading={loading} unreadById={unreadById} onPM={openPM} onEdit={editPlayer} />
-      </ScrollArea>
+      <div className="flex min-h-0 flex-1 flex-col gap-2 p-2 lg:flex-row">
+        <ScrollArea className="min-h-0 flex-1">
+          <PlayerTable players={filtered} loading={loading} unreadById={unreadById} selectedIds={selectedIds} onSelect={(player) => setSelectedPlayerId(player.id)} onToggleSelection={toggleSelection} onPM={openPM} onEdit={editPlayer} />
+        </ScrollArea>
+        <PlayerInspector player={selectedPlayer} onPM={openPM} onEdit={editPlayer} />
+      </div>
 
       <PmDialog
         target={pmTarget}
@@ -185,7 +224,7 @@ export function PlayerListWindowScreen() {
       <MessageComposeDialog
         open={massPmOpen}
         title={t("player.massPm")}
-        recipientLabel={`all ${players.length} player${players.length === 1 ? "" : "s"}`}
+        recipientLabel={selectionLabel}
         sendLabel={t("common.send")}
         onClose={() => setMassPmOpen(false)}
         onSend={sendMassPM}

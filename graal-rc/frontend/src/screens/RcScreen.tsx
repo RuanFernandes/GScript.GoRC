@@ -5,7 +5,7 @@
 // TRemoteFrame.
 import {useEffect, useRef, useState} from "react"
 import {Events} from "@wailsio/runtime"
-import {Bell, LogOut, ScrollText, Send, Settings, UserRound} from "lucide-react"
+import {Activity, Bell, BellRing, BookmarkPlus, Command, LogOut, Plus, RotateCcw, Search, ScrollText, Send, Settings, Trash2, UserRound, WifiOff, X} from "lucide-react"
 import {toast} from "sonner"
 
 import {Button} from "@/components/ui/button"
@@ -15,6 +15,8 @@ import {ChatLine} from "@/components/features/chat/ChatLine"
 import {ScriptHelpResult} from "@/components/features/chat/ScriptHelpResult"
 import {RcSidebar} from "@/components/features/rc/RcSidebar"
 import {ChangelogPopover} from "@/components/features/rc/ChangelogPopover"
+import {GlobalSearchPalette} from "@/components/features/rc/GlobalSearchPalette"
+import {NotificationCenterPopover} from "@/components/features/rc/NotificationCenterPopover"
 import {useChat} from "@/hooks/useChat"
 import {useChatAutocomplete} from "@/hooks/useChatAutocomplete"
 import {useChatInputHistory} from "@/hooks/useChatInputHistory"
@@ -23,9 +25,11 @@ import {usePlayers} from "@/hooks/usePlayers"
 import {serverDisplay} from "@/lib/server"
 import {formatLogLine} from "@/lib/chatLine"
 import {rcService} from "@/services/rcService"
-import type {AccountSummary, ChatMessage, ChatSettings, NCStatus, Player} from "@/types"
+import type {AccountSummary, ChatMessage, ChatSettings, CommandMacro, CommandMacroParameter, CommandMacroParameterType, NCStatus, Player, ReconnectStatus} from "@/types"
 import {useLanguage} from "@/hooks/useLanguage"
 import {usePrivateMessages} from "@/hooks/usePrivateMessages"
+import {useCommandMacros} from "@/hooks/useCommandMacros"
+import {useOperationalNotifications} from "@/hooks/useOperationalNotifications"
 
 interface RcScreenProps {
   serverName: string
@@ -47,6 +51,42 @@ function ncLabel(s: NCStatus, playerCount: number, t: (key: string, vars?: Recor
   return t("rc.ncOff")
 }
 
+type MacroParameterDraft = CommandMacroParameter & {id: string}
+
+function createMacroParameterId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID()
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+function isMacroParameterNameValid(name: string): boolean {
+  return /^[A-Za-z][A-Za-z0-9_-]*$/.test(name.trim())
+}
+
+function isMacroParameterValueValid(parameter: CommandMacroParameter, rawValue: string | undefined): boolean {
+  const value = rawValue?.trim() ?? ""
+  if (!value) return false
+  if (parameter.type === "boolean") return value === "true" || value === "false"
+  if (parameter.type === "number") return Number.isFinite(Number(value))
+  return true
+}
+
+function renderMacroCommand(macro: CommandMacro, values: Record<string, string>, showPlaceholders: boolean): string {
+  const parts = [macro.command.trim()]
+  for (const parameter of macro.parameters ?? []) {
+    const value = values[parameter.name]?.trim()
+    if (value) {
+      parts.push(value)
+    } else if (showPlaceholders) {
+      parts.push(`<${parameter.name}>`)
+    }
+  }
+  return parts.filter(Boolean).join(" ")
+}
+
+function macroSignature(macro: CommandMacro): string {
+  return renderMacroCommand(macro, {}, true)
+}
+
 // ChatPane is one tab's message log + input. Uses a plain overflow-auto div
 // (not the radix ScrollArea) so scrolling stays internal to the chat and we can
 // drive stick-to-bottom ourselves: it only follows new messages while the user
@@ -59,17 +99,28 @@ function ChatPane({
   onSend,
   history,
   players,
+  serverName,
+  commandMacros,
 }: {
   messages: ChatMessage[]
   settings: ChatSettings
   onSend: (text: string) => Promise<boolean>
   history: ReturnType<typeof useChatInputHistory>
   players: Player[]
+  serverName: string
+  commandMacros: ReturnType<typeof useCommandMacros>
 }) {
   const {t} = useLanguage()
   const [text, setText] = useState("")
   const [ghostOff, setGhostOff] = useState(false)
   const autocomplete = useChatAutocomplete(players)
+  const [macrosOpen, setMacrosOpen] = useState(false)
+  const [macroName, setMacroName] = useState("")
+  const [macroCommand, setMacroCommand] = useState("")
+  const [macroParameters, setMacroParameters] = useState<MacroParameterDraft[]>([])
+  const [selectedMacro, setSelectedMacro] = useState<CommandMacro | null>(null)
+  const [macroValues, setMacroValues] = useState<Record<string, string>>({})
+  const firstMacroParameterRef = useRef<HTMLElement | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
   const lastLogged = useRef(0)
@@ -98,11 +149,28 @@ function ChatPane({
     stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24
   }
 
+  const macroParameterNames = macroParameters.map((parameter) => parameter.name.trim().toLocaleLowerCase())
+  const macroParametersValid = macroParameters.every((parameter) => isMacroParameterNameValid(parameter.name))
+    && new Set(macroParameterNames).size === macroParameterNames.length
+  const canSaveMacro = Boolean(macroName.trim() && macroCommand.trim() && macroParametersValid)
+  const missingMacroParameters = selectedMacro?.parameters?.filter((parameter) => !isMacroParameterValueValid(parameter, macroValues[parameter.name])) ?? []
+  const macroPreview = selectedMacro ? renderMacroCommand(selectedMacro, macroValues, true) : ""
+
+  useEffect(() => {
+    if (!selectedMacro?.parameters?.length) return
+    const frame = window.requestAnimationFrame(() => firstMacroParameterRef.current?.focus())
+    return () => window.cancelAnimationFrame(frame)
+  }, [selectedMacro])
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (await onSend(text)) {
-      history.record(text)
+    if (selectedMacro && missingMacroParameters.length > 0) return
+    const command = selectedMacro ? renderMacroCommand(selectedMacro, macroValues, false) : text.trim()
+    if (await onSend(command)) {
+      history.record(command)
       setText("")
+      setSelectedMacro(null)
+      setMacroValues({})
     }
   }
 
@@ -125,6 +193,239 @@ function ChatPane({
           )}
         </div>
       </div>
+      <div className="flex items-center justify-end">
+        <div className="relative">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-7 gap-1.5 px-2 text-xs"
+            onClick={() => setMacrosOpen((value) => {
+              if (!value && !macroName.trim() && macroParameters.length === 0) setMacroCommand(text.trim())
+              return !value
+            })}
+            aria-expanded={macrosOpen}
+            title={t("macros.title")}
+          >
+            <Command className="size-3.5" />{t("macros.title")}
+          </Button>
+          {macrosOpen && (
+            <div className="bg-popover text-popover-foreground absolute right-0 bottom-full z-40 mb-2 max-h-[min(36rem,calc(100vh-4rem))] w-[min(23rem,calc(100vw-2rem))] overflow-y-auto rounded-lg border shadow-xl">
+              <div className="flex items-center gap-2 border-b px-3 py-2">
+                <Command className="text-primary size-4" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-semibold">{t("macros.title")}</p>
+                  <p className="text-muted-foreground text-[10px]">{t("macros.subtitle", {server: serverName})}</p>
+                </div>
+              </div>
+              <div className="space-y-2 border-b p-2">
+                <Input
+                  value={macroCommand}
+                  onChange={(event) => setMacroCommand(event.target.value)}
+                  placeholder={t("macros.commandPlaceholder")}
+                  aria-label={t("macros.command")}
+                  className="h-8 font-mono text-xs"
+                  maxLength={2000}
+                />
+                <div className="flex gap-1.5">
+                  <Input
+                    value={macroName}
+                    onChange={(event) => setMacroName(event.target.value)}
+                    placeholder={t("macros.namePlaceholder")}
+                    className="h-8 text-xs"
+                    maxLength={80}
+                  />
+                  <Button
+                    type="button"
+                    size="icon"
+                    className="size-8 shrink-0"
+                    disabled={!canSaveMacro}
+                    onClick={() => {
+                      if (!commandMacros.save(macroName, macroCommand, macroParameters.map(({name, type}) => ({name, type})))) return
+                      setMacroName("")
+                      setMacroParameters([])
+                    }}
+                    title={t("macros.save")}
+                    aria-label={t("macros.save")}
+                  >
+                    <BookmarkPlus className="size-4" />
+                  </Button>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-muted-foreground text-[10px] font-medium">{t("macros.parameters")}</span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-[10px]"
+                    disabled={macroParameters.length >= 8}
+                    onClick={() => setMacroParameters((current) => [...current, {id: createMacroParameterId(), name: "", type: "text"}])}
+                  >
+                    <Plus className="size-3" />{t("macros.addParameter")}
+                  </Button>
+                </div>
+                {macroParameters.length > 0 && (
+                  <div className="grid gap-1.5">
+                    {macroParameters.map((parameter) => (
+                      <div key={parameter.id} className="flex min-w-0 gap-1.5">
+                        <Input
+                          value={parameter.name}
+                          onChange={(event) => setMacroParameters((current) => current.map((item) => item.id === parameter.id ? {...item, name: event.target.value} : item))}
+                          placeholder={t("macros.parameterName")}
+                          aria-label={t("macros.parameterName")}
+                          className="h-8 min-w-0 flex-1 text-xs"
+                          maxLength={40}
+                        />
+                        <select
+                          value={parameter.type}
+                          onChange={(event) => setMacroParameters((current) => current.map((item) => item.id === parameter.id ? {...item, type: event.target.value as CommandMacroParameterType} : item))}
+                          aria-label={t("macros.parameterType")}
+                          className="border-input bg-background text-foreground focus-visible:border-ring focus-visible:ring-ring/50 h-8 w-24 rounded-md border px-2 text-[11px] outline-none focus-visible:ring-[3px]"
+                        >
+                          <option value="text">{t("macros.parameterText")}</option>
+                          <option value="number">{t("macros.parameterNumber")}</option>
+                          <option value="boolean">{t("macros.parameterBoolean")}</option>
+                        </select>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="size-8 shrink-0"
+                          onClick={() => setMacroParameters((current) => current.filter((item) => item.id !== parameter.id))}
+                          title={t("macros.removeParameter")}
+                          aria-label={t("macros.removeParameter")}
+                        >
+                          <X className="size-3.5" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <p className={`${macroParameters.length > 0 && !macroParametersValid ? "text-destructive" : "text-muted-foreground"} text-[10px]`}>
+                  {macroParameters.length > 0 && !macroParametersValid ? t("macros.parameterNameHint") : t("macros.parameterHint")}
+                </p>
+              </div>
+              <div className="max-h-56 overflow-y-auto p-1">
+                {commandMacros.macros.length === 0 ? (
+                  <p className="text-muted-foreground px-2 py-4 text-center text-xs">{t("macros.empty")}</p>
+                ) : commandMacros.macros.map((macro) => (
+                  <div key={macro.id} className="group flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-accent">
+                    <button
+                      type="button"
+                      className="min-w-0 flex-1 text-left"
+                      onClick={() => {
+                        setGhostOff(false)
+                        setText(macro.command)
+                        setMacroCommand(macro.command)
+                        setMacroValues({})
+                        setSelectedMacro(macro.parameters?.length ? macro : null)
+                        setMacrosOpen(false)
+                      }}
+                      title={macroSignature(macro)}
+                    >
+                      <span className="block truncate text-xs font-medium">{macro.name}</span>
+                      <span className="text-muted-foreground block truncate font-mono text-[10px]">{macroSignature(macro)}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="text-muted-foreground hover:text-destructive shrink-0 rounded p-1 opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100"
+                      onClick={() => {
+                        commandMacros.remove(macro.id)
+                        if (selectedMacro?.id === macro.id) {
+                          setSelectedMacro(null)
+                          setMacroValues({})
+                        }
+                      }}
+                      title={t("macros.delete")}
+                      aria-label={t("macros.delete")}
+                    >
+                      <Trash2 className="size-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+      {selectedMacro && (
+        <div className="bg-muted/20 grid gap-2 rounded-md border p-2">
+          <div className="flex items-center gap-2">
+            <Command className="text-primary size-3.5 shrink-0" />
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-xs font-semibold">{selectedMacro.name}</p>
+              <p className="text-muted-foreground truncate font-mono text-[10px]">{macroPreview}</p>
+            </div>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-7 shrink-0"
+              onClick={() => {
+                setText(selectedMacro.command)
+                setMacroCommand(selectedMacro.command)
+                setSelectedMacro(null)
+                setMacroValues({})
+              }}
+              title={t("macros.cancel")}
+              aria-label={t("macros.cancel")}
+            >
+              <X className="size-3.5" />
+            </Button>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {(selectedMacro.parameters ?? []).map((parameter, index) => {
+              const inputId = `macro-${selectedMacro.id}-${parameter.name}`
+              const typeLabel = parameter.type === "number"
+                ? t("macros.parameterNumber")
+                : parameter.type === "boolean" ? t("macros.parameterBoolean") : t("macros.parameterText")
+              return (
+                <div key={parameter.name} className="grid gap-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <label htmlFor={inputId} className="truncate text-[11px] font-medium">{parameter.name}</label>
+                    <span className="text-muted-foreground text-[10px]">{typeLabel}</span>
+                  </div>
+                  {parameter.type === "boolean" ? (
+                    <select
+                      id={inputId}
+                      ref={(node) => {
+                        if (index === 0) firstMacroParameterRef.current = node
+                      }}
+                      value={macroValues[parameter.name] ?? ""}
+                      onChange={(event) => setMacroValues((current) => ({...current, [parameter.name]: event.target.value}))}
+                      className="border-input bg-background text-foreground focus-visible:border-ring focus-visible:ring-ring/50 h-9 w-full rounded-md border px-3 py-1 text-sm outline-none focus-visible:ring-[3px]"
+                    >
+                      <option value="">{t("macros.chooseValue")}</option>
+                      <option value="true">{t("macros.true")}</option>
+                      <option value="false">{t("macros.false")}</option>
+                    </select>
+                  ) : (
+                    <Input
+                      id={inputId}
+                      ref={(node) => {
+                        if (index === 0) firstMacroParameterRef.current = node
+                      }}
+                      type={parameter.type === "number" ? "number" : "text"}
+                      value={macroValues[parameter.name] ?? ""}
+                      onChange={(event) => setMacroValues((current) => ({...current, [parameter.name]: event.target.value}))}
+                      placeholder={parameter.name}
+                      autoComplete="off"
+                    />
+                  )}
+                </div>
+              )
+            })}
+          </div>
+          <p className="text-muted-foreground truncate font-mono text-[10px]">
+            {t("macros.preview")}: {macroPreview}
+          </p>
+          {missingMacroParameters.length > 0 && (
+            <p className="text-destructive text-[10px]">
+              {t("macros.fillParameters", {parameters: missingMacroParameters.map((parameter) => parameter.name).join(", ")})}
+            </p>
+          )}
+        </div>
+      )}
       <form onSubmit={submit} className="flex gap-2">
         {/* Ghost-text completion: the suggestion renders behind the input as a
             transparent copy of the typed text (reserving its exact width) plus a
@@ -133,7 +434,7 @@ function ChatPane({
             transparent run is the same glyphs at the same font, so the suffix
             always starts where the caret is. */}
         <div className="relative flex-1">
-          {(() => {
+          {!selectedMacro && (() => {
             const options = autocomplete.options(text)
             if (!options.length) return null
             const accountPhase = /^\/\S+\s/.test(text)
@@ -170,7 +471,7 @@ function ChatPane({
               </div>
             )
           })()}
-          {(() => {
+          {!selectedMacro && (() => {
             const ghost = !ghostOff ? autocomplete.suggest(text) : null
             if (!ghost) return null
             // Split at the first case-sensitive divergence between typed text
@@ -193,12 +494,15 @@ function ChatPane({
           })()}
           <Input
             className="relative z-10"
-            value={text}
+            value={selectedMacro ? macroPreview : text}
+            readOnly={Boolean(selectedMacro)}
             onChange={(e) => {
+              if (selectedMacro) return
               setGhostOff(false)
               setText(history.onTextChange(e.target.value))
             }}
             onKeyDown={(e) => {
+              if (selectedMacro) return
               // Escape hides the ghost preview until the next edit.
               if (e.key === "Escape") {
                 if (!ghostOff && autocomplete.suggest(text)) {
@@ -220,7 +524,15 @@ function ChatPane({
             autoComplete="off"
           />
         </div>
-        <Button type="submit" size="icon" aria-label={t("common.send")} title={t("common.send")}><Send className="size-4" /></Button>
+        <Button
+          type="submit"
+          size="icon"
+          disabled={Boolean(selectedMacro && missingMacroParameters.length > 0)}
+          aria-label={t("common.send")}
+          title={t("common.send")}
+        >
+          <Send className="size-4" />
+        </Button>
       </form>
     </div>
   )
@@ -238,6 +550,10 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
   const {state: pmState} = usePrivateMessages()
   const dragIndex = useRef<number>(-1)
   const [changelogOpen, setChangelogOpen] = useState(false)
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [reconnect, setReconnect] = useState<ReconnectStatus | null>(null)
+  const [notificationsOpen, setNotificationsOpen] = useState(false)
+  const notificationCenter = useOperationalNotifications()
 
   useEffect(() => {
     let cancelled = false
@@ -254,6 +570,40 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
     return () => {
       cancelled = true
       window.clearInterval(handle)
+    }
+  }, [])
+
+  // Recovery state is pushed by the backend so the operator can keep the RC
+  // context and decide whether to retry immediately or leave the session.
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      try {
+        const state = await rcService.getReconnectStatus()
+        if (!cancelled && state.active) setReconnect(state)
+      } catch {
+        // The status banner is optional; the normal connection surface remains usable.
+      }
+    }
+    const read = (event: {data: string}) => {
+      try {
+        const state = JSON.parse(event.data) as ReconnectStatus
+        if (!cancelled) setReconnect(state)
+      } catch {
+        // Ignore malformed status payloads.
+      }
+    }
+    const offProgress = Events.On("rc:reconnect", read)
+    const offFailed = Events.On("rc:reconnectFailed", read)
+    const offReconnected = Events.On("rc:reconnected", () => {
+      if (!cancelled) setReconnect(null)
+    })
+    void load()
+    return () => {
+      cancelled = true
+      offProgress()
+      offFailed()
+      offReconnected()
     }
   }, [])
 
@@ -312,6 +662,7 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
   }, [accountName])
 
   const {label: displayServer} = serverDisplay(serverName)
+  const commandMacros = useCommandMacros(displayServer || serverName)
   const realAccount = rightsIdentity.realAccount || ""
   const communityName = rightsIdentity.communityName || ""
   const rightsLabel = realAccount ? (communityName ? `${communityName} (${realAccount})` : realAccount) : ""
@@ -393,6 +744,33 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
               </span>
             )}
           </Button>
+          <div className="relative">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="relative"
+              title={t("notifications.title")}
+              aria-label={t("notifications.title")}
+              aria-expanded={notificationsOpen}
+              onClick={() => setNotificationsOpen((value) => !value)}
+            >
+              <BellRing className="size-4" />
+              {notificationCenter.unreadCount > 0 && (
+                <span className="bg-primary text-primary-foreground absolute -top-0.5 -right-0.5 min-w-4 rounded-full px-1 text-[10px] leading-4">
+                  {notificationCenter.unreadCount > 99 ? "99+" : notificationCenter.unreadCount}
+                </span>
+              )}
+            </Button>
+            <NotificationCenterPopover
+              open={notificationsOpen}
+              notifications={notificationCenter.notifications}
+              unreadCount={notificationCenter.unreadCount}
+              onClose={() => setNotificationsOpen(false)}
+              onMarkRead={notificationCenter.markRead}
+              onMarkAllRead={notificationCenter.markAllRead}
+              onClear={notificationCenter.clear}
+            />
+          </div>
           <Button
             variant="ghost"
             size="icon"
@@ -405,9 +783,17 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
             <ScrollText className="size-4" />
           </Button>
           <ChangelogPopover open={changelogOpen} onClose={() => setChangelogOpen(false)} />
+          <Button variant="outline" size="sm" onClick={() => setSearchOpen(true)}>
+            <Search />
+            <span className="hidden sm:inline">{t("dashboard.search")}</span>
+            <kbd className="text-muted-foreground hidden rounded border px-1.5 py-0.5 text-[10px] lg:inline">Ctrl K</kbd>
+          </Button>
           <Button variant="ghost" size="sm" onClick={() => rcService.openSettings()}>
             <Settings />
             {t("rc.settings")}
+          </Button>
+          <Button variant="ghost" size="icon" title={t("diagnostics.open")} aria-label={t("diagnostics.open")} onClick={() => void rcService.openDiagnostics()}>
+            <Activity className="size-4" />
           </Button>
           <Button variant="ghost" size="sm" onClick={onDisconnect}>
             <LogOut />
@@ -416,6 +802,25 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
         </div>
       </header>
 
+      {reconnect?.active && (
+        <div className="border-b border-amber-500/30 bg-amber-500/10 px-4 py-2">
+          <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-2 text-xs">
+            <WifiOff className="size-4 text-amber-500" />
+            <span className="font-medium">{t("reconnect.title")}</span>
+            <span className="text-muted-foreground">{t("reconnect.attempt", {attempt: reconnect.attempt, max: reconnect.maxAttempts})}</span>
+            {reconnect.lastError && <span className="text-muted-foreground min-w-0 truncate" title={reconnect.lastError}>{reconnect.lastError}</span>}
+            <div className="ml-auto flex items-center gap-1.5">
+              <Button variant="outline" size="sm" onClick={() => rcService.reconnectNow().catch((err) => toast.error(t("reconnect.failed"), {description: String(err)}))}>
+                <RotateCcw className="size-3.5" />{t("reconnect.retryNow")}
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => rcService.cancelReconnect().catch((err) => toast.error(t("reconnect.failed"), {description: String(err)}))}>
+                <X className="size-3.5" />{t("reconnect.cancel")}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="flex min-h-0 flex-1">
         <RcSidebar
           ncLabel={ncLabel(nc, players.length, t)}
@@ -423,42 +828,62 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
           openServerText={openServerText}
         />
         <div className="flex min-h-0 flex-1 flex-col p-3">
-        <Tabs value={activeChannel} onValueChange={setActiveChannel} className="flex min-h-0 flex-1 flex-col">
-          <div className="flex items-center justify-between gap-2">
-            <TabsList>
-              {tabs.map((t, i) => (
-                <TabsTrigger
-                  key={t.channel || "server"}
-                  value={t.channel}
-                  draggable
-                  onDragStart={() => (dragIndex.current = i)}
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={() => {
-                    if (dragIndex.current >= 0) reorderTabs(dragIndex.current, i)
-                    dragIndex.current = -1
-                  }}
-                  onDragEnd={() => (dragIndex.current = -1)}
-                  className="cursor-grab active:cursor-grabbing"
-                >
-                  {t.label}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </div>
-          {tabs.map((t) => (
-            <TabsContent key={t.channel || "server"} value={t.channel} className="mt-2 min-h-0 flex-1">
-              <ChatPane
-                messages={t.messages}
-                settings={settings}
-                onSend={(text) => send(t.channel, text)}
-                history={inputHistory}
-                players={players}
-              />
-            </TabsContent>
-          ))}
-        </Tabs>
+          <Tabs
+            value={activeChannel}
+            onValueChange={setActiveChannel}
+            className="flex min-h-0 flex-1 flex-col"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <TabsList>
+                {tabs.map((t, i) => (
+                  <TabsTrigger
+                    key={t.channel || "server"}
+                    value={t.channel}
+                    draggable
+                    onDragStart={() => (dragIndex.current = i)}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={() => {
+                      if (dragIndex.current >= 0) reorderTabs(dragIndex.current, i)
+                      dragIndex.current = -1
+                    }}
+                    onDragEnd={() => (dragIndex.current = -1)}
+                    className="cursor-grab active:cursor-grabbing"
+                  >
+                    {t.label}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </div>
+            {tabs.map((t) => (
+              <TabsContent key={t.channel || "server"} value={t.channel} className="mt-2 min-h-0 flex-1">
+                <ChatPane
+                  messages={t.messages}
+                  settings={settings}
+                  onSend={(text) => send(t.channel, text)}
+                  history={inputHistory}
+                  players={players}
+                  serverName={displayServer || serverName}
+                  commandMacros={commandMacros}
+                />
+              </TabsContent>
+            ))}
+          </Tabs>
         </div>
       </div>
+      <GlobalSearchPalette
+        open={searchOpen}
+        players={players}
+        onOpen={() => setSearchOpen(true)}
+        onClose={() => setSearchOpen(false)}
+        onOpenPlayers={() => rcService.openPlayerList()}
+        onOpenScripts={() => rcService.openScriptManager()}
+        onOpenFiles={() => rcService.openFileBrowser()}
+        onOpenSync={() => rcService.openSyncReview()}
+        onOpenDeployments={() => rcService.openDeploymentCenter()}
+        onOpenDiagnostics={() => rcService.openDiagnostics()}
+        onOpenSettings={() => rcService.openSettings()}
+        onOpenPlayerPM={(player) => rcService.openPlayerListPM(player.id)}
+      />
     </div>
   )
 }

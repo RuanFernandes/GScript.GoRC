@@ -1088,6 +1088,11 @@ func receiverContextAtDot(doc *Document, tokens []token, dotIndex int, position 
 		return receiver
 	}
 	if receiver := previousIdentifier(tokens, dotIndex-1); receiver != "" {
+		if parameter := doc.parameterSymbol(receiver, position); parameter != nil {
+			if context := receiverContextFromType(*parameter); context.kind != "" {
+				return context
+			}
+		}
 		return receiverContextForNamedReceiver(doc, receiver, position)
 	}
 	if tokens[dotIndex-1].text != ")" {

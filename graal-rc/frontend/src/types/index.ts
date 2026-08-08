@@ -33,6 +33,9 @@ export type {
   ScriptPair as SyncScriptPair,
   State as SyncState,
 } from "../../bindings/graal-rc/internal/sync/models"
+export type {Entry as AuditEntry} from "../../bindings/graal-rc/internal/audit/models"
+export type {Backup as DeploymentBackup} from "../../bindings/graal-rc/internal/deploy/models"
+export type {DiagnosticsSnapshot, ReconnectStatus, SyncDiagnostics} from "../../bindings/graal-rc/models"
 import type {GsFunction} from "@/lib/gscriptApi"
 export type {GsFunction}
 
@@ -40,6 +43,32 @@ export interface PMLine { direction: "in" | "out"; text: string; timestamp: numb
 export interface PMConversation { playerId: number; account: string; nick: string; unread: number; lines: PMLine[] }
 export interface PMState { conversations: PMConversation[]; unreadTotal: number }
 export interface CustomTheme { key: string; name: string; definition: string }
+
+export type OperationalNotificationLevel = "info" | "success" | "warning" | "error"
+export interface OperationalNotification {
+  id: string
+  level: OperationalNotificationLevel
+  title: string
+  message: string
+  timestamp: number
+  read: boolean
+}
+
+export type CommandMacroParameterType = "text" | "number" | "boolean"
+
+export interface CommandMacroParameter {
+  name: string
+  type: CommandMacroParameterType
+}
+
+export interface CommandMacro {
+  id: string
+  name: string
+  command: string
+  parameters?: CommandMacroParameter[]
+  createdAt: number
+  updatedAt: number
+}
 
 // A single chat line. channel "" = server (RC) chat; otherwise the IRC channel.
 // source drives the prefix tag and coloring: "rc" ([RC], on_message), "nc"

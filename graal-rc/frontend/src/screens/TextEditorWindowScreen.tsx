@@ -4,10 +4,10 @@
 // Ctrl+S writes the content back to the server; unsaved changes prompt on close
 // (reuses the generic editor dirty/close-confirm wiring keyed "textfile:<path>").
 import {useCallback, useEffect, useRef, useState} from "react"
-import Editor, {type OnMount} from "@monaco-editor/react"
+import Editor, {DiffEditor, type OnMount} from "@monaco-editor/react"
 import {Events} from "@wailsio/runtime"
 import {toast} from "sonner"
-import {Loader2} from "lucide-react"
+import {GitCompare, Loader2, X} from "lucide-react"
 
 import {AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogHeader, AlertDialogTitle} from "@/components/ui/alert-dialog"
 import {Button} from "@/components/ui/button"
@@ -48,6 +48,7 @@ export function TextEditorWindowScreen() {
   const [saving, setSaving] = useState(false)
   const [confirmClose, setConfirmClose] = useState(false)
   const [closingAfterSave, setClosingAfterSave] = useState(false)
+  const [showChanges, setShowChanges] = useState(false)
   const editorRef = useRef<EditorInstance | null>(null)
   const monacoRef = useRef<MonacoInstance | null>(null)
   const contentRef = useRef("")
@@ -154,12 +155,34 @@ export function TextEditorWindowScreen() {
         <h1 className="text-sm font-semibold">{baseName || t("editor.textFile")}</h1>
         {dirty && <span className="text-xs text-amber-500">• unsaved</span>}
         {saving && <Loader2 className="size-3.5 animate-spin text-muted-foreground" />}
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-1.5">
+          {dirty && <Button variant="outline" size="sm" onClick={() => setShowChanges((value) => !value)}><GitCompare className="size-4" />{t("editor.reviewChanges")}</Button>}
           <Button size="sm" onClick={doSave} disabled={!dirty || saving}>
-            {t("common.save")}
+            {t("editor.deployChanges")}
           </Button>
         </div>
       </header>
+      {showChanges && dirty && (
+        <section className="border-b bg-muted/10 p-3">
+          <div className="mb-2 flex items-center gap-2">
+            <div className="min-w-0 flex-1">
+              <h2 className="text-sm font-semibold">{t("editor.reviewChanges")}</h2>
+              <p className="text-muted-foreground text-xs">{t("editor.reviewChangesDescription")}</p>
+            </div>
+            <Button variant="ghost" size="icon" className="size-7" onClick={() => setShowChanges(false)} aria-label={t("common.close")}><X className="size-4" /></Button>
+          </div>
+          <div className="h-64 overflow-hidden rounded-md border">
+            <DiffEditor
+              height="100%"
+              original={original}
+              modified={content}
+              language="plaintext"
+              theme={settings.theme === "remoteTheme" ? "vs-dark" : settings.theme}
+              options={{readOnly: true, renderSideBySide: true, minimap: {enabled: false}, scrollBeyondLastLine: false, automaticLayout: true}}
+            />
+          </div>
+        </section>
+      )}
       <div className="min-h-0 flex-1">
         {loading ? (
           <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">

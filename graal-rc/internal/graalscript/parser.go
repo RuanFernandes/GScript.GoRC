@@ -36,20 +36,22 @@ type ASTNode struct {
 }
 
 type FunctionSymbol struct {
-	Name           string
-	Params         []string
-	Range          Range
-	SelectionRange Range
-	BodyRange      Range
-	ReturnType     string
-	Documentation  string
-	ParameterDocs  map[string]string
-	ReturnDoc      string
-	DocTags        []JSDocTag
-	Visibility     string
-	Public         bool
-	Private        bool
-	Side           string
+	Name            string
+	Params          []string
+	Range           Range
+	SelectionRange  Range
+	BodyRange       Range
+	ReturnType      string
+	Documentation   string
+	ParameterDocs   map[string]string
+	ParameterTypes  map[string]string
+	ParameterValues map[string]string
+	ReturnDoc       string
+	DocTags         []JSDocTag
+	Visibility      string
+	Public          bool
+	Private         bool
+	Side            string
 }
 
 type JSDocTag struct {
@@ -62,6 +64,7 @@ type parsedJSDoc struct {
 	Summary    string
 	Params     map[string]string
 	ParamOrder []string
+	ParamTypes map[string]string
 	ReturnType string
 	ReturnDoc  string
 	Tags       []JSDocTag
@@ -134,6 +137,7 @@ func parseDocument(uri, text string, version int) *Document {
 	doc.parseDynamicAccesses()
 	doc.parseDynamicAssignments()
 	doc.parseCalls()
+	doc.parseParameterTypes()
 	return doc
 }
 
@@ -186,6 +190,7 @@ func (d *Document) parseFunctions() {
 			BodyRange:      bodyRange,
 			Documentation:  formatJSDoc(doc),
 			ParameterDocs:  doc.Params,
+			ParameterTypes: doc.ParamTypes,
 			ReturnType:     doc.ReturnType,
 			ReturnDoc:      doc.ReturnDoc,
 			DocTags:        doc.Tags,
@@ -261,7 +266,7 @@ func cleanJSDoc(value string) []string {
 }
 
 func parseJSDoc(value string) parsedJSDoc {
-	doc := parsedJSDoc{Params: map[string]string{}}
+	doc := parsedJSDoc{Params: map[string]string{}, ParamTypes: map[string]string{}}
 	var summary []string
 	var current *JSDocTag
 	currentParam := ""
@@ -276,10 +281,14 @@ func parseJSDoc(value string) parsedJSDoc {
 			tag := JSDocTag{Name: strings.ToLower(name)}
 			switch tag.Name {
 			case "param", "arg", "argument":
-				tag.Subject, tag.Description = parseJSDocParam(rest)
+				var paramType string
+				tag.Subject, paramType, tag.Description = parseJSDocParam(rest)
 				if tag.Subject != "" {
 					doc.Params[tag.Subject] = tag.Description
 					doc.ParamOrder = append(doc.ParamOrder, tag.Subject)
+					if paramType != "" {
+						doc.ParamTypes[tag.Subject] = paramType
+					}
 					currentParam = tag.Subject
 				}
 			case "return", "returns":
@@ -338,19 +347,21 @@ func splitJSDocTag(line string) (string, string) {
 	return name, strings.TrimSpace(strings.TrimPrefix(line, name))
 }
 
-func parseJSDocParam(value string) (string, string) {
+func parseJSDocParam(value string) (string, string, string) {
 	value = strings.TrimSpace(value)
+	paramType := ""
 	if strings.HasPrefix(value, "{") {
 		if end := strings.Index(value, "}"); end >= 0 {
+			paramType = strings.TrimSpace(value[1:end])
 			value = strings.TrimSpace(value[end+1:])
 		}
 	}
 	parts := strings.Fields(value)
 	if len(parts) == 0 {
-		return "", ""
+		return "", paramType, ""
 	}
 	name := strings.Trim(parts[0], "[]")
-	return name, strings.TrimSpace(strings.TrimPrefix(value, parts[0]))
+	return name, paramType, strings.TrimSpace(strings.TrimPrefix(value, parts[0]))
 }
 
 func parseJSDocTypeAndDescription(value string) (string, string) {
@@ -760,6 +771,24 @@ func (d *Document) symbolReference(start, end int, position Position) *VariableS
 	return d.symbolFor(scope, name, position)
 }
 
+func (d *Document) parameterSymbol(name string, position Position) *VariableSymbol {
+	fn := functionAt(d, position)
+	if fn == nil {
+		return nil
+	}
+	for _, parameter := range fn.Params {
+		if !strings.EqualFold(parameter, name) {
+			continue
+		}
+		return &VariableSymbol{
+			Name: parameter, Scope: "parameter", Type: fn.ParameterTypes[parameter],
+			Value: fn.ParameterValues[parameter], Detail: "Parameter of " + fn.Name + ".",
+			FunctionRange: fn.BodyRange,
+		}
+	}
+	return nil
+}
+
 func (d *Document) parseDynamicAccesses() {
 	for i := 0; i < len(d.Tokens); i++ {
 		if d.Tokens[i].kind != tokenIdentifier || !isDynamicVariableScope(d.Tokens[i].text) {
@@ -846,6 +875,12 @@ func (d *Document) inferExpression(start int, position Position) inferredValue {
 		return inferredValue{Type: "weapon", Value: d.stringValueFromCall(start, position)}
 	case "findlevel":
 		return inferredValue{Type: "level", Value: d.stringValueFromCall(start, position)}
+	}
+	if dot := nextSignificant(d.Tokens, start+1); dot < 0 || d.Tokens[dot].text != "." {
+		if parameter := d.parameterSymbol(tok.text, position); parameter != nil {
+			return inferredValue{Type: parameter.Type, Value: parameter.Value, Values: append([]string(nil), parameter.Values...)}
+		}
+		return inferredValue{}
 	}
 
 	dot := nextSignificant(d.Tokens, start+1)
@@ -1495,6 +1530,90 @@ func (d *Document) parseCalls() {
 			Range: Range{Start: d.Tokens[i].startPos, End: d.Tokens[open].endPos},
 		})
 	}
+}
+
+// parseParameterTypes propagates the inferred type and concrete object name
+// from call arguments into local function parameters. This makes a parameter
+// such as `db` resolve like findnpc("EmotesDB") inside the callee body.
+func (d *Document) parseParameterTypes() {
+	for i := 0; i < len(d.Tokens); i++ {
+		if d.Tokens[i].kind != tokenIdentifier {
+			continue
+		}
+		open := nextSignificant(d.Tokens, i+1)
+		if open < 0 || d.Tokens[open].text != "(" {
+			continue
+		}
+		previous := previousSignificant(d.Tokens, i-1)
+		if previous >= 0 && isIdentifier(d.Tokens[previous], "function") {
+			continue
+		}
+		close := matchingToken(d.Tokens, open, "(", ")")
+		if close < 0 {
+			continue
+		}
+		functionIndex := -1
+		for index := range d.Functions {
+			if strings.EqualFold(d.Functions[index].Name, d.Tokens[i].text) {
+				functionIndex = index
+				break
+			}
+		}
+		if functionIndex < 0 {
+			continue
+		}
+		starts := callArgumentStarts(d.Tokens, open+1, close)
+		if len(starts) == 0 {
+			continue
+		}
+		fn := &d.Functions[functionIndex]
+		if fn.ParameterTypes == nil {
+			fn.ParameterTypes = map[string]string{}
+		}
+		if fn.ParameterValues == nil {
+			fn.ParameterValues = map[string]string{}
+		}
+		for parameterIndex, argumentStart := range starts {
+			if parameterIndex >= len(fn.Params) {
+				break
+			}
+			inferred := d.inferExpression(argumentStart, d.Tokens[i].startPos)
+			parameter := fn.Params[parameterIndex]
+			if inferred.Type != "" && fn.ParameterTypes[parameter] == "" {
+				fn.ParameterTypes[parameter] = inferred.Type
+			}
+			if inferred.Value != "" && fn.ParameterValues[parameter] == "" {
+				fn.ParameterValues[parameter] = inferred.Value
+			}
+		}
+	}
+}
+
+func callArgumentStarts(tokens []token, start, end int) []int {
+	starts := []int{}
+	segmentStart := start
+	depth := 0
+	for i := start; i < end; i++ {
+		switch tokens[i].text {
+		case "(", "[", "{":
+			depth++
+		case ")", "]", "}":
+			if depth > 0 {
+				depth--
+			}
+		case ",":
+			if depth == 0 {
+				if argument := nextSignificant(tokens, segmentStart); argument >= 0 && argument < end {
+					starts = append(starts, argument)
+				}
+				segmentStart = i + 1
+			}
+		}
+	}
+	if argument := nextSignificant(tokens, segmentStart); argument >= 0 && argument < end {
+		starts = append(starts, argument)
+	}
+	return starts
 }
 
 func parseParameterNames(tokens []token, start, end int) []string {

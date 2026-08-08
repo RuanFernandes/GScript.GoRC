@@ -961,10 +961,8 @@ func (s *Service) failPump(h rclib.Handle, done chan struct{}, err error) {
 const ncReconnectInterval = 2 * time.Second
 
 // ncKeepaliveInterval is how often a silent NC packet is sent to keep the NC
-// (script) socket alive. The Graal server drops an idle NC session after a
-// while (surfacing as "[NC] DISCONNECT: You don't have admin rights."); issuing
-// a lightweight NC round-trip periodically prevents that idle timeout.
-const ncKeepaliveInterval = 30 * time.Second
+// (script) socket alive. The server can drop an otherwise idle NC connection.
+const ncKeepaliveInterval = 3 * time.Minute
 
 // ncFetchConcurrency bounds the number of in-flight OpenScript requests during
 // a bulk fetch. The send is serialized on dllMu, but the wait for the reply is
@@ -995,11 +993,8 @@ func (s *Service) maybeConnectNC(h rclib.Handle) {
 	}
 }
 
-// ncKeepalive sends a silent NC round-trip (weapon-list request, PLI 115) every
-// ncKeepaliveInterval while NC is connected. The response just refreshes the
-// cached list; nothing is surfaced to the UI or logs, so it acts purely as a
-// ping that keeps the idle NC socket from being dropped by the server. Skipped
-// when NC is down so it never triggers a reconnect itself.
+// ncKeepalive sends a silent NC round-trip while NC is connected. The response
+// refreshes the socket without surfacing a chat line to the user.
 func (s *Service) ncKeepalive(h rclib.Handle) {
 	s.mu.Lock()
 	if !s.lastNCKeepalive.IsZero() && time.Since(s.lastNCKeepalive) < ncKeepaliveInterval {
@@ -1009,12 +1004,9 @@ func (s *Service) ncKeepalive(h rclib.Handle) {
 	s.lastNCKeepalive = time.Now()
 	s.mu.Unlock()
 
-	hasNc := rclib.HasNCServer(h)
-	connected := rclib.IsNCConnected(h)
-	if !hasNc || !connected {
+	if !rclib.HasNCServer(h) || !rclib.IsNCConnected(h) {
 		return
 	}
-	// Silent: ignore errors — this is best-effort keepalive, not a user action.
 	_ = rclib.SendNCPacket(h, weaponListGetPacket)
 }
 
@@ -2782,8 +2774,8 @@ func (s *Service) RefreshWeapons() error {
 	return rclib.RequestWeaponList(h)
 }
 
-// weaponListGetPacket is PLI_NC_WEAPONLISTGET (IEnums.h) — re-request the weapon
-// list from the NC server.
+// weaponListGetPacket is PLI_NC_WEAPONLISTGET (IEnums.h) — re-request the
+// weapon list from the NC server without surfacing a chat line.
 const weaponListGetPacket = 115
 
 // --- File browser (main server socket) ---
@@ -2973,4 +2965,16 @@ func (s *Service) Status() Status {
 	st.CommunityName = s.selfRightsCommunityName
 	s.rightsMu.RUnlock()
 	return st
+}
+
+// PumpError returns the last terminal event-pump error, if any. It is kept
+// separate from Status so the existing session contract remains stable while
+// diagnostics can explain why a live handle stopped producing events.
+func (s *Service) PumpError() string {
+	s.pumpMu.Lock()
+	defer s.pumpMu.Unlock()
+	if s.pumpErr == nil {
+		return ""
+	}
+	return s.pumpErr.Error()
 }

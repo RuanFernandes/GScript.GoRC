@@ -550,6 +550,11 @@ func (e *Engine) pollLocked(ctx context.Context, refreshRights bool) {
 		e.emitStatus()
 		return
 	}
+	// Keep a baseline from before any server I/O. A local edit can happen while
+	// the script snapshot is being fetched; comparing only with the first read
+	// inside the apply loop would treat that edit as the old local version and
+	// allow a stale server snapshot to overwrite it.
+	localBaseline := snapshotLocalScripts(cfg.OutputDir)
 	if !e.backend.IsNCAuthenticated() {
 		e.emitStatus()
 		return
@@ -606,6 +611,11 @@ func (e *Engine) pollLocked(ctx context.Context, refreshRights bool) {
 		serverHash := HashScript(content)
 		e.remember(ref, path, serverHash)
 		local, exists := readScriptFile(path)
+		if localChangedSince(path, localBaseline) {
+			log.Printf("[sync poll compare] preserving local change made during sync path=%q", path)
+			e.preserveLocalChange(path, localBaseline)
+			continue
+		}
 		if !exists {
 			if err := writeFileAtomic(path, []byte(content)); err == nil {
 				e.markDownload(path)
@@ -644,7 +654,7 @@ func (e *Engine) pollLocked(ctx context.Context, refreshRights bool) {
 		}
 	}
 	if err == nil {
-		e.removeUnlistedLocalFiles(cfg.OutputDir, serverPaths(replies))
+		e.removeUnlistedLocalFiles(cfg.OutputDir, serverPaths(replies), changedLocalPaths(cfg.OutputDir, localBaseline))
 	}
 	e.markSynced()
 	e.finishProgress(len(replies))
@@ -750,7 +760,11 @@ func serverPaths(replies []rclib.ScriptReply) map[string]bool {
 // removeUnlistedLocalFiles enforces server priority after a complete server
 // snapshot. Files created while the watcher is active are uploaded first, so
 // their paths appear in the next server snapshot.
-func (e *Engine) removeUnlistedLocalFiles(outputDir string, listed map[string]bool) {
+func (e *Engine) removeUnlistedLocalFiles(outputDir string, listed map[string]bool, protected ...map[string]bool) {
+	protectedPaths := map[string]bool{}
+	if len(protected) > 0 && protected[0] != nil {
+		protectedPaths = protected[0]
+	}
 	for _, kind := range []string{"weapon", "class", "npc"} {
 		dir := filepath.Join(outputDir, kindSubdir(kind))
 		entries, err := os.ReadDir(dir)
@@ -763,7 +777,7 @@ func (e *Engine) removeUnlistedLocalFiles(outputDir string, listed map[string]bo
 			}
 			path := filepath.Join(dir, entry.Name())
 			relative, err := filepath.Rel(outputDir, path)
-			if err != nil || listed[filepath.ToSlash(relative)] {
+			if err != nil || listed[filepath.ToSlash(relative)] || protectedPaths[path] {
 				continue
 			}
 			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
@@ -776,6 +790,74 @@ func (e *Engine) removeUnlistedLocalFiles(outputDir string, listed map[string]bo
 			delete(e.review, entryKey(kind, decodeName(strings.TrimSuffix(entry.Name(), scriptExt))))
 			e.mu.Unlock()
 		}
+	}
+}
+
+func snapshotLocalScripts(outputDir string) map[string]string {
+	baseline := map[string]string{}
+	for _, kind := range []string{"weapon", "class", "npc"} {
+		dir := filepath.Join(outputDir, kindSubdir(kind))
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || filepath.Ext(entry.Name()) != scriptExt {
+				continue
+			}
+			path := filepath.Join(dir, entry.Name())
+			if content, ok := readScriptFile(path); ok {
+				baseline[path] = HashScript(content)
+			}
+		}
+	}
+	return baseline
+}
+
+func localChangedSince(path string, baseline map[string]string) bool {
+	content, exists := readScriptFile(path)
+	initialHash, hadFile := baseline[path]
+	if !hadFile {
+		return exists
+	}
+	return !exists || HashScript(content) != initialHash
+}
+
+func changedLocalPaths(outputDir string, baseline map[string]string) map[string]bool {
+	changed := map[string]bool{}
+	for path := range baseline {
+		if localChangedSince(path, baseline) {
+			changed[path] = true
+		}
+	}
+	for _, kind := range []string{"weapon", "class", "npc"} {
+		// New files are not in the baseline, so inspect the parent directory to
+		// protect them from server-priority cleanup until the watcher uploads them.
+		dir := filepath.Join(outputDir, kindSubdir(kind))
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || filepath.Ext(entry.Name()) != scriptExt {
+				continue
+			}
+			path := filepath.Join(dir, entry.Name())
+			if localChangedSince(path, baseline) {
+				changed[path] = true
+			}
+		}
+	}
+	return changed
+}
+
+func (e *Engine) preserveLocalChange(path string, baseline map[string]string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if initialHash, ok := baseline[path]; ok {
+		e.hashes[path] = initialHash
+	} else {
+		delete(e.hashes, path)
 	}
 }
 

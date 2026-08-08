@@ -33,6 +33,10 @@ import type {
   CustomTheme,
   MCPAgentStatus,
   MCPSetupResult,
+  AuditEntry,
+  DeploymentBackup,
+  DiagnosticsSnapshot,
+  ReconnectStatus,
 } from "@/types"
 import type {PluginBuildResult, PluginFile, PluginInfo, PluginLogEntry, PluginMonacoLanguage, PluginUIWindowInfo} from "@/plugins/types"
 
@@ -213,6 +217,17 @@ export interface RcService {
   pauseSync(): Promise<void>
   resumeSync(): Promise<void>
   openSyncReview(): Promise<void>
+  getAuditEntries(limit: number): Promise<AuditEntry[] | null>
+  clearAuditEntries(): Promise<void>
+  getDeploymentBackups(limit: number): Promise<DeploymentBackup[] | null>
+  rollbackDeployment(backupID: string): Promise<void>
+  openDeploymentCenter(): Promise<void>
+  getReconnectStatus(): Promise<ReconnectStatus>
+  reconnectNow(): Promise<void>
+  cancelReconnect(): Promise<void>
+  getDiagnostics(): Promise<DiagnosticsSnapshot>
+  exportDiagnostics(): Promise<string>
+  openDiagnostics(): Promise<void>
 }
 
 // Default implementation backed by the generated Wails v3 bindings (App service).
@@ -495,4 +510,15 @@ export const rcService: RcService = {
   pauseSync: () => App.PauseSync(),
   resumeSync: () => App.ResumeSync(),
   openSyncReview: () => App.OpenSyncReview(),
+  getAuditEntries: (limit) => App.GetAuditEntries(limit),
+  clearAuditEntries: () => App.ClearAuditEntries(),
+  getDeploymentBackups: (limit) => App.GetDeploymentBackups(limit),
+  rollbackDeployment: (backupID) => App.RollbackDeployment(backupID),
+  openDeploymentCenter: () => App.OpenDeploymentCenter(),
+  getReconnectStatus: () => App.GetReconnectStatus(),
+  reconnectNow: () => App.ReconnectNow(),
+  cancelReconnect: () => App.CancelReconnect(),
+  getDiagnostics: () => App.GetDiagnostics(),
+  exportDiagnostics: () => App.ExportDiagnostics(),
+  openDiagnostics: () => App.OpenDiagnostics(),
 }
