@@ -100,12 +100,6 @@ export function useOperationalNotifications(): OperationalNotificationsResult {
           break
       }
     }
-    const handleReconnected = () => push("success", t("notifications.connection"), t("notifications.reconnected"))
-    const handleReconnectFailed = (event: {data: string}) => {
-      const status = parseObject(event.data)
-      const error = typeof status?.lastError === "string" ? status.lastError : t("notifications.reconnectFailed")
-      push("error", t("notifications.connection"), error)
-    }
     const handleConflict = (event: {data: string}) => {
       const item = parseObject(event.data)
       const name = typeof item?.name === "string" ? item.name : t("notifications.script")
@@ -114,8 +108,6 @@ export function useOperationalNotifications(): OperationalNotificationsResult {
 
     const offs = [
       Events.On("rc:evt", handleEnvelope),
-      Events.On("rc:reconnected", handleReconnected),
-      Events.On("rc:reconnectFailed", handleReconnectFailed),
       Events.On("rc:syncConflict", handleConflict),
     ]
     return () => offs.forEach((off) => off())

@@ -5,7 +5,7 @@
 // TRemoteFrame.
 import {useEffect, useRef, useState} from "react"
 import {Events} from "@wailsio/runtime"
-import {Activity, Bell, BellRing, BookmarkPlus, Command, LogOut, Plus, RotateCcw, Search, ScrollText, Send, Settings, Trash2, UserRound, WifiOff, X} from "lucide-react"
+import {Bell, BellRing, BookmarkPlus, Command, LogOut, Plus, Search, ScrollText, Send, Settings, Trash2, UserRound, X} from "lucide-react"
 import {toast} from "sonner"
 
 import {Button} from "@/components/ui/button"
@@ -25,7 +25,7 @@ import {usePlayers} from "@/hooks/usePlayers"
 import {serverDisplay} from "@/lib/server"
 import {formatLogLine} from "@/lib/chatLine"
 import {rcService} from "@/services/rcService"
-import type {AccountSummary, ChatMessage, ChatSettings, CommandMacro, CommandMacroParameter, CommandMacroParameterType, NCStatus, Player, ReconnectStatus} from "@/types"
+import type {AccountSummary, ChatMessage, ChatSettings, CommandMacro, CommandMacroParameter, CommandMacroParameterType, NCStatus, Player} from "@/types"
 import {useLanguage} from "@/hooks/useLanguage"
 import {usePrivateMessages} from "@/hooks/usePrivateMessages"
 import {useCommandMacros} from "@/hooks/useCommandMacros"
@@ -551,7 +551,6 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
   const dragIndex = useRef<number>(-1)
   const [changelogOpen, setChangelogOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
-  const [reconnect, setReconnect] = useState<ReconnectStatus | null>(null)
   const [notificationsOpen, setNotificationsOpen] = useState(false)
   const notificationCenter = useOperationalNotifications()
 
@@ -570,40 +569,6 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
     return () => {
       cancelled = true
       window.clearInterval(handle)
-    }
-  }, [])
-
-  // Recovery state is pushed by the backend so the operator can keep the RC
-  // context and decide whether to retry immediately or leave the session.
-  useEffect(() => {
-    let cancelled = false
-    const load = async () => {
-      try {
-        const state = await rcService.getReconnectStatus()
-        if (!cancelled && state.active) setReconnect(state)
-      } catch {
-        // The status banner is optional; the normal connection surface remains usable.
-      }
-    }
-    const read = (event: {data: string}) => {
-      try {
-        const state = JSON.parse(event.data) as ReconnectStatus
-        if (!cancelled) setReconnect(state)
-      } catch {
-        // Ignore malformed status payloads.
-      }
-    }
-    const offProgress = Events.On("rc:reconnect", read)
-    const offFailed = Events.On("rc:reconnectFailed", read)
-    const offReconnected = Events.On("rc:reconnected", () => {
-      if (!cancelled) setReconnect(null)
-    })
-    void load()
-    return () => {
-      cancelled = true
-      offProgress()
-      offFailed()
-      offReconnected()
     }
   }, [])
 
@@ -792,34 +757,12 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
             <Settings />
             {t("rc.settings")}
           </Button>
-          <Button variant="ghost" size="icon" title={t("diagnostics.open")} aria-label={t("diagnostics.open")} onClick={() => void rcService.openDiagnostics()}>
-            <Activity className="size-4" />
-          </Button>
           <Button variant="ghost" size="sm" onClick={onDisconnect}>
             <LogOut />
             {t("rc.disconnect")}
           </Button>
         </div>
       </header>
-
-      {reconnect?.active && (
-        <div className="border-b border-amber-500/30 bg-amber-500/10 px-4 py-2">
-          <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-2 text-xs">
-            <WifiOff className="size-4 text-amber-500" />
-            <span className="font-medium">{t("reconnect.title")}</span>
-            <span className="text-muted-foreground">{t("reconnect.attempt", {attempt: reconnect.attempt, max: reconnect.maxAttempts})}</span>
-            {reconnect.lastError && <span className="text-muted-foreground min-w-0 truncate" title={reconnect.lastError}>{reconnect.lastError}</span>}
-            <div className="ml-auto flex items-center gap-1.5">
-              <Button variant="outline" size="sm" onClick={() => rcService.reconnectNow().catch((err) => toast.error(t("reconnect.failed"), {description: String(err)}))}>
-                <RotateCcw className="size-3.5" />{t("reconnect.retryNow")}
-              </Button>
-              <Button variant="ghost" size="sm" onClick={() => rcService.cancelReconnect().catch((err) => toast.error(t("reconnect.failed"), {description: String(err)}))}>
-                <X className="size-3.5" />{t("reconnect.cancel")}
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
 
       <div className="flex min-h-0 flex-1">
         <RcSidebar
@@ -880,7 +823,6 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
         onOpenFiles={() => rcService.openFileBrowser()}
         onOpenSync={() => rcService.openSyncReview()}
         onOpenDeployments={() => rcService.openDeploymentCenter()}
-        onOpenDiagnostics={() => rcService.openDiagnostics()}
         onOpenSettings={() => rcService.openSettings()}
         onOpenPlayerPM={(player) => rcService.openPlayerListPM(player.id)}
       />

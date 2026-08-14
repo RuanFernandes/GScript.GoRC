@@ -35,8 +35,6 @@ import type {
   MCPSetupResult,
   AuditEntry,
   DeploymentBackup,
-  DiagnosticsSnapshot,
-  ReconnectStatus,
 } from "@/types"
 import type {PluginBuildResult, PluginFile, PluginInfo, PluginLogEntry, PluginMonacoLanguage, PluginUIWindowInfo} from "@/plugins/types"
 
@@ -222,12 +220,6 @@ export interface RcService {
   getDeploymentBackups(limit: number): Promise<DeploymentBackup[] | null>
   rollbackDeployment(backupID: string): Promise<void>
   openDeploymentCenter(): Promise<void>
-  getReconnectStatus(): Promise<ReconnectStatus>
-  reconnectNow(): Promise<void>
-  cancelReconnect(): Promise<void>
-  getDiagnostics(): Promise<DiagnosticsSnapshot>
-  exportDiagnostics(): Promise<string>
-  openDiagnostics(): Promise<void>
 }
 
 // Default implementation backed by the generated Wails v3 bindings (App service).
@@ -515,10 +507,4 @@ export const rcService: RcService = {
   getDeploymentBackups: (limit) => App.GetDeploymentBackups(limit),
   rollbackDeployment: (backupID) => App.RollbackDeployment(backupID),
   openDeploymentCenter: () => App.OpenDeploymentCenter(),
-  getReconnectStatus: () => App.GetReconnectStatus(),
-  reconnectNow: () => App.ReconnectNow(),
-  cancelReconnect: () => App.CancelReconnect(),
-  getDiagnostics: () => App.GetDiagnostics(),
-  exportDiagnostics: () => App.ExportDiagnostics(),
-  openDiagnostics: () => App.OpenDiagnostics(),
 }

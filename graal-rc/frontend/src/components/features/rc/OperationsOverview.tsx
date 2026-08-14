@@ -19,7 +19,6 @@ interface OperationsOverviewProps {
   onOpenFiles: () => void
   onOpenSync: () => void
   onOpenDeployments: () => void
-  onOpenDiagnostics: () => void
   onOpenSettings: () => void
 }
 
@@ -49,7 +48,6 @@ export function OperationsOverview({
   onOpenFiles,
   onOpenSync,
   onOpenDeployments,
-  onOpenDiagnostics,
   onOpenSettings,
 }: OperationsOverviewProps) {
   const {t, language} = useLanguage()
@@ -152,7 +150,6 @@ export function OperationsOverview({
             <Button variant="ghost" className="justify-start" onClick={onOpenFiles}><FolderOpen className="size-4" />{t("dashboard.openFiles")}</Button>
             <Button variant="ghost" className="justify-start" onClick={onOpenSync}><RefreshCw className="size-4" />{t("dashboard.openSync")}</Button>
             <Button variant="ghost" className="justify-start" onClick={onOpenDeployments}><ArchiveRestore className="size-4" />{t("dashboard.openHistory")}</Button>
-            <Button variant="ghost" className="justify-start" onClick={onOpenDiagnostics}><Activity className="size-4" />{t("dashboard.openDiagnostics")}</Button>
             <div className="text-muted-foreground mt-2 flex items-center gap-2 border-t pt-3 text-xs">
               <Wifi className="size-3.5" />
               {unreadTotal > 0 ? t("dashboard.unreadMessages", {count: unreadTotal, suffix: unreadTotal === 1 ? "" : "s"}) : t("dashboard.noUnreadMessages")}

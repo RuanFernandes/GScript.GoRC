@@ -27,7 +27,6 @@ import {ServerListScreen} from "@/screens/ServerListScreen"
 import {SettingsWindowScreen} from "@/screens/SettingsWindowScreen"
 import {SyncReviewWindowScreen} from "@/screens/SyncReviewWindowScreen"
 import {DeploymentCenterWindowScreen} from "@/screens/DeploymentCenterWindowScreen"
-import {DiagnosticsWindowScreen} from "@/screens/DiagnosticsWindowScreen"
 import {SqliteExplorerWindowScreen} from "@/screens/SqliteExplorerWindowScreen"
 import {TextEditorWindowScreen} from "@/screens/TextEditorWindowScreen"
 import type {AppView, LoginRequest} from "@/types"
@@ -123,44 +122,23 @@ function Shell() {
   }, [accounts.refresh, session.logout])
 
   // Unexpected server disconnects arrive through the ordered rc:evt envelope.
-  // The backend owns bounded recovery; keep the RC surface mounted while it
-  // retries so the operator can see progress or cancel it explicitly.
+  // Clear the live session so the user cannot keep interacting with a dead
+  // handle, then show the server-provided reason on the login screen.
   useEffect(() => {
-    const offEnvelope = Events.On("rc:evt", (event: {data: string}) => {
+    const off = Events.On("rc:evt", (event: {data: string}) => {
       try {
         const payload = JSON.parse(event.data) as {name?: string; data?: unknown[]}
-        if (payload.name !== "rc:disconnected" && payload.name !== "rc:pumpError") return
+        if (payload.name !== "rc:disconnected") return
         const reason = typeof payload.data?.[0] === "string" ? payload.data[0] : language.t("toast.disconnectedByServer")
-        toast.warning(language.t("toast.reconnecting"), {description: reason})
+        void (async () => {
+          await returnToLogin()
+          toast.error(language.t("toast.connectionLost"), {description: reason})
+        })()
       } catch {
-        // Ignore malformed lifecycle events; the recovery status remains usable.
+        // Ignore malformed lifecycle events; the session remains usable.
       }
     })
-    const offReconnected = Events.On("rc:reconnected", () => {
-      toast.success(language.t("toast.reconnected"))
-    })
-    const offFailed = Events.On("rc:reconnectFailed", (event: {data: string}) => {
-      let description = language.t("toast.connectionLost")
-      try {
-        const payload = JSON.parse(event.data) as {lastError?: string}
-        if (payload.lastError) description = payload.lastError
-      } catch {
-        // Keep the generic description for malformed status payloads.
-      }
-      void (async () => {
-        await returnToLogin()
-        toast.error(language.t("toast.reconnectFailed"), {description})
-      })()
-    })
-    const offCancelled = Events.On("rc:reconnectCancelled", () => {
-      void returnToLogin()
-    })
-    return () => {
-      offEnvelope()
-      offReconnected()
-      offFailed()
-      offCancelled()
-    }
+    return off
   }, [returnToLogin, language.t])
 
   // State-driven safety net: the moment a server is connected (connectedServer
@@ -350,8 +328,6 @@ function App() {
                       ? {title: "Sync Review", content: <SyncReviewWindowScreen />}
                       : hash.startsWith("#deployments")
                         ? {title: "Change History", content: <DeploymentCenterWindowScreen />}
-                      : hash.startsWith("#diagnostics")
-                        ? {title: "Diagnostics", content: <DiagnosticsWindowScreen />}
                       : hash.startsWith("#editor")
                         ? {title: "Script Editor", content: <ScriptEditorWindowScreen />}
                         : hash.startsWith("#textfile")
