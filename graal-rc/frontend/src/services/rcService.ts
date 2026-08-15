@@ -215,6 +215,8 @@ export interface RcService {
   resolveConflict(kind: string, key: string, choice: "local" | "server" | "merge", mergeContent?: string): Promise<void>
   pauseSync(): Promise<void>
   resumeSync(): Promise<void>
+  normalizeSync(): Promise<void>
+  rebuildSync(): Promise<void>
   openSyncReview(): Promise<void>
   getAuditEntries(limit: number): Promise<AuditEntry[] | null>
   clearAuditEntries(): Promise<void>
@@ -505,6 +507,8 @@ export const rcService: RcService = {
   resolveConflict: (kind, key, choice, mergeContent = "") => App.ResolveConflict(kind, key, choice, mergeContent),
   pauseSync: () => App.PauseSync(),
   resumeSync: () => App.ResumeSync(),
+  normalizeSync: () => App.NormalizeSync(),
+  rebuildSync: () => App.RebuildSync(),
   openSyncReview: () => App.OpenSyncReview(),
   getAuditEntries: (limit) => App.GetAuditEntries(limit),
   clearAuditEntries: () => App.ClearAuditEntries(),

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,6 +23,21 @@ type blockingFetchBackend struct {
 	permissionBackendStub
 	started chan struct{}
 	release chan struct{}
+}
+
+type blockingSaveBackend struct {
+	permissionBackendStub
+	started chan struct{}
+	release chan struct{}
+	saves   atomic.Int32
+}
+
+func (b *blockingSaveBackend) SaveClass(string, string) error {
+	if b.saves.Add(1) == 1 {
+		close(b.started)
+	}
+	<-b.release
+	return nil
 }
 
 func (b *blockingFetchBackend) FetchAllScripts(context.Context, func(string, string) bool, func(int, int)) ([]rclib.ScriptReply, error) {
@@ -75,6 +91,74 @@ func TestInitialSyncStateAndCompletionGeneration(t *testing.T) {
 		t.Fatalf("per-file update advanced sync generation to %d", got)
 	}
 	engine.Stop()
+}
+
+func TestConcurrentUploadsActivatePanicMode(t *testing.T) {
+	backend := &blockingSaveBackend{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	engine := NewEngine(backend, "TestServer", nil)
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- engine.upload(scriptRef{kind: "class", key: "First", name: "First"}, "first")
+	}()
+	select {
+	case <-backend.started:
+	case <-time.After(time.Second):
+		t.Fatal("first script upload did not start")
+	}
+
+	if err := engine.upload(scriptRef{kind: "class", key: "Second", name: "Second"}, "second"); err == nil {
+		t.Fatal("concurrent upload should be rejected")
+	}
+	status := engine.Status()
+	if !status.PanicMode || status.PanicReason == "" || status.PanicAt == 0 {
+		t.Fatalf("panic status = %+v", status)
+	}
+	if got := backend.saves.Load(); got != 1 {
+		t.Fatalf("save calls after panic = %d, want 1", got)
+	}
+
+	close(backend.release)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first upload failed: %v", err)
+	}
+	if err := engine.ResetPanic(); err != nil {
+		t.Fatalf("reset panic: %v", err)
+	}
+	if engine.Status().PanicMode {
+		t.Fatal("panic mode remained active after reset")
+	}
+}
+
+func TestPrepareRebuildClearsSyncDirectoryContents(t *testing.T) {
+	dir := t.TempDir()
+	for _, kind := range []string{"weapons", "classes", "npcs"} {
+		if err := os.MkdirAll(filepath.Join(dir, kind), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, kind, "Example.gs2"), []byte("script"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	keep := filepath.Join(dir, "keep.txt")
+	if err := os.WriteFile(keep, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	engine := NewEngine(&permissionBackendStub{}, "TestServer", nil)
+	engine.ApplyConfig(SyncConfig{Enabled: true, OutputDir: dir})
+	if err := engine.PrepareRebuild(); err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{"weapons", "classes", "npcs"} {
+		if _, err := os.Stat(filepath.Join(dir, kind)); !os.IsNotExist(err) {
+			t.Fatalf("managed folder %s still exists: %v", kind, err)
+		}
+	}
+	if _, err := os.Stat(keep); !os.IsNotExist(err) {
+		t.Fatalf("sync directory content was not removed: %v", err)
+	}
 }
 
 func (b *recordingBackend) AddClass(name string) error {

@@ -31,10 +31,13 @@ type SyncStatus struct {
 	NCDown           bool         `json:"ncDown"`
 	OutputDirMissing bool         `json:"outputDirMissing"`
 	InitialSync      bool         `json:"initialSync"`
+	PanicMode        bool         `json:"panicMode"`
 	Server           string       `json:"server"`
 	OutputDir        string       `json:"outputDir"`
 	LastSyncAt       int64        `json:"lastSyncAt"`
 	SyncGeneration   uint64       `json:"syncGeneration"`
+	PanicReason      string       `json:"panicReason,omitempty"`
+	PanicAt          int64        `json:"panicAt,omitempty"`
 	ReviewCount      int          `json:"reviewCount"`
 	Items            []ReviewItem `json:"items"`
 	Progress         SyncProgress `json:"progress"`
@@ -88,6 +91,11 @@ type Engine struct {
 	initialSyncActive bool
 	initialSyncDone   bool
 	syncGeneration    uint64
+	panicMode         bool
+	panicReason       string
+	panicAt           int64
+	uploadActive      bool
+	panicHandler      func(string, int64)
 	running           bool
 	stop              chan struct{}
 	stopped           chan struct{}
@@ -123,6 +131,81 @@ func (e *Engine) SetClassScriptHeader(fn func() string) {
 	e.mu.Lock()
 	e.classScriptHeader = fn
 	e.mu.Unlock()
+}
+
+const concurrentUploadPanicReason = "overlapping script uploads were detected"
+
+func (e *Engine) SetPanicHandler(fn func(string, int64)) {
+	e.mu.Lock()
+	e.panicHandler = fn
+	e.mu.Unlock()
+}
+
+func (e *Engine) SetPanicState(active bool, reason string, at int64) {
+	e.mu.Lock()
+	e.panicMode = active
+	if active {
+		e.panicReason = reason
+		e.panicAt = at
+	} else {
+		e.panicReason = ""
+		e.panicAt = 0
+	}
+	e.mu.Unlock()
+	e.emitStatus()
+}
+
+func (e *Engine) ResetPanic() error {
+	e.mu.Lock()
+	if e.uploadActive {
+		e.mu.Unlock()
+		return fmt.Errorf("cannot reset sync panic mode while a script upload is still active")
+	}
+	e.panicMode = false
+	e.panicReason = ""
+	e.panicAt = 0
+	e.mu.Unlock()
+	e.emitStatus()
+	return nil
+}
+
+func (e *Engine) IsRunning() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.running
+}
+
+func (e *Engine) beginUpload() (func(), error) {
+	e.mu.Lock()
+	if e.panicMode {
+		reason := e.panicReason
+		e.mu.Unlock()
+		if reason == "" {
+			reason = concurrentUploadPanicReason
+		}
+		return nil, fmt.Errorf("sync panic mode active: %s", reason)
+	}
+	if e.uploadActive {
+		reason := concurrentUploadPanicReason
+		at := e.now().Unix()
+		e.panicMode = true
+		e.panicReason = reason
+		e.panicAt = at
+		handler := e.panicHandler
+		e.mu.Unlock()
+		if handler != nil {
+			handler(reason, at)
+		}
+		e.emitStatus()
+		return nil, fmt.Errorf("sync panic mode activated: %s", reason)
+	}
+	e.uploadActive = true
+	e.mu.Unlock()
+	return func() {
+		e.mu.Lock()
+		e.uploadActive = false
+		e.mu.Unlock()
+	}, nil
 }
 
 func (e *Engine) ExpectServerUpdate(kind, key, content string) {
@@ -165,6 +248,11 @@ func (e *Engine) Start(ctx context.Context) {
 	}
 	if !e.cfg.Enabled || e.cfg.OutputDir == "" {
 		e.initialSyncActive = false
+		e.mu.Unlock()
+		e.emitStatus()
+		return
+	}
+	if e.panicMode {
 		e.mu.Unlock()
 		e.emitStatus()
 		return
@@ -486,6 +574,12 @@ func (e *Engine) pushLocalLocked(ctx context.Context, path string) {
 	if ctx.Err() != nil || !e.backend.IsNCConnected() {
 		return
 	}
+	releaseUpload, err := e.beginUpload()
+	if err != nil {
+		log.Printf("sync upload blocked: %v", err)
+		return
+	}
+	defer releaseUpload()
 	if ref.kind == "" {
 		if kindFromDir(filepath.Dir(path)) != "weapon" && kindFromDir(filepath.Dir(path)) != "class" {
 			return
@@ -523,7 +617,7 @@ func (e *Engine) pushLocalLocked(ctx context.Context, path string) {
 			return
 		}
 	}
-	if err := e.upload(ref, content); err != nil {
+	if err := e.uploadUnchecked(ref, content); err != nil {
 		log.Printf("sync upload %s: %v", path, err)
 		return
 	}
@@ -536,6 +630,15 @@ func (e *Engine) pushLocalLocked(ctx context.Context, path string) {
 }
 
 func (e *Engine) upload(ref scriptRef, content string) error {
+	releaseUpload, err := e.beginUpload()
+	if err != nil {
+		return err
+	}
+	defer releaseUpload()
+	return e.uploadUnchecked(ref, content)
+}
+
+func (e *Engine) uploadUnchecked(ref scriptRef, content string) error {
 	if !e.backend.CanWriteScript(ref.kind, ref.name) {
 		return fmt.Errorf("no write permission for %s %q", ref.kind, ref.name)
 	}
@@ -565,7 +668,12 @@ func (e *Engine) poll(ctx context.Context) {
 func (e *Engine) pollLocked(ctx context.Context, refreshRights bool) {
 	e.mu.RLock()
 	cfg := e.cfg
+	panicMode := e.panicMode
 	e.mu.RUnlock()
+	if panicMode {
+		e.emitStatus()
+		return
+	}
 	if !cfg.Enabled || cfg.OutputDir == "" || e.paused() || !e.backend.IsNCConnected() {
 		e.emitStatus()
 		return
@@ -959,6 +1067,12 @@ func (e *Engine) HandleChatLine(line string) {
 	}
 	e.workMu.Lock()
 	defer e.workMu.Unlock()
+	e.mu.RLock()
+	panicMode := e.panicMode
+	e.mu.RUnlock()
+	if panicMode {
+		return
+	}
 	if act.Action == "deleted" {
 		e.handleDeleteActivity(act)
 		return
@@ -1078,6 +1192,111 @@ func (e *Engine) ReconcileAll(ctx context.Context) {
 	e.pollLocked(ctx, true)
 }
 
+// PrepareRebuild deletes the contents of the configured Local Sync directory
+// and resets the in-memory baseline. The selected directory itself is kept so
+// it can be watched again after the engine restarts. The panic circuit remains
+// active until the caller has persisted the recovery decision and explicitly
+// resets it.
+func (e *Engine) PrepareRebuild() error {
+	e.workMu.Lock()
+	defer e.workMu.Unlock()
+	cfg := e.config()
+	if cfg.OutputDir == "" {
+		return fmt.Errorf("sync output directory is not configured")
+	}
+	if err := clearSyncContents(cfg.OutputDir); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	e.hashes = map[string]string{}
+	e.refs = map[string]scriptRef{}
+	e.recentDownloads = map[string]time.Time{}
+	e.review = map[string]ReviewItem{}
+	e.expectedUpdates = map[string]expectedServerUpdate{}
+	e.lastSyncAt = 0
+	e.nextSyncAt = 0
+	e.progress = SyncProgress{}
+	e.permissionsReady = false
+	e.permissionsError = ""
+	e.initialSyncDone = false
+	e.initialSyncActive = false
+	e.mu.Unlock()
+	e.emitStatus()
+	return nil
+}
+
+// NormalizeLocalState keeps the managed files but adopts their current bytes
+// as the local baseline. It prevents an already-present stale file from being
+// uploaded immediately after the operator chooses to recover without a full
+// delete-and-download rebuild.
+func (e *Engine) NormalizeLocalState() error {
+	e.workMu.Lock()
+	defer e.workMu.Unlock()
+	cfg := e.config()
+	if cfg.OutputDir == "" {
+		return fmt.Errorf("sync output directory is not configured")
+	}
+	baseline := snapshotLocalScripts(cfg.OutputDir)
+	e.mu.Lock()
+	refs := make(map[string]scriptRef, len(baseline))
+	for path := range baseline {
+		if ref, ok := e.refs[path]; ok {
+			refs[path] = ref
+			continue
+		}
+		kind := kindFromDir(filepath.Dir(path))
+		if kind != "weapon" && kind != "class" {
+			continue
+		}
+		name := decodeName(strings.TrimSuffix(filepath.Base(path), scriptExt))
+		refs[path] = scriptRef{kind: kind, key: name, name: name, path: path}
+	}
+	e.hashes = baseline
+	e.refs = refs
+	e.review = map[string]ReviewItem{}
+	e.recentDownloads = map[string]time.Time{}
+	e.expectedUpdates = map[string]expectedServerUpdate{}
+	e.lastSyncAt = 0
+	e.nextSyncAt = 0
+	e.progress = SyncProgress{}
+	e.mu.Unlock()
+	e.emitStatus()
+	return nil
+}
+
+func clearSyncContents(outputDir string) error {
+	trimmed := strings.TrimSpace(outputDir)
+	if trimmed == "" {
+		return fmt.Errorf("sync output directory is empty")
+	}
+	root, err := filepath.Abs(filepath.Clean(trimmed))
+	if err != nil {
+		return fmt.Errorf("resolve sync output directory: %w", err)
+	}
+	volumeRoot := filepath.VolumeName(root) + string(filepath.Separator)
+	if root == string(filepath.Separator) || root == volumeRoot {
+		return fmt.Errorf("refusing to clear a filesystem root as the sync directory")
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read sync output directory: %w", err)
+	}
+	for _, entry := range entries {
+		target := filepath.Join(root, entry.Name())
+		relative, err := filepath.Rel(root, target)
+		if err != nil || relative == "." || relative == ".." || filepath.IsAbs(relative) || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("invalid sync cleanup path %q", target)
+		}
+		if err := os.RemoveAll(target); err != nil {
+			return fmt.Errorf("clear sync directory %q: %w", target, err)
+		}
+	}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return fmt.Errorf("recreate sync output directory: %w", err)
+	}
+	return nil
+}
+
 func (e *Engine) enqueueReview(ref scriptRef, path, local, server, actor string) {
 	e.mu.Lock()
 	key := entryKey(ref.kind, ref.key)
@@ -1100,7 +1319,7 @@ func (e *Engine) Status() SyncStatus {
 		items = append(items, it)
 	}
 	ncDown := e.cfg.Enabled && e.cfg.OutputDir != "" && !e.backend.IsNCConnected()
-	return SyncStatus{Enabled: e.cfg.Enabled, Paused: e.cfg.PauseUntil != 0 && e.now().Unix() < e.cfg.PauseUntil, NCDown: ncDown, OutputDirMissing: e.cfg.OutputDir == "", InitialSync: e.initialSyncActive && e.cfg.Enabled && e.cfg.OutputDir != "", Server: e.server, OutputDir: e.cfg.OutputDir, LastSyncAt: e.lastSyncAt, SyncGeneration: e.syncGeneration, ReviewCount: len(items), Items: items, Progress: e.progress, NextSyncAt: e.nextSyncAt, PermissionsReady: e.permissionsReady, PermissionsError: e.permissionsError}
+	return SyncStatus{Enabled: e.cfg.Enabled, Paused: e.cfg.PauseUntil != 0 && e.now().Unix() < e.cfg.PauseUntil, NCDown: ncDown, OutputDirMissing: e.cfg.OutputDir == "", InitialSync: e.initialSyncActive && e.cfg.Enabled && e.cfg.OutputDir != "", PanicMode: e.panicMode, PanicReason: e.panicReason, PanicAt: e.panicAt, Server: e.server, OutputDir: e.cfg.OutputDir, LastSyncAt: e.lastSyncAt, SyncGeneration: e.syncGeneration, ReviewCount: len(items), Items: items, Progress: e.progress, NextSyncAt: e.nextSyncAt, PermissionsReady: e.permissionsReady, PermissionsError: e.permissionsError}
 }
 
 func (e *Engine) GetScriptPair(kind, key string) (ScriptPair, error) {
