@@ -11,11 +11,24 @@ export interface ChangelogEntry {
 // the visible history from nullborne.com when the release service is reachable.
 const CHANGELOG_PT_BR: ChangelogEntry[] = [
   {
+    version: "3.1.6",
+    date: "15/08/2026",
+    title: "Fluxo de scripts e Sync mais controláveis",
+    summary: "Melhora o Script Manager, a personalização visual e o controle das notificações de Sync.",
+    current: true,
+    changes: [
+      "O Script Manager agora permite abrir qualquer script sincronizado diretamente no explorador de arquivos nativo do Windows, macOS ou Linux pelo menu de contexto.",
+      "As notificações de progresso do Sync podem ser minimizadas ou dispensadas enquanto o download inicial continua em segundo plano.",
+      "O linter GraalScript deixou de exigir ponto e vírgula depois de declarações de enum.",
+      "Settings agora permite criar, editar e selecionar temas do RC, incluindo a cor da borda das janelas.",
+    ],
+  },
+  {
     version: "3.1.5",
     date: "15/08/2026",
     title: "Updater Windows definitivo e versão visível",
     summary: "Corrige o fluxo final do auto-update Windows e mostra a versão na tela de login.",
-    current: true,
+    current: false,
     changes: [
       "O helper do auto-update Windows agora é iniciado pelo broker do Windows com elevação antes do RC fechar, aguarda o processo, instala a atualização e relança o aplicativo.",
       "A tela de login agora mostra a versão atual do RC no título para facilitar a confirmação do build instalado.",
@@ -177,8 +190,18 @@ const CHANGELOG_PT_BR: ChangelogEntry[] = [
 
 const CHANGELOG_EN: ChangelogEntry[] = [
   {
+    version: "3.1.6", date: "2026-08-15", title: "More controllable script and Sync workflow",
+    summary: "Improves Script Manager, visual customization and Sync notification control.", current: true,
+    changes: [
+      "Script Manager can now open any synchronized script directly in the native file browser on Windows, macOS or Linux from its context menu.",
+      "Sync progress notifications can be minimized or dismissed while the initial download continues in the background.",
+      "The GraalScript linter no longer requires a semicolon after enum declarations.",
+      "Settings now lets users create, edit and select RC themes, including the window border color.",
+    ],
+  },
+  {
     version: "3.1.5", date: "2026-08-15", title: "Definitive Windows updater and visible version",
-    summary: "Fixes the final Windows auto-update flow and shows the version on the login screen.", current: true,
+    summary: "Fixes the final Windows auto-update flow and shows the version on the login screen.", current: false,
     changes: [
       "The Windows automatic-update helper now starts through the Windows shell broker with elevation before the RC closes, waits for the process, installs the update and relaunches the application.",
       "The login screen now shows the current RC version in its title to make the installed build easy to confirm.",
@@ -296,8 +319,18 @@ const CHANGELOG_EN: ChangelogEntry[] = [
 
 const CHANGELOG_ES: ChangelogEntry[] = [
   {
+    version: "3.1.6", date: "2026-08-15", title: "Flujo de scripts y Sync más controlable",
+    summary: "Mejora Script Manager, la personalización visual y el control de las notificaciones de Sync.", current: true,
+    changes: [
+      "Script Manager ahora permite abrir cualquier script sincronizado directamente en el explorador de archivos nativo de Windows, macOS o Linux desde su menú contextual.",
+      "Las notificaciones de progreso de Sync se pueden minimizar o descartar mientras la descarga inicial continúa en segundo plano.",
+      "El linter de GraalScript ya no exige punto y coma después de las declaraciones de enum.",
+      "Settings ahora permite crear, editar y seleccionar temas del RC, incluida la color de borde de las ventanas.",
+    ],
+  },
+  {
     version: "3.1.5", date: "2026-08-15", title: "Actualizador definitivo de Windows y versión visible",
-    summary: "Corrige el flujo final de actualización automática de Windows y muestra la versión en la pantalla de inicio de sesión.", current: true,
+    summary: "Corrige el flujo final de actualización automática de Windows y muestra la versión en la pantalla de inicio de sesión.", current: false,
     changes: [
       "El helper de actualización automática de Windows ahora se inicia mediante el broker del sistema con elevación antes de cerrar el RC, espera al proceso, instala la actualización y vuelve a abrir la aplicación.",
       "La pantalla de inicio de sesión ahora muestra la versión actual del RC en el título para confirmar fácilmente el build instalado.",

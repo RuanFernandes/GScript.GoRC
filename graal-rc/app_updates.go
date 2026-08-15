@@ -29,7 +29,7 @@ const (
 // RCVersion is a variable so local release builds can override the client
 // version through Go's -ldflags -X option without changing production source
 // metadata. Normal builds keep the checked-in release version.
-var RCVersion = "3.1.5"
+var RCVersion = "3.1.6"
 
 // UpdateInstaller describes the artifact advertised by the release service.
 // The checksum is verified before the executable is handed to the installer
