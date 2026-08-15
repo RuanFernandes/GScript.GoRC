@@ -28,7 +28,9 @@ Unicode true
 ## !define UNINST_KEY_NAME     "UninstKeyInRegistry"  # Default "${INFO_COMPANYNAME}${INFO_PRODUCTNAME}"
 ####
 ## !define REQUEST_EXECUTION_LEVEL "admin"            # Default "admin"  see also https://nsis.sourceforge.io/Docs/Chapter4.html
-## !define WAILS_INSTALL_SCOPE     "user"             # Default "machine" - set to "user" for per-user install ($LOCALAPPDATA) without UAC prompt
+## The published Graal RC installer uses the default machine scope in Program Files
+## for compatibility with installations created before v3.1.
+## !define WAILS_INSTALL_SCOPE     "user"             # Optional per-user install ($LOCALAPPDATA) for local development only
 ####
 ## Include the wails tools
 ####

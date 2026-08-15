@@ -558,7 +558,10 @@ func buildWindowsUpdateScript(parentPID, installerPath, applicationPath, logPath
 		"  if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {",
 		"    throw \"The downloaded installer was not found.\"",
 		"  }",
-		"  $installer = Start-Process -FilePath $installerPath -ArgumentList @('/S') -Wait -PassThru -WindowStyle Hidden",
+		// Release installers use the legacy machine-wide Program Files path so
+		// upgrades replace old installations instead of creating a second copy.
+		// RunAs is required because that path is protected by Windows/UAC.
+		"  $installer = Start-Process -FilePath $installerPath -ArgumentList @('/S') -Verb RunAs -Wait -PassThru -WindowStyle Hidden",
 		"  if ($installer.ExitCode -ne 0) {",
 		"    throw \"The installer exited with code $($installer.ExitCode).\"",
 		"  }",

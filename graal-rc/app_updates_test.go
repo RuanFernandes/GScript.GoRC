@@ -162,7 +162,7 @@ func TestWindowsUpdateScriptRelaunchesTheApplication(t *testing.T) {
 		"$waitDeadline = (Get-Date).AddSeconds(30)",
 		"throw \"Timed out waiting for Nullborne RC (PID $parentPid) to exit.\"",
 		"$parentExited = $true",
-		"$installer = Start-Process -FilePath $installerPath -ArgumentList @('/S') -Wait -PassThru -WindowStyle Hidden",
+		"$installer = Start-Process -FilePath $installerPath -ArgumentList @('/S') -Verb RunAs -Wait -PassThru -WindowStyle Hidden",
 		"if (-not $parentExited)",
 		"Start-Process -FilePath $applicationPath -WorkingDirectory $workingDirectory -WindowStyle Normal",
 		"Set-Content -LiteralPath $logPath",
@@ -170,6 +170,41 @@ func TestWindowsUpdateScriptRelaunchesTheApplication(t *testing.T) {
 	} {
 		if !strings.Contains(script, fragment) {
 			t.Fatalf("update helper script is missing %q", fragment)
+		}
+	}
+}
+
+func TestReleaseInstallerUsesLegacyMachineScope(t *testing.T) {
+	validateScript, err := os.ReadFile(filepath.Join("build", "ci", "validate-installer.ps1"))
+	if err != nil {
+		t.Fatalf("read installer validation script: %v", err)
+	}
+	validateText := string(validateScript)
+	for _, fragment := range []string{
+		"-InstallScope machine",
+		"-Architecture $Architecture",
+		"-NativeLibraryName $nativeName",
+	} {
+		if !strings.Contains(validateText, fragment) {
+			t.Fatalf("installer validation script is missing machine-scope behavior %q", fragment)
+		}
+	}
+	if strings.Contains(validateText, "WAILS_INSTALL_SCOPE=user") || strings.Contains(validateText, "REQUEST_EXECUTION_LEVEL=user") {
+		t.Fatal("release installer validation still contains per-user scope settings")
+	}
+
+	smokeScript, err := os.ReadFile(filepath.Join("build", "ci", "smoke-webview2.ps1"))
+	if err != nil {
+		t.Fatalf("read installer smoke script: %v", err)
+	}
+	smokeText := string(smokeScript)
+	for _, fragment := range []string{
+		"[Environment+SpecialFolder]::ProgramFiles",
+		"RuanFernandes\\Graal Remote Control",
+		"-Verb RunAs",
+	} {
+		if !strings.Contains(smokeText, fragment) {
+			t.Fatalf("installer smoke script is missing machine-scope behavior %q", fragment)
 		}
 	}
 }

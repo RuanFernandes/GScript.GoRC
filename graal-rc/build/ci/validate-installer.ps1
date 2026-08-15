@@ -56,34 +56,22 @@ if (-not (Test-Path -LiteralPath $bootstrapper -PathType Leaf)) {
 }
 
 $installerPath = Join-Path $repositoryRoot "bin\graal-rc-$Architecture-installer.exe"
-$defines = if ($Architecture -eq 'amd64') {
-    @(
-        "-DARG_WAILS_AMD64_BINARY=$BinaryPath",
-        "-DARG_GRCLIB_DLL=$nativePath",
-        '-DWAILS_INSTALL_SCOPE=user',
-        '-DREQUEST_EXECUTION_LEVEL=user',
-        'project.nsi'
-    )
-}
-else {
-    @(
-        "-DARG_WAILS_X86_BINARY=$BinaryPath",
-        "-DARG_GRCLIB_DLL=$nativePath",
-        '-DWAILS_INSTALL_SCOPE=user',
-        '-DREQUEST_EXECUTION_LEVEL=user',
-        'project.nsi'
-    )
-}
+$compileScript = Join-Path $repositoryRoot 'build\windows\compile-nsis.ps1'
 
-Push-Location $nsisDirectory
-try {
-    & $makensis.Source @defines
-    if ($LASTEXITCODE -ne 0) {
-        throw "makensis failed with exit code $LASTEXITCODE"
-    }
-}
-finally {
-    Pop-Location
+# Keep the release installer on the legacy machine-wide path. This lets it
+# replace pre-3.1 installations instead of creating a second per-user copy
+# with a competing Start Menu shortcut. compile-nsis.ps1 also supplies the
+# generated INFO_* metadata required by the NSIS project.
+& $compileScript `
+    -InstallScope machine `
+    -Architecture $Architecture `
+    -AppName graal-rc `
+    -ExecutablePath $BinaryPath `
+    -NativeLibraryPath $nativePath `
+    -NativeLibraryName $nativeName `
+    -MakensisPath $makensis.Source
+if ($LASTEXITCODE -ne 0) {
+    throw "compile-nsis.ps1 failed with exit code $LASTEXITCODE"
 }
 
 if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {

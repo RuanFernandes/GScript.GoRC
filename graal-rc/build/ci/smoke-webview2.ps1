@@ -12,14 +12,15 @@ if (-not (Test-Path -LiteralPath $InstallerPath -PathType Leaf)) {
     throw "Installer is missing: $InstallerPath"
 }
 
-$installDirectory = Join-Path $env:LOCALAPPDATA 'Programs\Graal Remote Control'
+$programFilesDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
+$installDirectory = Join-Path $programFilesDirectory 'RuanFernandes\Graal Remote Control'
 $applicationPath = Join-Path $installDirectory 'graal-rc.exe'
 $uninstallerPath = Join-Path $installDirectory 'uninstall.exe'
 $applicationProcess = $null
 
 try {
-    Write-Host 'Installing the per-user NSIS package silently'
-    $installerProcess = Start-Process -FilePath $InstallerPath -ArgumentList '/S' -Wait -PassThru
+    Write-Host 'Installing the machine-wide NSIS package silently'
+    $installerProcess = Start-Process -FilePath $InstallerPath -ArgumentList '/S' -Verb RunAs -Wait -PassThru
     if ($installerProcess.ExitCode -ne 0) {
         throw "NSIS installer exited with code $($installerProcess.ExitCode)"
     }
@@ -42,8 +43,8 @@ finally {
     }
 
     if (Test-Path -LiteralPath $uninstallerPath -PathType Leaf) {
-        Write-Host 'Removing the per-user installation after the smoke test'
-        $uninstallerProcess = Start-Process -FilePath $uninstallerPath -ArgumentList '/S' -Wait -PassThru
+        Write-Host 'Removing the machine-wide installation after the smoke test'
+        $uninstallerProcess = Start-Process -FilePath $uninstallerPath -ArgumentList '/S' -Verb RunAs -Wait -PassThru
         if ($uninstallerProcess.ExitCode -ne 0) {
             Write-Output "::warning::Uninstaller exited with code $($uninstallerProcess.ExitCode)"
         }

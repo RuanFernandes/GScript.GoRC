@@ -105,9 +105,10 @@ if ([System.IO.Path]::GetExtension($resolvedExecutablePath) -ne '.exe') {
     throw "The application payload must be an .exe file: '$ExecutablePath'."
 }
 
-if ([System.IO.Path]::GetFileName($resolvedExecutablePath) -ne "$AppName.exe") {
-    throw "The executable payload '$ExecutablePath' must be named '$AppName.exe'."
-}
+# The NSIS payload is written with `/oname=${PRODUCT_EXECUTABLE}`. CI artifacts
+# intentionally carry their target architecture in the source filename (for
+# example, graal-rc-windows-amd64.exe), so the input name need not match the
+# installed executable name.
 
 if ([System.IO.Path]::GetExtension($resolvedNativeLibraryPath) -ne '.dll') {
     throw "The native Windows payload must be a .dll file: '$NativeLibraryPath'."
