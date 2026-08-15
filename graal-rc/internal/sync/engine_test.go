@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -129,6 +130,74 @@ func TestConcurrentUploadsActivatePanicMode(t *testing.T) {
 	}
 	if engine.Status().PanicMode {
 		t.Fatal("panic mode remained active after reset")
+	}
+}
+
+func TestPullLocalVersionRecordsBackupAndAudit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "classes", "Example.gs2")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var previous string
+	var auditOutcome, auditDetail string
+	engine := NewEngine(&permissionBackendStub{}, "TestServer", nil)
+	engine.SetPullRecorder(
+		func(_ string, _ string, content []byte) (string, error) {
+			previous = string(content)
+			return "backup-123", nil
+		},
+		func(_ string, _ string, outcome, detail string) {
+			auditOutcome = outcome
+			auditDetail = detail
+		},
+	)
+	ref := scriptRef{kind: "class", key: "Example", name: "Example"}
+	if err := engine.pullLocalVersion(ref, path, "new", HashScript("new"), nil); err != nil {
+		t.Fatalf("pull local version: %v", err)
+	}
+	if previous != "old" {
+		t.Fatalf("backup content = %q, want old", previous)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "new" {
+		t.Fatalf("local content = %q, err=%v", got, err)
+	}
+	if auditOutcome != "success" || !strings.Contains(auditDetail, "backup backup-123") {
+		t.Fatalf("audit = outcome %q detail %q", auditOutcome, auditDetail)
+	}
+}
+
+func TestPullLocalVersionDoesNotOverwriteWhenBackupFails(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "classes", "Example.gs2")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var auditOutcome string
+	engine := NewEngine(&permissionBackendStub{}, "TestServer", nil)
+	engine.SetPullRecorder(
+		func(_ string, _ string, _ []byte) (string, error) {
+			return "", os.ErrPermission
+		},
+		func(_ string, _ string, outcome, _ string) { auditOutcome = outcome },
+	)
+	ref := scriptRef{kind: "class", key: "Example", name: "Example"}
+	if err := engine.pullLocalVersion(ref, path, "new", HashScript("new"), nil); err == nil {
+		t.Fatal("pull should fail when the previous version cannot be backed up")
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "old" {
+		t.Fatalf("local content = %q, err=%v", got, err)
+	}
+	if auditOutcome != "failed" {
+		t.Fatalf("audit outcome = %q, want failed", auditOutcome)
 	}
 }
 

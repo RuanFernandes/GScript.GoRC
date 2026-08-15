@@ -19,6 +19,8 @@ import (
 type AuditEntry = auditlib.Entry
 type DeploymentBackup = deploylib.Backup
 
+const syncScriptBackupLimit = 3
+
 func newLocalChangeStores() (*auditlib.Store, *deploylib.Store, *changeRetentionStore) {
 	configDir, err := os.UserConfigDir()
 	if err != nil {
@@ -72,16 +74,44 @@ func (a *App) saveDeploymentBackup(resource, target string, content []byte, hasP
 		return DeploymentBackup{}, false, nil
 	}
 	status := a.sessions.Status()
-	backup, err := a.backups.Save(DeploymentBackup{
+	meta := DeploymentBackup{
 		Server:   status.ServerName,
 		Account:  status.Account,
 		Resource: resource,
 		Target:   target,
-	}, content)
+	}
+	var backup DeploymentBackup
+	var err error
+	if resource == "script" {
+		backup, err = a.backups.SaveLimited(meta, content, syncScriptBackupLimit)
+	} else {
+		backup, err = a.backups.Save(meta, content)
+	}
 	if err != nil {
 		return DeploymentBackup{}, false, err
 	}
 	return backup, true, nil
+}
+
+// backupSyncScript is called before Local Sync overwrites an existing local
+// script with the server version. A missing backup store remains best-effort,
+// matching the behavior of the existing deployment history helpers.
+func (a *App) backupSyncScript(kind, key string, previous []byte) (string, error) {
+	backup, ok, err := a.saveDeploymentBackup("script", kind+":"+key, previous, true)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", nil
+	}
+	return backup.ID, nil
+}
+
+func (a *App) auditSyncPull(kind, key, outcome, detail string) {
+	a.recordAudit("sync", "script", kind+":"+key, outcome, detail)
+	if a != nil && a.audit == nil {
+		a.emitChangeHistoryChanged()
+	}
 }
 
 func (a *App) editorOriginal(kind, key string) ([]byte, bool) {

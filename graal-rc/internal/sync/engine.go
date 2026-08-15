@@ -71,6 +71,13 @@ type expectedServerUpdate struct {
 	hash    string
 }
 
+// PullBackupFunc stores the previous local bytes before a server pull
+// overwrites them. It returns the backup ID for the audit detail.
+type PullBackupFunc func(kind, key string, previous []byte) (string, error)
+
+// PullAuditFunc records a completed or failed server-to-local pull.
+type PullAuditFunc func(kind, key, outcome, detail string)
+
 // Engine implements the intentionally small two-way sync protocol. hashes is
 // the only baseline: a path is changed only when its current MD5 differs from
 // the last successful server/local operation.
@@ -96,6 +103,8 @@ type Engine struct {
 	panicAt           int64
 	uploadActive      bool
 	panicHandler      func(string, int64)
+	pullBackup        PullBackupFunc
+	pullAudit         PullAuditFunc
 	running           bool
 	stop              chan struct{}
 	stopped           chan struct{}
@@ -138,6 +147,16 @@ const concurrentUploadPanicReason = "overlapping script uploads were detected"
 func (e *Engine) SetPanicHandler(fn func(string, int64)) {
 	e.mu.Lock()
 	e.panicHandler = fn
+	e.mu.Unlock()
+}
+
+// SetPullRecorder installs the application-owned safety history hooks used by
+// server-to-local sync pulls. The engine remains usable without these hooks
+// in package-level tests and non-desktop consumers.
+func (e *Engine) SetPullRecorder(backup PullBackupFunc, audit PullAuditFunc) {
+	e.mu.Lock()
+	e.pullBackup = backup
+	e.pullAudit = audit
 	e.mu.Unlock()
 }
 
@@ -374,6 +393,7 @@ func (e *Engine) bootstrap(ctx context.Context, dir string) error {
 		e.emitStatus()
 		return nil
 	}
+	var pullErr error
 	for i, r := range replies {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -390,20 +410,25 @@ func (e *Engine) bootstrap(ctx context.Context, dir string) error {
 			log.Printf("[sync bootstrap compare] start %d/%d kind=%s name=%q bytes=%d", i+1, len(replies), ref.kind, ref.name, len(content))
 		}
 		e.setProgress("Writing", i+1, len(replies), ref.name)
-		if err := writeFileAtomic(path, []byte(content)); err != nil {
+		if err := e.pullLocalVersion(ref, path, content, HashScript(content), nil); err != nil {
 			// One local path may be removed or temporarily unavailable while a
 			// snapshot is being materialized. Keep processing the rest of the
 			// server snapshot; the next poll can retry this path.
 			log.Printf("sync bootstrap write %s: %v", path, err)
+			if pullErr == nil {
+				pullErr = err
+			}
 			continue
 		}
-		e.remember(ref, path, HashScript(content))
-		e.markDownload(path)
+		e.rememberRef(ref, path)
 		if trace {
 			log.Printf("[sync bootstrap compare] done %d/%d kind=%s name=%q elapsed=%s", i+1, len(replies), ref.kind, ref.name, time.Since(started))
 		}
 	}
 	e.removeUnlistedLocalFiles(dir, serverPaths(replies))
+	if err == nil && pullErr != nil {
+		err = pullErr
+	}
 	if err == nil {
 		e.markReconcileCompleted()
 	} else {
@@ -737,7 +762,7 @@ func (e *Engine) pollLocked(ctx context.Context, refreshRights bool) {
 		}
 		e.setProgress("Comparing", i+1, len(replies), ref.name)
 		serverHash := HashScript(content)
-		e.remember(ref, path, serverHash)
+		e.rememberRef(ref, path)
 		local, exists := readScriptFile(path)
 		if localChangedSince(path, localBaseline) {
 			log.Printf("[sync poll compare] preserving local change made during sync path=%q", path)
@@ -745,12 +770,7 @@ func (e *Engine) pollLocked(ctx context.Context, refreshRights bool) {
 			continue
 		}
 		if !exists {
-			if err := writeFileAtomic(path, []byte(content)); err == nil {
-				e.markDownload(path)
-				e.mu.Lock()
-				e.hashes[path] = serverHash
-				e.mu.Unlock()
-			} else {
+			if err := e.pullLocalVersion(ref, path, content, serverHash, nil); err != nil {
 				log.Printf("[sync poll compare] create failed %d/%d path=%q: %v", i+1, len(replies), path, err)
 			}
 			if trace {
@@ -864,14 +884,73 @@ func (e *Engine) finishProgress(total int) {
 	e.mu.Unlock()
 }
 
-func (e *Engine) remember(ref scriptRef, path, hash string) {
+func (e *Engine) rememberRef(ref scriptRef, path string) {
 	e.mu.Lock()
 	ref.path = path
 	e.refs[path] = ref
-	if _, ok := e.hashes[path]; !ok {
-		e.hashes[path] = hash
-	}
 	e.mu.Unlock()
+}
+
+func (e *Engine) setHash(path, hash string) {
+	e.mu.Lock()
+	e.hashes[path] = hash
+	e.mu.Unlock()
+}
+
+func (e *Engine) pullLocalVersion(ref scriptRef, path, content, hash string, expectedLocal *string) error {
+	current, exists := readScriptFile(path)
+	if expectedLocal != nil && exists && HashScript(current) != HashScript(*expectedLocal) {
+		log.Printf("sync download skipped %s: local file changed during sync", path)
+		return nil
+	}
+	if exists && HashScript(current) == hash {
+		e.setHash(path, hash)
+		return nil
+	}
+
+	backupID := ""
+	if exists {
+		e.mu.RLock()
+		backup := e.pullBackup
+		e.mu.RUnlock()
+		if backup != nil {
+			var err error
+			backupID, err = backup(ref.kind, ref.key, []byte(current))
+			if err != nil {
+				detail := fmt.Sprintf("could not back up the previous local version before pulling %s: %v", ref.name, err)
+				e.auditPull(ref, "failed", detail)
+				return err
+			}
+		}
+	}
+	if err := writeFileAtomic(path, []byte(content)); err != nil {
+		detail := fmt.Sprintf("could not write the server version locally: %v", err)
+		e.auditPull(ref, "failed", detail)
+		return err
+	}
+	e.markDownload(path)
+	e.setHash(path, hash)
+	action := "created"
+	if exists {
+		action = "updated"
+	}
+	detail := fmt.Sprintf("pulled server version; local copy %s", action)
+	if backupID != "" {
+		detail += "; backup " + backupID
+	} else if exists {
+		detail += "; no previous-version backup was available"
+	}
+	e.auditPull(ref, "success", detail)
+	return nil
+}
+
+func (e *Engine) auditPull(ref scriptRef, outcome, detail string) {
+	e.mu.RLock()
+	audit := e.pullAudit
+	e.mu.RUnlock()
+	if audit != nil {
+		audit(ref.kind, ref.key, outcome, detail)
+	}
 }
 
 func serverPaths(replies []rclib.ScriptReply) map[string]bool {
@@ -1127,22 +1206,30 @@ func (e *Engine) handleActivity(act Activity) {
 	e.mu.RUnlock()
 	ref := scriptRef{kind: act.Kind, key: key, name: act.Name}
 	path := fullPath(cfg.OutputDir, act.Kind, fileNameFor(act.Kind, key, act.Name))
-	e.remember(ref, path, HashScript(content))
+	e.mu.RLock()
+	_, hadBaseline := e.hashes[path]
+	e.mu.RUnlock()
+	e.rememberRef(ref, path)
 	local, ok := readScriptFile(path)
 	serverHash := HashScript(content)
 	if !ok || HashScript(local) == serverHash {
 		if !ok && cfg.AutoPullServer {
-			if err := writeFileAtomic(path, []byte(content)); err == nil {
-				e.markDownload(path)
-				e.mu.Lock()
-				e.hashes[path] = serverHash
-				e.mu.Unlock()
+			if err := e.pullLocalVersion(ref, path, content, serverHash, nil); err != nil {
+				log.Printf("sync chat download %s: %v", path, err)
 			}
+		} else {
+			e.setHash(path, serverHash)
 		}
 		return
 	}
+	if !cfg.AutoPullServer && !hadBaseline {
+		e.setHash(path, serverHash)
+	}
 	if cfg.AutoPullServer {
 		if e.editorIsOpen(ref) && !e.isSelfServerUpdate(ref, act.Actor, serverHash) {
+			if !hadBaseline {
+				e.setHash(path, serverHash)
+			}
 			e.enqueueReview(ref, path, local, content, act.Actor)
 			return
 		}
@@ -1151,21 +1238,10 @@ func (e *Engine) handleActivity(act Activity) {
 }
 
 func (e *Engine) writeServerVersion(ref scriptRef, path, content, hash string, expectedLocal *string) {
-	if expectedLocal != nil {
-		current, exists := readScriptFile(path)
-		if exists && HashScript(current) != HashScript(*expectedLocal) {
-			log.Printf("sync download skipped %s: local file changed during sync", path)
-			return
-		}
-	}
-	if err := writeFileAtomic(path, []byte(content)); err != nil {
+	if err := e.pullLocalVersion(ref, path, content, hash, expectedLocal); err != nil {
 		log.Printf("sync download %s: %v", path, err)
 		return
 	}
-	e.markDownload(path)
-	e.mu.Lock()
-	e.hashes[path] = hash
-	e.mu.Unlock()
 	e.markSynced()
 	e.emitStatus()
 }

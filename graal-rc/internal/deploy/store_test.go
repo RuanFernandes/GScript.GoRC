@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -78,5 +79,44 @@ func TestStorePrunesOlderBackups(t *testing.T) {
 	}
 	if _, content, err := store.Read("new"); err != nil || string(content) != "new" {
 		t.Fatalf("expected new backup to remain: %v %q", err, content)
+	}
+}
+
+func TestStoreSaveLimitedKeepsThreeNewestBackupsPerTarget(t *testing.T) {
+	store, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := int64(1); i <= 4; i++ {
+		id := fmt.Sprintf("script-%d", i)
+		if _, err := store.SaveLimited(Backup{
+			ID:        id,
+			Timestamp: i,
+			Resource:  "script",
+			Target:    "class:example",
+		}, []byte(id), 3); err != nil {
+			t.Fatalf("save limited %d: %v", i, err)
+		}
+	}
+	if _, err := store.SaveLimited(Backup{ID: "other", Timestamp: 1, Resource: "script", Target: "class:other"}, []byte("other"), 3); err != nil {
+		t.Fatal(err)
+	}
+
+	backups, err := store.List(100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 4 {
+		t.Fatalf("backup count = %d, want 4 including the other target", len(backups))
+	}
+	for _, id := range []string{"script-1"} {
+		if _, _, err := store.Read(id); err == nil {
+			t.Fatalf("old backup %q was not pruned", id)
+		}
+	}
+	for _, id := range []string{"script-2", "script-3", "script-4", "other"} {
+		if _, _, err := store.Read(id); err != nil {
+			t.Fatalf("new backup %q was pruned: %v", id, err)
+		}
 	}
 }

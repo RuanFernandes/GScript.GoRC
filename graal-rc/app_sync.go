@@ -443,6 +443,7 @@ func (a *App) startSyncEngine() {
 	eng.SetPanicHandler(func(reason string, at int64) {
 		a.persistSyncPanic(srv, cfg, reason, at)
 	})
+	eng.SetPullRecorder(a.backupSyncScript, a.auditSyncPull)
 
 	a.syncEngineMu.Lock()
 	a.syncEngine = eng
