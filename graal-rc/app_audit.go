@@ -19,11 +19,13 @@ import (
 type AuditEntry = auditlib.Entry
 type DeploymentBackup = deploylib.Backup
 
-func newLocalChangeStores() (*auditlib.Store, *deploylib.Store) {
+const syncScriptBackupLimit = 3
+
+func newLocalChangeStores() (*auditlib.Store, *deploylib.Store, *changeRetentionStore) {
 	configDir, err := os.UserConfigDir()
 	if err != nil {
 		log.Printf("change history: %v", err)
-		return nil, nil
+		return nil, nil, nil
 	}
 	root := filepath.Join(configDir, "graal-rc")
 	var auditStore *auditlib.Store
@@ -38,7 +40,13 @@ func newLocalChangeStores() (*auditlib.Store, *deploylib.Store) {
 	} else {
 		backupStore = store
 	}
-	return auditStore, backupStore
+	var retentionStore *changeRetentionStore
+	if store, err := newChangeRetentionStore(filepath.Join(root, "retention.json")); err != nil {
+		log.Printf("retention store: %v", err)
+	} else {
+		retentionStore = store
+	}
+	return auditStore, backupStore, retentionStore
 }
 
 func (a *App) recordAudit(action, resource, target, outcome, detail string) {
@@ -58,9 +66,7 @@ func (a *App) recordAudit(action, resource, target, outcome, detail string) {
 		log.Printf("audit %s %s: %v", action, target, err)
 		return
 	}
-	if a.app != nil {
-		a.app.Event.Emit("rc:auditChanged")
-	}
+	a.emitChangeHistoryChanged()
 }
 
 func (a *App) saveDeploymentBackup(resource, target string, content []byte, hasPrevious bool) (DeploymentBackup, bool, error) {
@@ -68,16 +74,44 @@ func (a *App) saveDeploymentBackup(resource, target string, content []byte, hasP
 		return DeploymentBackup{}, false, nil
 	}
 	status := a.sessions.Status()
-	backup, err := a.backups.Save(DeploymentBackup{
+	meta := DeploymentBackup{
 		Server:   status.ServerName,
 		Account:  status.Account,
 		Resource: resource,
 		Target:   target,
-	}, content)
+	}
+	var backup DeploymentBackup
+	var err error
+	if resource == "script" {
+		backup, err = a.backups.SaveLimited(meta, content, syncScriptBackupLimit)
+	} else {
+		backup, err = a.backups.Save(meta, content)
+	}
 	if err != nil {
 		return DeploymentBackup{}, false, err
 	}
 	return backup, true, nil
+}
+
+// backupSyncScript is called before Local Sync overwrites an existing local
+// script with the server version. A missing backup store remains best-effort,
+// matching the behavior of the existing deployment history helpers.
+func (a *App) backupSyncScript(kind, key string, previous []byte) (string, error) {
+	backup, ok, err := a.saveDeploymentBackup("script", kind+":"+key, previous, true)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", nil
+	}
+	return backup.ID, nil
+}
+
+func (a *App) auditSyncPull(kind, key, outcome, detail string) {
+	a.recordAudit("sync", "script", kind+":"+key, outcome, detail)
+	if a != nil && a.audit == nil {
+		a.emitChangeHistoryChanged()
+	}
 }
 
 func (a *App) editorOriginal(kind, key string) ([]byte, bool) {
@@ -143,6 +177,15 @@ func (a *App) GetAuditEntries(limit int) ([]AuditEntry, error) {
 	if a == nil || a.audit == nil {
 		return []AuditEntry{}, nil
 	}
+	if a.retention != nil {
+		if settings, err := a.retention.Load(); err == nil {
+			if cleanupErr := a.cleanupExpiredChangeData(settings); cleanupErr != nil {
+				log.Printf("change retention cleanup: %v", cleanupErr)
+			}
+		} else {
+			log.Printf("change retention: %v", err)
+		}
+	}
 	return a.audit.List(limit)
 }
 
@@ -153,9 +196,7 @@ func (a *App) ClearAuditEntries() error {
 	if err := a.audit.Clear(); err != nil {
 		return err
 	}
-	if a.app != nil {
-		a.app.Event.Emit("rc:auditChanged")
-	}
+	a.emitChangeHistoryChanged()
 	return nil
 }
 
@@ -163,7 +204,31 @@ func (a *App) GetDeploymentBackups(limit int) ([]DeploymentBackup, error) {
 	if a == nil || a.backups == nil {
 		return []DeploymentBackup{}, nil
 	}
+	if a.retention != nil {
+		if settings, err := a.retention.Load(); err == nil {
+			if cleanupErr := a.cleanupExpiredChangeData(settings); cleanupErr != nil {
+				log.Printf("change retention cleanup: %v", cleanupErr)
+			}
+		} else {
+			log.Printf("change retention: %v", err)
+		}
+	}
 	return a.backups.List(limit)
+}
+
+func (a *App) DeleteDeploymentBackup(backupID string) error {
+	if a == nil || a.backups == nil {
+		return errors.New("backup store is unavailable")
+	}
+	meta, err := a.backups.Delete(backupID)
+	if err != nil {
+		return err
+	}
+	a.recordAudit("delete", "backup", meta.Target, "success", "deleted backup "+meta.ID)
+	if a.audit == nil {
+		a.emitChangeHistoryChanged()
+	}
+	return nil
 }
 
 func (a *App) OpenDeploymentCenter() {

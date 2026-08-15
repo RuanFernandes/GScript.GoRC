@@ -35,6 +35,7 @@ import type {
   MCPSetupResult,
   AuditEntry,
   DeploymentBackup,
+  ChangeRetentionSettings,
 } from "@/types"
 import type {PluginBuildResult, PluginFile, PluginInfo, PluginLogEntry, PluginMonacoLanguage, PluginUIWindowInfo} from "@/plugins/types"
 
@@ -214,11 +215,16 @@ export interface RcService {
   resolveConflict(kind: string, key: string, choice: "local" | "server" | "merge", mergeContent?: string): Promise<void>
   pauseSync(): Promise<void>
   resumeSync(): Promise<void>
+  normalizeSync(): Promise<void>
+  rebuildSync(): Promise<void>
   openSyncReview(): Promise<void>
   getAuditEntries(limit: number): Promise<AuditEntry[] | null>
   clearAuditEntries(): Promise<void>
   getDeploymentBackups(limit: number): Promise<DeploymentBackup[] | null>
+  deleteDeploymentBackup(backupID: string): Promise<void>
   rollbackDeployment(backupID: string): Promise<void>
+  getChangeRetention(): Promise<ChangeRetentionSettings>
+  setChangeRetention(settings: ChangeRetentionSettings): Promise<void>
   openDeploymentCenter(): Promise<void>
 }
 
@@ -501,10 +507,15 @@ export const rcService: RcService = {
   resolveConflict: (kind, key, choice, mergeContent = "") => App.ResolveConflict(kind, key, choice, mergeContent),
   pauseSync: () => App.PauseSync(),
   resumeSync: () => App.ResumeSync(),
+  normalizeSync: () => App.NormalizeSync(),
+  rebuildSync: () => App.RebuildSync(),
   openSyncReview: () => App.OpenSyncReview(),
   getAuditEntries: (limit) => App.GetAuditEntries(limit),
   clearAuditEntries: () => App.ClearAuditEntries(),
   getDeploymentBackups: (limit) => App.GetDeploymentBackups(limit),
+  deleteDeploymentBackup: (backupID) => App.DeleteDeploymentBackup(backupID),
   rollbackDeployment: (backupID) => App.RollbackDeployment(backupID),
+  getChangeRetention: () => App.GetChangeRetention(),
+  setChangeRetention: (settings) => App.SetChangeRetention(settings),
   openDeploymentCenter: () => App.OpenDeploymentCenter(),
 }

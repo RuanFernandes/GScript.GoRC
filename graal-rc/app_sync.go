@@ -97,7 +97,7 @@ func decodeSyncConfigs(data []byte) (map[string]sync.SyncConfig, error) {
 		}
 		for k, c := range sf.Servers {
 			if c.PollingMinutes < 1 {
-				c.PollingMinutes = 5
+				c.PollingMinutes = sync.DefaultPollingMinutes
 			}
 			sf.Servers[k] = c
 		}
@@ -118,7 +118,7 @@ func decodeSyncConfigs(data []byte) (map[string]sync.SyncConfig, error) {
 		return nil, err
 	}
 	if single.PollingMinutes < 1 {
-		single.PollingMinutes = 5
+		single.PollingMinutes = sync.DefaultPollingMinutes
 	}
 	return map[string]sync.SyncConfig{"": single}, nil
 }
@@ -146,7 +146,7 @@ func (a *App) persistSyncCfgsLocked() error {
 // normalizeSyncCfg fills sane defaults for zero values.
 func normalizeSyncCfg(c sync.SyncConfig) sync.SyncConfig {
 	if c.PollingMinutes < 1 {
-		c.PollingMinutes = 5
+		c.PollingMinutes = sync.DefaultPollingMinutes
 	}
 	// Sync is intentionally always bidirectional. Keeping these enabled avoids
 	// a stale local copy after an upload or a stale server copy after a local
@@ -195,7 +195,7 @@ func (a *App) SetSyncConfig(enabled bool, outputDir string, pollingMinutes int, 
 		return err
 	}
 	if pollingMinutes < 1 {
-		pollingMinutes = 5
+		pollingMinutes = sync.DefaultPollingMinutes
 	}
 	a.syncCfgMu.Lock()
 	if err := a.ensureSyncCfgsLoaded(); err != nil {
@@ -211,6 +211,9 @@ func (a *App) SetSyncConfig(enabled bool, outputDir string, pollingMinutes int, 
 		AutoPushLocal:  autoPush,
 		AutoPullServer: autoPull,
 		PauseUntil:     prev.PauseUntil,
+		PanicMode:      prev.PanicMode,
+		PanicReason:    prev.PanicReason,
+		PanicAt:        prev.PanicAt,
 	})
 	a.syncCfgs[srv] = cfg
 	if err := a.persistSyncCfgsLocked(); err != nil {
@@ -257,6 +260,78 @@ func (a *App) hasSyncEngine() bool {
 	return a.currentSyncEngine() != nil
 }
 
+func (a *App) resetSyncLSPGeneration() {
+	a.syncLSPMu.Lock()
+	a.syncLSPGeneration = 0
+	a.syncLSPMu.Unlock()
+}
+
+func (a *App) emitSyncConfig(cfg sync.SyncConfig) {
+	if a.app == nil {
+		return
+	}
+	if b, err := json.Marshal(cfg); err == nil {
+		a.app.Event.Emit("rc:syncConfig", string(b))
+	}
+}
+
+func (a *App) persistSyncPanic(server string, fallback sync.SyncConfig, reason string, at int64) {
+	if appIsShuttingDown(a) {
+		return
+	}
+	a.syncCfgMu.Lock()
+	if err := a.ensureSyncCfgsLoaded(); err != nil {
+		a.syncCfgMu.Unlock()
+		log.Printf("persist sync panic: %v", err)
+		return
+	}
+	cfg, ok := a.syncCfgs[server]
+	if !ok {
+		cfg = fallback
+	}
+	if cfg.PanicMode && cfg.PanicAt == at {
+		a.syncCfgMu.Unlock()
+		return
+	}
+	cfg.PanicMode = true
+	cfg.PanicReason = reason
+	cfg.PanicAt = at
+	a.syncCfgs[server] = cfg
+	if err := a.persistSyncCfgsLocked(); err != nil {
+		a.syncCfgMu.Unlock()
+		log.Printf("persist sync panic: %v", err)
+		return
+	}
+	a.syncCfgMu.Unlock()
+	a.emitSyncConfig(cfg)
+}
+
+func (a *App) clearPersistedSyncPanic(server string) error {
+	a.syncCfgMu.Lock()
+	if err := a.ensureSyncCfgsLoaded(); err != nil {
+		a.syncCfgMu.Unlock()
+		return err
+	}
+	cfg, ok := a.syncCfgs[server]
+	if !ok || !cfg.PanicMode {
+		a.syncCfgMu.Unlock()
+		return nil
+	}
+	previous := cfg
+	cfg.PanicMode = false
+	cfg.PanicReason = ""
+	cfg.PanicAt = 0
+	a.syncCfgs[server] = cfg
+	if err := a.persistSyncCfgsLocked(); err != nil {
+		a.syncCfgs[server] = previous
+		a.syncCfgMu.Unlock()
+		return err
+	}
+	a.syncCfgMu.Unlock()
+	a.emitSyncConfig(cfg)
+	return nil
+}
+
 // syncEmitter builds the engine's emit callback: marshals the single payload to
 // JSON and emits a raw event (mirrors rc:fbConfig/rc:codingSettings).
 func (a *App) syncEmitter() func(string, ...any) {
@@ -265,11 +340,19 @@ func (a *App) syncEmitter() func(string, ...any) {
 			return
 		}
 		if name == "rc:syncStatus" && len(data) > 0 {
-			if status, ok := data[0].(sync.SyncStatus); ok && !status.Progress.Active {
-				// The sync engine writes server changes to disk asynchronously. Once
-				// a reconcile finishes, refresh the semantic summaries so a still-open
-				// editor sees the new NPC/class public API without reopening it.
-				go a.refreshGraalScriptWorkspace()
+			if status, ok := data[0].(sync.SyncStatus); ok && status.SyncGeneration > 0 {
+				a.syncLSPMu.Lock()
+				shouldRefresh := status.SyncGeneration > a.syncLSPGeneration
+				if shouldRefresh {
+					a.syncLSPGeneration = status.SyncGeneration
+				}
+				a.syncLSPMu.Unlock()
+				// A generation is advanced only after the complete reconcile has
+				// finished. Refresh once per generation so an auto-poll does not
+				// repeatedly tear down an already-loaded LSP workspace.
+				if shouldRefresh {
+					go a.refreshGraalScriptWorkspace()
+				}
 			}
 		}
 		if a.app == nil || len(data) == 0 {
@@ -357,6 +440,10 @@ func (a *App) startSyncEngine() {
 	eng.SetClassScriptHeader(func() string {
 		return initialClassScript(a.sessions.Status())
 	})
+	eng.SetPanicHandler(func(reason string, at int64) {
+		a.persistSyncPanic(srv, cfg, reason, at)
+	})
+	eng.SetPullRecorder(a.backupSyncScript, a.auditSyncPull)
 
 	a.syncEngineMu.Lock()
 	a.syncEngine = eng
@@ -365,6 +452,9 @@ func (a *App) startSyncEngine() {
 	a.syncEngineMu.Unlock()
 
 	eng.ApplyConfig(cfg)
+	if cfg.PanicMode {
+		eng.SetPanicState(true, cfg.PanicReason, cfg.PanicAt)
+	}
 	eng.Start(ctx)
 	if a.app != nil {
 		if b, marshalErr := json.Marshal(cfg); marshalErr == nil {
@@ -397,6 +487,7 @@ func (a *App) stopSyncEngineLocked() {
 	if eng != nil {
 		eng.Stop()
 	}
+	a.resetSyncLSPGeneration()
 }
 
 func (a *App) applySyncConfig(cfg sync.SyncConfig) {
@@ -432,6 +523,13 @@ func (a *App) SyncNow() error {
 	if eng == nil {
 		return nil
 	}
+	if status := eng.Status(); status.PanicMode {
+		reason := status.PanicReason
+		if reason == "" {
+			reason = "overlapping script uploads were detected"
+		}
+		return fmt.Errorf("sync is in panic mode: %s", reason)
+	}
 	// Sync Now runs the full reconcile in the background (refresh weapon list +
 	// pipelined bulk fetch + classify). NC is not reconnected — that drops the
 	// session on old servers; class/npc lists refresh via live *Changed pushes.
@@ -456,6 +554,9 @@ func (a *App) GetSyncStatus() sync.SyncStatus {
 		Server:           a.currentSyncServer(),
 		OutputDir:        c.OutputDir,
 		OutputDirMissing: c.OutputDir == "",
+		PanicMode:        c.PanicMode,
+		PanicReason:      c.PanicReason,
+		PanicAt:          c.PanicAt,
 	}
 }
 
@@ -534,6 +635,71 @@ func (a *App) ResumeSync() error {
 	a.syncCfgMu.Unlock()
 	if eng := a.currentSyncEngine(); eng != nil {
 		eng.SetPaused(0)
+	}
+	return nil
+}
+
+// NormalizeSync clears panic mode while keeping the local files. Their
+// current contents become the baseline, so the recovery does not immediately
+// upload the potentially stale versions that triggered the circuit breaker.
+func (a *App) NormalizeSync() error {
+	return a.recoverSync(false)
+}
+
+// RebuildSync clears the configured sync folder and downloads a fresh server
+// snapshot before allowing uploads again.
+func (a *App) RebuildSync() error {
+	return a.recoverSync(true)
+}
+
+func (a *App) recoverSync(rebuild bool) error {
+	if err := ensureAppRunning(a); err != nil {
+		return err
+	}
+	syncEngineTransitionMu.Lock()
+	defer syncEngineTransitionMu.Unlock()
+	eng := a.currentSyncEngine()
+	if eng == nil {
+		return fmt.Errorf("sync engine is unavailable")
+	}
+	status := eng.Status()
+	if !status.PanicMode {
+		return fmt.Errorf("sync panic mode is not active")
+	}
+	wasRunning := eng.IsRunning()
+	// Rebuild removes the watched script directories. Stop the engine first so
+	// the old fsnotify subscriptions cannot survive against freshly-created
+	// directories and silently stop seeing future local edits.
+	if rebuild && wasRunning {
+		eng.Stop()
+	}
+	var err error
+	if rebuild {
+		err = eng.PrepareRebuild()
+	} else {
+		err = eng.NormalizeLocalState()
+	}
+	if err != nil {
+		return err
+	}
+	if err := eng.ResetPanic(); err != nil {
+		return err
+	}
+	server := a.currentSyncServer()
+	if err := a.clearPersistedSyncPanic(server); err != nil {
+		eng.SetPanicState(true, status.PanicReason, status.PanicAt)
+		return fmt.Errorf("clear persisted sync panic: %w", err)
+	}
+	a.syncEngineMu.Lock()
+	ctx := a.syncCtx
+	a.syncEngineMu.Unlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if !rebuild && wasRunning {
+		go eng.ReconcileAll(ctx)
+	} else {
+		eng.Start(ctx)
 	}
 	return nil
 }

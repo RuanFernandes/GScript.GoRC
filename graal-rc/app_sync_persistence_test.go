@@ -54,7 +54,7 @@ func TestDecodeSyncConfigsSupportsLegacySingleConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode legacy sync config: %v", err)
 	}
-	if got[""].PollingMinutes != 5 || !got[""].Enabled {
+	if got[""].PollingMinutes != synclib.DefaultPollingMinutes || !got[""].Enabled {
 		t.Fatalf("decoded legacy config = %+v", got[""])
 	}
 }

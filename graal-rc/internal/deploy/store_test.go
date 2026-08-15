@@ -1,6 +1,11 @@
 package deploy
 
-import "testing"
+import (
+	"fmt"
+	"os"
+	"testing"
+	"time"
+)
 
 func TestStoreRoundTripsAndValidatesChecksum(t *testing.T) {
 	store, err := New(t.TempDir())
@@ -27,5 +32,91 @@ func TestStoreRejectsTraversalIDs(t *testing.T) {
 	}
 	if _, _, err := store.Read("..\\outside"); err == nil {
 		t.Fatal("expected traversal id to be rejected")
+	}
+}
+
+func TestStoreDeletesBackupFiles(t *testing.T) {
+	root := t.TempDir()
+	store, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Save(Backup{ID: "delete-me", Resource: "file", Target: "x"}, []byte("old")); err != nil {
+		t.Fatal(err)
+	}
+	meta, err := store.Delete("delete-me")
+	if err != nil || meta.ID != "delete-me" {
+		t.Fatalf("delete: %v %#v", err, meta)
+	}
+	if _, _, err := store.Read("delete-me"); err == nil {
+		t.Fatal("expected deleted backup to be unreadable")
+	}
+	for _, name := range []string{"delete-me.data", "delete-me.meta.json"} {
+		if _, err := os.Stat(root + "\\" + name); !os.IsNotExist(err) {
+			t.Fatalf("expected %s to be removed, got %v", name, err)
+		}
+	}
+}
+
+func TestStorePrunesOlderBackups(t *testing.T) {
+	store, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Save(Backup{ID: "old", Timestamp: time.Now().Add(-48 * time.Hour).UnixMilli(), Resource: "file", Target: "old"}, []byte("old")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Save(Backup{ID: "new", Timestamp: time.Now().Add(-2 * time.Hour).UnixMilli(), Resource: "file", Target: "new"}, []byte("new")); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := store.PruneOlderThan(time.Now().Add(-24 * time.Hour))
+	if err != nil || removed != 1 {
+		t.Fatalf("prune: %v removed=%d", err, removed)
+	}
+	if _, _, err := store.Read("old"); err == nil {
+		t.Fatal("expected old backup to be pruned")
+	}
+	if _, content, err := store.Read("new"); err != nil || string(content) != "new" {
+		t.Fatalf("expected new backup to remain: %v %q", err, content)
+	}
+}
+
+func TestStoreSaveLimitedKeepsThreeNewestBackupsPerTarget(t *testing.T) {
+	store, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := int64(1); i <= 4; i++ {
+		id := fmt.Sprintf("script-%d", i)
+		if _, err := store.SaveLimited(Backup{
+			ID:        id,
+			Timestamp: i,
+			Resource:  "script",
+			Target:    "class:example",
+		}, []byte(id), 3); err != nil {
+			t.Fatalf("save limited %d: %v", i, err)
+		}
+	}
+	if _, err := store.SaveLimited(Backup{ID: "other", Timestamp: 1, Resource: "script", Target: "class:other"}, []byte("other"), 3); err != nil {
+		t.Fatal(err)
+	}
+
+	backups, err := store.List(100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 4 {
+		t.Fatalf("backup count = %d, want 4 including the other target", len(backups))
+	}
+	for _, id := range []string{"script-1"} {
+		if _, _, err := store.Read(id); err == nil {
+			t.Fatalf("old backup %q was not pruned", id)
+		}
+	}
+	for _, id := range []string{"script-2", "script-3", "script-4", "other"} {
+		if _, _, err := store.Read(id); err != nil {
+			t.Fatalf("new backup %q was pruned: %v", id, err)
+		}
 	}
 }

@@ -5,6 +5,7 @@
 // anchored popovers are not clipped.
 import {useState, type ComponentType} from "react"
 import {Code2, Flag, FolderOpen, FolderTree, Pin, PinOff, SlidersHorizontal, Users} from "lucide-react"
+import {toast} from "sonner"
 
 import {SyncPopover} from "@/components/features/sync/SyncPopover"
 import {rcService} from "@/services/rcService"
@@ -56,6 +57,12 @@ export function RcSidebar({ncLabel: nc, ncConnected, openServerText}: RcSidebarP
     })
   }
 
+  const openScriptManager = () => {
+    void rcService.openScriptManager().catch(() => {
+      toast.error(t("scripts.initialSyncBusy"))
+    })
+  }
+
   return (
     <aside className={`group flex shrink-0 flex-col overflow-visible border-r transition-[width] duration-150 ease-out ${pinned ? "sidebar-pinned w-56" : "w-12 hover:w-56"}`}>
       {/* NC status chip at the top */}
@@ -74,7 +81,7 @@ export function RcSidebar({ncLabel: nc, ncConnected, openServerText}: RcSidebarP
       <div className="h-px bg-border" />
 
       <nav className="flex flex-col py-1">
-        <RailItem icon={Code2} label={t("sidebar.scripts")} onClick={() => rcService.openScriptManager()} />
+        <RailItem icon={Code2} label={t("sidebar.scripts")} onClick={openScriptManager} />
         <SyncPopover rail />
         <RailItem icon={FolderOpen} label={t("sidebar.files")} onClick={() => rcService.openFileBrowser()} />
         <RailItem icon={Users} label={t("sidebar.players")} onClick={() => rcService.openPlayerList()} />

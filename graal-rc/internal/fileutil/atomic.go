@@ -33,6 +33,19 @@ func AtomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	return AtomicWriteFileWithValidator(path, data, perm, nil)
 }
 
+// AtomicReplaceFile replaces path through a same-directory temporary file
+// without creating a path+.bak copy. It is useful for compacting append-only
+// stores whose retention policy must not leave a second copy of expired data.
+func AtomicReplaceFile(path string, data []byte, perm os.FileMode) error {
+	if path == "" {
+		return errors.New("file path is required")
+	}
+	lock := lockForPath(path)
+	lock.Lock()
+	defer lock.Unlock()
+	return atomicReplaceLocked(path, data, perm)
+}
+
 // AtomicWriteFileWithValidator is AtomicWriteFile with a validator for the
 // current payload. Invalid current data is not copied into the backup, which
 // preserves the last known-good backup during recovery from corruption.

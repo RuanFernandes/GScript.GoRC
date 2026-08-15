@@ -15,9 +15,12 @@ const EMPTY_STATUS: SyncStatus = {
   paused: false,
   ncDown: false,
   outputDirMissing: true,
+  initialSync: false,
+  panicMode: false,
   server: "",
   outputDir: "",
   lastSyncAt: 0,
+  syncGeneration: 0,
   reviewCount: 0,
   items: [],
   progress: {active: false, phase: "", current: "", completed: 0, total: 0},
@@ -28,7 +31,7 @@ const EMPTY_STATUS: SyncStatus = {
 const DEFAULT_CONFIG: SyncConfig = {
   enabled: false,
   outputDir: "",
-  pollingMinutes: 5,
+  pollingMinutes: 60,
   autoPushLocal: true,
   autoPullServer: true,
 }
@@ -43,6 +46,8 @@ export interface UseSyncResult {
   resolveConflict: (kind: string, key: string, choice: "local" | "server" | "merge", mergeContent?: string) => Promise<void>
   pause: () => Promise<void>
   resume: () => Promise<void>
+  normalizeSync: () => Promise<void>
+  rebuildSync: () => Promise<void>
 }
 
 export function useSync(): UseSyncResult {
@@ -178,5 +183,8 @@ export function useSync(): UseSyncResult {
     }
   }, [])
 
-  return {config, status, progress, loaded, saveConfig, syncNow, resolveConflict, pause, resume}
+  const normalizeSync = useCallback(() => rcService.normalizeSync(), [])
+  const rebuildSync = useCallback(() => rcService.rebuildSync(), [])
+
+  return {config, status, progress, loaded, saveConfig, syncNow, resolveConflict, pause, resume, normalizeSync, rebuildSync}
 }

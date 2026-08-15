@@ -18,12 +18,19 @@ type SyncConfig struct {
 	// PauseUntil is a unix timestamp until which reconcile is skipped
 	// (0 = not paused). Set by PauseSync (now+1h), cleared by ResumeSync.
 	PauseUntil int64 `json:"pauseUntil,omitempty"`
+	// PanicMode is a persisted circuit breaker set when overlapping script
+	// uploads are detected. It stays active until explicitly reset.
+	PanicMode   bool   `json:"panicMode,omitempty"`
+	PanicReason string `json:"panicReason,omitempty"`
+	PanicAt     int64  `json:"panicAt,omitempty"`
 }
+
+const DefaultPollingMinutes = 60
 
 // DefaultSyncConfig returns sane defaults.
 func DefaultSyncConfig() SyncConfig {
 	return SyncConfig{
-		PollingMinutes: 5,
+		PollingMinutes: DefaultPollingMinutes,
 		AutoPushLocal:  true,
 		AutoPullServer: true,
 	}

@@ -62,8 +62,8 @@ export function SyncSection() {
   const total = progress.total
   const completed = Math.min(progress.completed, total || progress.completed)
   const percentage = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : progress.active ? 8 : 0
-  const state = status.permissionsError ? t("sync.permissionsUnavailable") : status.ncDown ? t("sync.offline") : status.paused ? t("sync.paused") : !status.enabled ? t("sync.disabled") : !status.outputDir ? t("sync.chooseFolder") : progress.active ? progress.phase : t("sync.watching")
-  const tone = status.permissionsError || status.ncDown || status.paused ? "bg-amber-500" : enabled ? "bg-emerald-500" : "bg-muted-foreground/50"
+  const state = status.panicMode ? t("sync.panic") : status.permissionsError ? t("sync.permissionsUnavailable") : status.ncDown ? t("sync.offline") : status.paused ? t("sync.paused") : !status.enabled ? t("sync.disabled") : !status.outputDir ? t("sync.chooseFolder") : progress.active ? progress.phase : t("sync.watching")
+  const tone = status.panicMode ? "bg-red-500" : status.permissionsError || status.ncDown || status.paused ? "bg-amber-500" : enabled ? "bg-emerald-500" : "bg-muted-foreground/50"
   const lastSync = status.lastSyncAt ? new Date(status.lastSyncAt * 1000).toLocaleTimeString() : "never"
   const countdown = useMemo(() => formatCountdown(status.nextSyncAt, now, t), [status.nextSyncAt, now, t])
 
@@ -72,7 +72,7 @@ export function SyncSection() {
       <div className="border-border bg-muted/25 rounded-lg border p-3">
         <div className="flex items-start gap-3">
           <div className={`mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md ${enabled ? "bg-emerald-500/12 text-emerald-500" : "bg-muted text-muted-foreground"}`}>
-            {progress.active ? <RefreshCw className="size-4 animate-spin" /> : <FolderSync className="size-4" />}
+            {status.panicMode ? <AlertTriangle className="text-red-500 size-4" /> : progress.active ? <RefreshCw className="size-4 animate-spin" /> : <FolderSync className="size-4" />}
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2"><p className="text-sm font-semibold">{state}</p><span className={`size-1.5 rounded-full ${tone}`} /></div>
@@ -97,6 +97,8 @@ export function SyncSection() {
 
       {status.permissionsError && <div className="border-amber-500/30 bg-amber-500/10 text-amber-200 flex items-start gap-2 rounded-md border px-3 py-2 text-xs"><AlertTriangle className="mt-0.5 size-3.5 shrink-0" /><span>{t("sync.permissionsUnavailable")}</span></div>}
 
+      {status.panicMode && <div role="alert" className="border-destructive/40 bg-destructive/10 text-destructive-foreground flex items-start gap-2 rounded-md border px-3 py-2 text-xs"><AlertTriangle className="mt-0.5 size-3.5 shrink-0" /><span>{t("sync.panicDescription")}</span></div>}
+
       <Toggle checked={status.enabled} onChange={(v) => saveConfig({enabled: v})} label={t("sync.enable")} />
 
       <div className="border-primary/25 bg-primary/8 text-muted-foreground flex items-start gap-2 rounded-md border px-3 py-2 text-xs leading-relaxed">
@@ -110,7 +112,7 @@ export function SyncSection() {
 
       <p className="text-muted-foreground bg-muted/60 -mx-1 rounded-md px-3 py-2 text-xs leading-relaxed">{t("sync.description")}</p>
 
-      <Button onClick={syncNow} disabled={!loaded || !enabled} className="w-full gap-2"><RefreshCw className="size-4" />{t("sync.syncNow")}</Button>
+      <Button onClick={syncNow} disabled={!loaded || !enabled || status.panicMode} className="w-full gap-2"><RefreshCw className="size-4" />{t("sync.syncNow")}</Button>
     </div>
   )
 }

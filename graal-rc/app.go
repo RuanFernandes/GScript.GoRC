@@ -121,6 +121,7 @@ type App struct {
 	plugins        *pluginlib.Manager
 	audit          *auditlib.Store
 	backups        *deploylib.Store
+	retention      *changeRetentionStore
 
 	languageMu sync.Mutex
 	language   string
@@ -132,15 +133,17 @@ type App struct {
 	// server name) so each server keeps its own output folder + settings. The
 	// engine is (re)started after a server connect (once NC comes up) and stopped
 	// on logout / server switch.
-	syncCfgMu        sync.Mutex
-	syncCfgs         map[string]synclib.SyncConfig
-	syncCfgLoaded    bool
-	syncEngineMu     sync.Mutex
-	syncEngine       *synclib.Engine
-	syncCtx          context.Context
-	syncCancel       context.CancelFunc
-	syncReviewMu     sync.Mutex
-	syncReviewWindow *application.WebviewWindow
+	syncCfgMu         sync.Mutex
+	syncCfgs          map[string]synclib.SyncConfig
+	syncCfgLoaded     bool
+	syncEngineMu      sync.Mutex
+	syncEngine        *synclib.Engine
+	syncCtx           context.Context
+	syncCancel        context.CancelFunc
+	syncLSPMu         sync.Mutex
+	syncLSPGeneration uint64
+	syncReviewMu      sync.Mutex
+	syncReviewWindow  *application.WebviewWindow
 
 	deploymentMu     sync.Mutex
 	deploymentWindow *application.WebviewWindow
@@ -178,8 +181,8 @@ func NewApp() *App {
 	if pluginErr != nil {
 		log.Printf("plugins: %v", pluginErr)
 	}
-	auditStore, backupStore := newLocalChangeStores()
-	return &App{
+	auditStore, backupStore, retentionStore := newLocalChangeStores()
+	app := &App{
 		sessions:              connection.NewService(),
 		vault:                 vault,
 		editorWindows:         map[string]*application.WebviewWindow{},
@@ -201,7 +204,17 @@ func NewApp() *App {
 		plugins:               pluginManager,
 		audit:                 auditStore,
 		backups:               backupStore,
+		retention:             retentionStore,
 	}
+	if retentionStore != nil {
+		settings, retentionErr := retentionStore.Load()
+		if retentionErr != nil {
+			log.Printf("change retention: %v", retentionErr)
+		} else if cleanupErr := app.cleanupExpiredChangeData(settings); cleanupErr != nil {
+			log.Printf("change retention cleanup: %v", cleanupErr)
+		}
+	}
+	return app
 }
 
 // attach wires the v3 application handle and the event emitter (grclib
@@ -2458,13 +2471,21 @@ func (a *App) OpenPlayerListPM(playerID int) {
 
 // OpenScriptManager opens (or focuses) the Script Manager window (Weapons /
 // Classes / NPCs tabs). Singleton.
-func (a *App) OpenScriptManager() {
+func (a *App) OpenScriptManager() error {
+	// The initial sync runs while the engine transition mutex is held, so this
+	// check cannot race the first bootstrap started during login.
+	syncEngineTransitionMu.Lock()
+	defer syncEngineTransitionMu.Unlock()
+	if eng := a.currentSyncEngine(); eng != nil && eng.Status().InitialSync {
+		return errors.New("script manager is unavailable while the initial sync is running")
+	}
+
 	a.scriptMgrMu.Lock()
 	defer a.scriptMgrMu.Unlock()
 	if a.scriptMgrWindow != nil {
 		a.scriptMgrWindow.Show()
 		a.scriptMgrWindow.Focus()
-		return
+		return nil
 	}
 	w := a.app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:             "scripts",
@@ -2485,6 +2506,7 @@ func (a *App) OpenScriptManager() {
 		a.scriptMgrWindow = nil
 		a.scriptMgrMu.Unlock()
 	})
+	return nil
 }
 
 // OpenSettings opens (or focuses) the Settings window (Coding + Chat). Singleton.

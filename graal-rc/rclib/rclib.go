@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"unsafe"
 )
@@ -1795,9 +1796,14 @@ func GetWeapons(h Handle) ([]Weapon, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get_weapons: %w", err)
 	}
-	out := make([]Weapon, count)
+	out := make([]Weapon, 0, count)
 	for i := 0; i < count; i++ {
-		out[i] = Weapon{Name: bptrToString(arr[i].Name)}
+		name := strings.TrimSpace(bptrToString(arr[i].Name))
+		if !IsUsableScriptName(name) {
+			log.Printf("[rclib] ignoring weapon with invalid name at index=%d", i)
+			continue
+		}
+		out = append(out, Weapon{Name: name})
 	}
 	return out, nil
 }
@@ -1824,9 +1830,14 @@ func GetClasses(h Handle) ([]Class, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get_classes: %w", err)
 	}
-	out := make([]Class, count)
+	out := make([]Class, 0, count)
 	for i := 0; i < count; i++ {
-		out[i] = Class{Name: bptrToString(arr[i].Name)}
+		name := strings.TrimSpace(bptrToString(arr[i].Name))
+		if !IsUsableScriptName(name) {
+			log.Printf("[rclib] ignoring class with invalid name at index=%d", i)
+			continue
+		}
+		out = append(out, Class{Name: name})
 	}
 	return out, nil
 }
@@ -1853,10 +1864,15 @@ func GetNPCs(h Handle) ([]NPC, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get_npcs: %w", err)
 	}
-	out := make([]NPC, count)
+	out := make([]NPC, 0, count)
 	for i := 0; i < count; i++ {
 		n := arr[i]
-		out[i] = NPC{ID: int(n.ID), Name: bptrToString(n.Name), Type: bptrToString(n.Type), Level: bptrToString(n.Level)}
+		name := strings.TrimSpace(bptrToString(n.Name))
+		if !IsUsableScriptName(name) {
+			log.Printf("[rclib] ignoring NPC id=%d with invalid name", n.ID)
+			continue
+		}
+		out = append(out, NPC{ID: int(n.ID), Name: name, Type: bptrToString(n.Type), Level: bptrToString(n.Level)})
 	}
 	return out, nil
 }
