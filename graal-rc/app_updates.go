@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	RCVersion          = "3.1.1"
+	RCVersion          = "3.1.2"
 	releaseAPIBaseURL  = "https://nullborne.com"
 	updateRequestLimit = 512 * 1024
 	maxInstallerBytes  = 512 * 1024 * 1024
@@ -300,19 +300,12 @@ func downloadInstaller(info UpdateInfo) (string, error) {
 
 func launchWindowsInstallerAfterExit(installerPath string) error {
 	parentPID := strconv.Itoa(os.Getpid())
-	quotedInstallerPath := strings.ReplaceAll(installerPath, "'", "''")
-	script := fmt.Sprintf(`$parentPid = %s
-$installerPath = '%s'
-while (Get-Process -Id $parentPid -ErrorAction SilentlyContinue) {
-  Start-Sleep -Milliseconds 250
-}
-try {
-  Start-Process -FilePath $installerPath -ArgumentList '/S' -Wait
-} finally {
-  Remove-Item -LiteralPath $installerPath -Force -ErrorAction SilentlyContinue
-  Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
-}
-`, parentPID, quotedInstallerPath)
+	applicationPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve application path for update: %w", err)
+	}
+	logPath := filepath.Join(os.TempDir(), "nullbornes-rc-update.log")
+	script := buildWindowsUpdateScript(parentPID, installerPath, applicationPath, logPath)
 
 	scriptPath := filepath.Join(os.TempDir(), fmt.Sprintf("nullbornes-rc-update-%d.ps1", time.Now().UnixNano()))
 	if err := os.WriteFile(scriptPath, []byte(script), 0600); err != nil {
@@ -338,4 +331,50 @@ try {
 		return err
 	}
 	return nil
+}
+
+func buildWindowsUpdateScript(parentPID, installerPath, applicationPath, logPath string) string {
+	quotePowerShellLiteral := func(value string) string {
+		return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+	}
+
+	lines := []string{
+		fmt.Sprintf("$parentPid = %s", quotePowerShellLiteral(parentPID)),
+		fmt.Sprintf("$installerPath = %s", quotePowerShellLiteral(installerPath)),
+		fmt.Sprintf("$applicationPath = %s", quotePowerShellLiteral(applicationPath)),
+		fmt.Sprintf("$workingDirectory = %s", quotePowerShellLiteral(filepath.Dir(applicationPath))),
+		fmt.Sprintf("$logPath = %s", quotePowerShellLiteral(logPath)),
+		"while (Get-Process -Id $parentPid -ErrorAction SilentlyContinue) {",
+		"  Start-Sleep -Milliseconds 250",
+		"}",
+		"try {",
+		"  if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {",
+		"    throw \"The downloaded installer was not found.\"",
+		"  }",
+		"  $installer = Start-Process -FilePath $installerPath -ArgumentList @('/S') -Wait -PassThru -WindowStyle Hidden",
+		"  if ($installer.ExitCode -ne 0) {",
+		"    throw \"The installer exited with code $($installer.ExitCode).\"",
+		"  }",
+		"  Remove-Item -LiteralPath $logPath -Force -ErrorAction SilentlyContinue",
+		"} catch {",
+		"  try {",
+		"    Set-Content -LiteralPath $logPath -Value (\"Nullborne RC update failed: \" + $_.Exception.Message) -Encoding UTF8",
+		"  } catch {",
+		"  }",
+		"} finally {",
+		"  Remove-Item -LiteralPath $installerPath -Force -ErrorAction SilentlyContinue",
+		"}",
+		"try {",
+		"  if (Test-Path -LiteralPath $applicationPath -PathType Leaf) {",
+		"    Start-Process -FilePath $applicationPath -WorkingDirectory $workingDirectory -WindowStyle Normal",
+		"  }",
+		"} catch {",
+		"  try {",
+		"    Add-Content -LiteralPath $logPath -Value (\"Could not relaunch Nullborne RC: \" + $_.Exception.Message) -Encoding UTF8",
+		"  } catch {",
+		"  }",
+		"}",
+		"Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue",
+	}
+	return strings.Join(lines, "\r\n") + "\r\n"
 }

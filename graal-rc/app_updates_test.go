@@ -39,8 +39,8 @@ func TestDownloadInstallerRejectsUntrustedRoutesBeforeNetworkAccess(t *testing.T
 }
 
 func TestAppVersionIsReleaseVersion(t *testing.T) {
-	if (&App{}).GetAppVersion() != "3.1.1" {
-		t.Fatalf("GetAppVersion() = %q, want 3.1.1", (&App{}).GetAppVersion())
+	if (&App{}).GetAppVersion() != "3.1.2" {
+		t.Fatalf("GetAppVersion() = %q, want 3.1.2", (&App{}).GetAppVersion())
 	}
 }
 
@@ -64,5 +64,25 @@ func TestNSISProcessProbeUsesCompatibleNsExecInvocation(t *testing.T) {
 	}
 	if strings.Contains(invocationLine, "/OEM") || strings.Contains(invocationLine, "/TIMEOUT") {
 		t.Fatalf("NSIS process probe contains nsExec options incompatible with the Unicode plug-in")
+	}
+}
+
+func TestWindowsUpdateScriptRelaunchesTheApplication(t *testing.T) {
+	script := buildWindowsUpdateScript(
+		"42",
+		"C:\\Users\\RuanF\\AppData\\Local\\Temp\\installer.exe",
+		"C:\\Program Files\\Ruan's\\Graal Remote Control\\graal-rc.exe",
+		"C:\\Users\\RuanF\\AppData\\Local\\Temp\\nullbornes-rc-update.log",
+	)
+
+	for _, fragment := range []string{
+		"$installer = Start-Process -FilePath $installerPath -ArgumentList @('/S') -Wait -PassThru -WindowStyle Hidden",
+		"Start-Process -FilePath $applicationPath -WorkingDirectory $workingDirectory -WindowStyle Normal",
+		"Set-Content -LiteralPath $logPath",
+		"Ruan''s",
+	} {
+		if !strings.Contains(script, fragment) {
+			t.Fatalf("update helper script is missing %q", fragment)
+		}
 	}
 }
