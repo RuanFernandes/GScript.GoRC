@@ -21,6 +21,7 @@ import {ScrollArea} from "@/components/ui/scroll-area"
 import {Tabs, TabsContent, TabsList, TabsTrigger} from "@/components/ui/tabs"
 import {rcService} from "@/services/rcService"
 import type {SqliteChanges, SqliteResult, SqliteSchema, SqliteTable} from "@/types"
+import {useLanguage} from "@/hooks/useLanguage"
 
 const KIND = "sqlite"
 
@@ -52,14 +53,15 @@ interface PendingRow {
 
 // --- reactflow table card node ---
 function TableNode({data}: {data: Record<string, unknown>}) {
-  const t = data as unknown as SqliteSchema
+  const {t} = useLanguage()
+  const table = data as unknown as SqliteSchema
   return (
     <div className="bg-popover w-52 overflow-hidden rounded-md border text-xs shadow-lg">
-      <div className="bg-muted/60 px-2 py-1 font-semibold">{t.name}</div>
+      <div className="bg-muted/60 px-2 py-1 font-semibold">{table.name}</div>
       <div>
-        {(t.columns ?? []).map((c) => (
+        {(table.columns ?? []).map((c) => (
           <div key={c.name} className="flex items-center gap-1 border-t border-white/5 px-2 py-0.5">
-            {c.pk && <span className="text-amber-400" title="primary key">★</span>}
+            {c.pk && <span className="text-amber-400" title={t("sqlite.primaryKey")}>★</span>}
             <span className="truncate">{c.name}</span>
             <span className="text-muted-foreground ml-auto text-[10px]">{c.type || "?"}</span>
           </div>
@@ -72,6 +74,7 @@ function TableNode({data}: {data: Record<string, unknown>}) {
 const nodeTypes = {table: TableNode}
 
 export function SqliteExplorerWindowScreen() {
+  const {t} = useLanguage()
   const remotePath = useRef(parsePath()).current
   const [tables, setTables] = useState<SqliteTable[]>([])
   const [schema, setSchema] = useState<SqliteSchema[]>([])
@@ -106,11 +109,11 @@ export function SqliteExplorerWindowScreen() {
       setSchema(sc ?? [])
       if (!active && info?.tables?.length) setActive(info.tables[0].name)
     } catch (err) {
-      toast.error("Could not read database", {description: String(err)})
+      toast.error(t("sqlite.readFailed"), {description: String(err)})
     } finally {
       setLoadingTables(false)
     }
-  }, [remotePath, active])
+  }, [remotePath, active, t])
 
   const loadData = useCallback(async () => {
     if (!active) return
@@ -120,11 +123,11 @@ export function SqliteExplorerWindowScreen() {
       const res = await rcService.sqliteQuery(remotePath, `SELECT rowid, * FROM "${active}" LIMIT 200`, [])
       setData(res)
     } catch (err) {
-      toast.error("Query failed", {description: String(err)})
+      toast.error(t("sqlite.queryFailed"), {description: String(err)})
     } finally {
       setLoadingData(false)
     }
-  }, [remotePath, active])
+  }, [remotePath, active, t])
 
   useEffect(() => {
     void loadTables()
@@ -198,11 +201,11 @@ export function SqliteExplorerWindowScreen() {
       await rcService.commitSqlite(remotePath, changes)
       discardAll()
       await loadData()
-      toast.success("Saved")
+      toast.success(t("sqlite.saved"))
     } catch (err) {
-      toast.error("Save failed", {description: String(err)})
+      toast.error(t("common.saveFailed"), {description: String(err)})
     }
-  }, [active, dirty, pending, edits, deletes, remotePath, discardAll, loadData])
+  }, [active, dirty, pending, edits, deletes, remotePath, discardAll, loadData, t])
 
   const saveAndClose = useCallback(async () => {
     setConfirmClose(false)
@@ -222,11 +225,11 @@ export function SqliteExplorerWindowScreen() {
       const res = await rcService.sqliteQuery(remotePath, sql.trim(), [])
       setSqlResult(res)
     } catch (err) {
-      toast.error("Query failed", {description: String(err)})
+      toast.error(t("sqlite.queryFailed"), {description: String(err)})
     } finally {
       setRunning(false)
     }
-  }, [remotePath, sql])
+  }, [remotePath, sql, t])
 
   // --- Diagram nodes/edges (grid layout) ---
   const {nodes, edges} = useMemo(() => {
@@ -256,35 +259,35 @@ export function SqliteExplorerWindowScreen() {
   return (
     <div className="bg-background flex h-svh flex-col">
       <header className="flex items-center gap-2 border-b px-4 py-2">
-        <h1 className="text-sm font-semibold">{baseName || "Database"}</h1>
-        <span className="text-xs text-muted-foreground">SQLite explorer</span>
-        {dirty && <span className="text-xs text-amber-500">• unsaved</span>}
+        <h1 className="text-sm font-semibold">{baseName || t("common.database")}</h1>
+        <span className="text-xs text-muted-foreground">{t("sqlite.explorer")}</span>
+        {dirty && <span className="text-xs text-amber-500">{t("sqlite.unsaved")}</span>}
         <div className="ml-auto flex items-center gap-2">
           {dirty && (
-            <Button size="sm" variant="ghost" onClick={discardAll} title="Discard staged changes">
+            <Button size="sm" variant="ghost" onClick={discardAll} title={t("sqlite.discardChanges")}>
               <RotateCcw />
-              Discard
+              {t("sqlite.discard")}
             </Button>
           )}
           {active && (
-            <Button size="sm" variant="outline" onClick={addRow} title="Add a pending row">
+            <Button size="sm" variant="outline" onClick={addRow} title={t("sqlite.addRow")}>
               <Plus />
-              Row
+              {t("sqlite.row")}
             </Button>
           )}
-          <Button size="sm" onClick={save} disabled={!dirty} title="Apply staged changes and upload (version-preserved)">
+          <Button size="sm" onClick={save} disabled={!dirty} title={t("sqlite.applyUpload")}>
             <Save />
-            Save
+            {t("sqlite.save")}
           </Button>
         </div>
       </header>
       <p className="border-b bg-amber-500/10 px-4 py-1 text-xs text-amber-200">
-        Best-effort version preservation — old SQLite reads new files, but not byte-identical.
+        {t("sqlite.versionWarning")}
       </p>
 
       {loadingTables ? (
         <div className="flex flex-1 items-center justify-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="size-4 animate-spin" /> Opening database…
+          <Loader2 className="size-4 animate-spin" /> {t("sqlite.opening")}
         </div>
       ) : (
         <div className="flex min-h-0 flex-1">
@@ -309,15 +312,15 @@ export function SqliteExplorerWindowScreen() {
           <section className="min-w-0 flex-1">
             <Tabs defaultValue="data" className="flex h-full min-h-0 flex-col p-2">
               <TabsList>
-                <TabsTrigger value="data">Data{active ? `: ${active}` : ""}</TabsTrigger>
-                <TabsTrigger value="diagram">Diagram</TabsTrigger>
-                <TabsTrigger value="sql">SQL</TabsTrigger>
+                <TabsTrigger value="data">{t("sqlite.data")}{active ? `: ${active}` : ""}</TabsTrigger>
+                <TabsTrigger value="diagram">{t("sqlite.diagram")}</TabsTrigger>
+                <TabsTrigger value="sql">{t("sqlite.sql")}</TabsTrigger>
               </TabsList>
 
               {/* DATA */}
               <TabsContent value="data" className="mt-2 min-h-0 flex-1 overflow-hidden">
                 {loadingData ? (
-                  <div className="flex h-full items-center justify-center text-sm text-muted-foreground">Loading…</div>
+                  <div className="flex h-full items-center justify-center text-sm text-muted-foreground">{t("sqlite.loading")}</div>
                 ) : cols.length > 0 ? (
                   <ScrollArea className="h-full">
                     <table className="w-full text-sm">
@@ -327,7 +330,7 @@ export function SqliteExplorerWindowScreen() {
                           {cols.map((c, i) => (
                             <th key={i} className="px-2 py-1.5 text-left font-medium">
                               {c}
-                              {i === 0 && <span className="text-muted-foreground"> (rowid)</span>}
+                              {i === 0 && <span className="text-muted-foreground">{t("sqlite.rowid")}</span>}
                             </th>
                           ))}
                         </tr>
@@ -340,7 +343,7 @@ export function SqliteExplorerWindowScreen() {
                           return (
                             <tr key={r} className="border-b border-white/5 last:border-0 hover:bg-accent/40">
                               <td className="px-2 py-1">
-                                <button className="text-muted-foreground hover:text-destructive" title="Delete row" onClick={() => removeExisting(rowid)}>
+                                <button className="text-muted-foreground hover:text-destructive" title={t("sqlite.deleteRow")} onClick={() => removeExisting(rowid)}>
                                   <Trash2 className="size-3.5" />
                                 </button>
                               </td>
@@ -382,13 +385,13 @@ export function SqliteExplorerWindowScreen() {
                         {pending.map((p) => (
                           <tr key={p.tempId} className="border-b border-white/5 bg-emerald-500/5">
                             <td className="px-2 py-1">
-                              <button className="text-muted-foreground hover:text-destructive" title="Remove row" onClick={() => removePending(p.tempId)}>
+                              <button className="text-muted-foreground hover:text-destructive" title={t("sqlite.removeRow")} onClick={() => removePending(p.tempId)}>
                                 <Trash2 className="size-3.5" />
                               </button>
                             </td>
                             {cols.map((col, c) => {
                               const editing = edit && edit.tempId === p.tempId && edit.col === col
-                              const shown = c > 0 ? p.cells[col] ?? "" : "(new)"
+                              const shown = c > 0 ? p.cells[col] ?? "" : t("sqlite.newRow")
                               return (
                                 <td
                                   key={c}
@@ -396,7 +399,7 @@ export function SqliteExplorerWindowScreen() {
                                   onDoubleClick={() => c > 0 && setEdit({tempId: p.tempId, col, value: p.cells[col] ?? ""})}
                                 >
                                   {c === 0 ? (
-                                    <span className="text-muted-foreground italic">(new)</span>
+                                    <span className="text-muted-foreground italic">{t("sqlite.newRow")}</span>
                                   ) : editing ? (
                                     <input
                                       autoFocus
@@ -421,7 +424,7 @@ export function SqliteExplorerWindowScreen() {
                     </table>
                   </ScrollArea>
                 ) : (
-                  <div className="flex h-full items-center justify-center text-sm text-muted-foreground">Empty table.</div>
+                  <div className="flex h-full items-center justify-center text-sm text-muted-foreground">{t("sqlite.emptyTable")}</div>
                 )}
               </TabsContent>
 
@@ -434,7 +437,7 @@ export function SqliteExplorerWindowScreen() {
                       <Controls showInteractive={false} />
                     </ReactFlow>
                   ) : (
-                    <div className="flex h-full items-center justify-center text-sm text-muted-foreground">No tables.</div>
+                    <div className="flex h-full items-center justify-center text-sm text-muted-foreground">{t("sqlite.noTables")}</div>
                   )}
                 </div>
               </TabsContent>
@@ -451,19 +454,17 @@ export function SqliteExplorerWindowScreen() {
       <AlertDialog open={confirmClose} onOpenChange={(v) => !v && setConfirmClose(false)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Save before closing?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This database has unsaved staged changes. Save them before the window closes, or discard them.
-            </AlertDialogDescription>
+            <AlertDialogTitle>{t("sqlite.saveBeforeClosing")}</AlertDialogTitle>
+            <AlertDialogDescription>{t("sqlite.saveBeforeClosingDescription")}</AlertDialogDescription>
           </AlertDialogHeader>
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setConfirmClose(false)}>
-              Cancel
+              {t("common.cancel")}
             </Button>
             <Button variant="destructive" onClick={discardAndClose}>
-              Discard
+              {t("sqlite.discard")}
             </Button>
-            <Button onClick={saveAndClose}>Save</Button>
+            <Button onClick={saveAndClose}>{t("sqlite.save")}</Button>
           </div>
         </AlertDialogContent>
       </AlertDialog>
@@ -555,6 +556,7 @@ function SqlConsole({
   running: boolean
   result: SqliteResult | null
 }) {
+  const {t} = useLanguage()
   const schemaRef = useRef(schema)
   schemaRef.current = schema
   const providerRef = useRef<{dispose(): unknown} | null>(null)
@@ -654,7 +656,7 @@ function SqlConsole({
           />
         </div>
         <Button size="sm" onClick={onRun} disabled={running || !value.trim()}>
-          {running ? <Loader2 className="size-4 animate-spin" /> : "Run"}
+          {running ? <Loader2 className="size-4 animate-spin" /> : t("sqlite.run")}
         </Button>
       </div>
       <div className="min-h-0 flex-1">
@@ -684,7 +686,7 @@ function SqlConsole({
                 </tbody>
               </table>
             ) : (
-              <p className="p-2 text-xs text-muted-foreground">{result.rowsAffected} row(s) affected.</p>
+              <p className="p-2 text-xs text-muted-foreground">{t("sqlite.rowsAffected", {count: result.rowsAffected})}</p>
             )}
           </ScrollArea>
         )}

@@ -35,9 +35,10 @@ import (
 )
 
 var (
-	errNoVault          = errors.New("account vault is not available")
-	errAccountNotFound  = errors.New("account not found")
-	errNicknameRequired = errors.New("session nickname is required")
+	errNoVault            = errors.New("account vault is not available")
+	errAccountNotFound    = errors.New("account not found")
+	errNicknameRequired   = errors.New("session nickname is required")
+	errScriptSyncRequired = errors.New("script sync is required before opening editable scripts")
 )
 
 // App is the Wails v3 service: its public methods are auto-bound to the
@@ -1397,6 +1398,9 @@ func (a *App) OpenAttrsWindow(account string) error {
 // OpenBanWindow opens the /openaccess (ban) editor window for an account (self
 // if empty). Triggered by typing /openaccess in the RC chat.
 func (a *App) OpenBanWindow(account string) error {
+	if err := a.sessions.RequireBanPlayersRight(); err != nil {
+		return err
+	}
 	return a.openPlayerWindow("ban", "Access", account, 520, 560)
 }
 
@@ -1409,6 +1413,9 @@ func (a *App) OpenCommentsWindow(account string) error {
 // OpenBanHistoryWindow opens the read-only ban-history viewer window for an
 // account (self if empty). Triggered from the player-list context menu.
 func (a *App) OpenBanHistoryWindow(account string) error {
+	if err := a.sessions.RequireBanPlayersRight(); err != nil {
+		return err
+	}
 	return a.openPlayerWindow("banhistory", "Ban History", account, 640, 560)
 }
 
@@ -1483,6 +1490,9 @@ func (a *App) CreateNPC(name string, id int, npcType, scripter, level, x, y stri
 
 // OpenScript fetches a script (weapon/class/npc) and returns its content.
 func (a *App) OpenScript(scriptType, key string) (rclib.ScriptReply, error) {
+	if err := a.requireScriptSyncForEditor(scriptType); err != nil {
+		return rclib.ScriptReply{}, err
+	}
 	reply, err := a.sessions.OpenScript(scriptType, key)
 	if err == nil {
 		a.emitPluginEvent("script.opened", reply)
@@ -1506,6 +1516,9 @@ func (a *App) SaveNPC(id int, script string) error {
 }
 
 func (a *App) saveScriptWithSyncExpectation(kind, key, script string, save func() error) error {
+	if err := a.requireScriptSyncForEditor(kind); err != nil {
+		return err
+	}
 	previous, hasPrevious := a.editorOriginal(kind, key)
 	if !hasPrevious {
 		reply, err := a.fetchScript(kind, key)
@@ -2675,6 +2688,63 @@ func sanitizeWindowName(scriptType, key string) string {
 	return b.String()
 }
 
+func isEditableScriptType(scriptType string) bool {
+	switch scriptType {
+	case "weapon", "class", "npc":
+		return true
+	default:
+		return false
+	}
+}
+
+// requireScriptSyncForEditor keeps the local workspace as the source of truth
+// for accounts that can publish scripts. Read-only accounts can still inspect
+// server scripts without configuring Sync, which preserves the LSP context
+// workflow for viewers.
+func (a *App) requireScriptSyncForEditor(scriptType string) error {
+	if !isEditableScriptType(scriptType) {
+		return nil
+	}
+	if a.sessions == nil {
+		return errors.New("script permissions are unavailable")
+	}
+	session := a.sessions.Status()
+	if !session.RightsReady {
+		return errors.New("script permissions are still loading")
+	}
+	if !session.ScriptWriteAccess {
+		return nil
+	}
+
+	cfg, err := a.getSyncConfig()
+	if err != nil {
+		return fmt.Errorf("%w: could not load the local sync configuration: %v", errScriptSyncRequired, err)
+	}
+	if !cfg.Enabled || strings.TrimSpace(cfg.OutputDir) == "" {
+		return errScriptSyncRequired
+	}
+
+	eng := a.currentSyncEngine()
+	if eng == nil {
+		a.startSyncEngine()
+		eng = a.currentSyncEngine()
+	}
+	if eng == nil {
+		return errScriptSyncRequired
+	}
+	status := eng.Status()
+	if status.InitialSync {
+		return errors.New("initial script sync is still running")
+	}
+	if status.PanicMode {
+		if status.PanicReason == "" {
+			return errors.New("script sync is in panic mode")
+		}
+		return fmt.Errorf("script sync is in panic mode: %s", status.PanicReason)
+	}
+	return nil
+}
+
 // OpenScriptEditor fetches the script/flags/attributes payload from the server
 // and, only on success, opens a per-script editor window for (scriptType, key).
 // If the fetch fails (e.g. the account lacks read permission and the server
@@ -2683,6 +2753,9 @@ func sanitizeWindowName(scriptType, key string) string {
 // to read via GetLoadedScript. If a window for this script is already open it is
 // focused instead. scriptType is weapon|class|npc|npcflags|npcattr.
 func (a *App) OpenScriptEditor(scriptType, key string) error {
+	if err := a.requireScriptSyncForEditor(scriptType); err != nil {
+		return err
+	}
 	mapKey := scriptType + ":" + key
 
 	// Already open → just focus.

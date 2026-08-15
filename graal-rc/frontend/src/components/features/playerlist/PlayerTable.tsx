@@ -13,12 +13,14 @@ import {Button} from "@/components/ui/button"
 import {Skeleton} from "@/components/ui/skeleton"
 import {parsePlayerTag} from "@/lib/playerTag"
 import type {Player} from "@/types"
+import {useLanguage} from "@/hooks/useLanguage"
 
 export type PlayerEditKind = "rights" | "ban" | "attrs" | "comments" | "banhistory" | "staffactivity"
 
 interface PlayerTableProps {
   players: Player[]
   unreadById: Record<number, number>
+  canBanPlayers: boolean
   loading?: boolean
   onPM: (player: Player) => void
   selectedIds?: Set<number>
@@ -37,6 +39,8 @@ interface GroupProps {
   selectedIds: Set<number>
   onSelect?: (player: Player) => void
   onToggleSelection?: (player: Player) => void
+  selectLabel: string
+  privateMessageLabel: string
   defaultOpen?: boolean
 }
 
@@ -54,7 +58,7 @@ function hueFor(name: string): number {
   return h
 }
 
-function PlayerRow({player, unread, onPM, onContext, selected, onSelect, onToggleSelection}: {player: Player; unread: number; onPM: (p: Player) => void; onContext: (e: React.MouseEvent, p: Player) => void; selected: boolean; onSelect?: (p: Player) => void; onToggleSelection?: (p: Player) => void}) {
+function PlayerRow({player, unread, onPM, onContext, selected, onSelect, onToggleSelection, selectLabel, privateMessageLabel}: {player: Player; unread: number; onPM: (p: Player) => void; onContext: (e: React.MouseEvent, p: Player) => void; selected: boolean; onSelect?: (p: Player) => void; onToggleSelection?: (p: Player) => void; selectLabel: string; privateMessageLabel: string}) {
   const tag = parsePlayerTag(player.level)
   const nick = player.nick || player.account
   const hue = hueFor(nick)
@@ -79,7 +83,7 @@ function PlayerRow({player, unread, onPM, onContext, selected, onSelect, onToggl
           checked={selected}
           onChange={() => onToggleSelection(player)}
           onClick={(event) => event.stopPropagation()}
-          aria-label={`Select ${nick}`}
+          aria-label={`${selectLabel} ${nick}`}
           className="size-4 shrink-0 accent-[var(--primary)]"
         />
       )}
@@ -123,7 +127,7 @@ function PlayerRow({player, unread, onPM, onContext, selected, onSelect, onToggl
         size="icon"
         className="size-8 shrink-0 opacity-0 transition-opacity group-hover:opacity-100 data-[state=on]:opacity-100"
         onClick={() => onPM(player)}
-        aria-label={`Private message ${nick}`}
+        aria-label={`${privateMessageLabel} ${nick}`}
       >
         <MessageSquare className="size-4" />
       </Button>
@@ -131,7 +135,7 @@ function PlayerRow({player, unread, onPM, onContext, selected, onSelect, onToggl
   )
 }
 
-function Group({label, icon: Icon, rows, unreadById, onPM, onContext, selectedIds, onSelect, onToggleSelection, defaultOpen = true}: GroupProps) {
+function Group({label, icon: Icon, rows, unreadById, onPM, onContext, selectedIds, onSelect, onToggleSelection, selectLabel, privateMessageLabel, defaultOpen = true}: GroupProps) {
   const [open, setOpen] = useState(defaultOpen)
   const totalUnread = rows.reduce((sum, p) => sum + (unreadById[p.id] ?? 0), 0)
   const Chevron = open ? ChevronDown : ChevronRight
@@ -155,7 +159,7 @@ function Group({label, icon: Icon, rows, unreadById, onPM, onContext, selectedId
       {open && (
         <div className="flex flex-col gap-0.5">
           {rows.map((p) => (
-            <PlayerRow key={`${p.account}-${p.id}`} player={p} unread={unreadById[p.id] ?? 0} onPM={onPM} onContext={onContext} selected={selectedIds.has(p.id)} onSelect={onSelect} onToggleSelection={onToggleSelection} />
+            <PlayerRow key={`${p.account}-${p.id}`} player={p} unread={unreadById[p.id] ?? 0} onPM={onPM} onContext={onContext} selected={selectedIds.has(p.id)} onSelect={onSelect} onToggleSelection={onToggleSelection} selectLabel={selectLabel} privateMessageLabel={privateMessageLabel} />
           ))}
         </div>
       )}
@@ -163,7 +167,8 @@ function Group({label, icon: Icon, rows, unreadById, onPM, onContext, selectedId
   )
 }
 
-export function PlayerTable({players, unreadById, loading, onPM, selectedIds = new Set<number>(), onSelect, onToggleSelection, onEdit}: PlayerTableProps) {
+export function PlayerTable({players, unreadById, canBanPlayers, loading, onPM, selectedIds = new Set<number>(), onSelect, onToggleSelection, onEdit}: PlayerTableProps) {
+  const {t} = useLanguage()
   const [menu, setMenu] = useState<{x: number; y: number; player: Player} | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   // Clamp the menu inside the viewport so a right-click near a window edge
@@ -228,30 +233,30 @@ export function PlayerTable({players, unreadById, loading, onPM, selectedIds = n
     return (
       <div className="text-muted-foreground flex flex-col items-center justify-center gap-2 py-16 text-sm">
         <Users className="size-8 opacity-40" />
-        No players online.
+        {t("player.noPlayers")}
       </div>
     )
   }
   const admins = players.filter((p) => !p.level)
   const regular = players.filter((p) => !!p.level)
 
-  const items: {label: string; icon: typeof Users; kind?: PlayerEditKind; pm?: boolean}[] = [
-    {label: "Private Message", icon: MessageSquare, pm: true},
-    {label: "Edit Rights", icon: Shield, kind: "rights"},
-    {label: "Edit Access (Ban)", icon: Wand2, kind: "ban"},
-    {label: "Edit Attributes", icon: SquareUser, kind: "attrs"},
-    {label: "Edit Comments", icon: ScrollText, kind: "comments"},
-    {label: "Ban History", icon: History, kind: "banhistory"},
-    {label: "Staff Activity", icon: History, kind: "staffactivity"},
+  const items: {label: string; icon: typeof Users; kind?: PlayerEditKind; pm?: boolean; requiresBanPlayers?: boolean}[] = [
+    {label: t("player.privateMessage"), icon: MessageSquare, pm: true},
+    {label: t("player.rights"), icon: Shield, kind: "rights"},
+    {label: t("player.access"), icon: Wand2, kind: "ban", requiresBanPlayers: true},
+    {label: t("player.attributes"), icon: SquareUser, kind: "attrs"},
+    {label: t("player.comments"), icon: ScrollText, kind: "comments"},
+    {label: t("player.banHistory"), icon: History, kind: "banhistory", requiresBanPlayers: true},
+    {label: t("player.staffActivity"), icon: History, kind: "staffactivity"},
   ]
 
   return (
     <>
       <div className="flex flex-col gap-3">
         {admins.length > 0 && (
-          <Group label="Admins" icon={Shield} rows={admins} unreadById={unreadById} onPM={onPM} onContext={openContext} selectedIds={selectedIds} onSelect={onSelect} onToggleSelection={onToggleSelection} />
+          <Group label={t("player.admins")} icon={Shield} rows={admins} unreadById={unreadById} onPM={onPM} onContext={openContext} selectedIds={selectedIds} onSelect={onSelect} onToggleSelection={onToggleSelection} selectLabel={t("player.selectPlayer", {name: ""}).trim()} privateMessageLabel={t("player.privateMessageFor", {name: ""}).trim()} />
         )}
-        <Group label="Players" icon={Users} rows={regular} unreadById={unreadById} onPM={onPM} onContext={openContext} selectedIds={selectedIds} onSelect={onSelect} onToggleSelection={onToggleSelection} />
+        <Group label={t("player.players")} icon={Users} rows={regular} unreadById={unreadById} onPM={onPM} onContext={openContext} selectedIds={selectedIds} onSelect={onSelect} onToggleSelection={onToggleSelection} selectLabel={t("player.selectPlayer", {name: ""}).trim()} privateMessageLabel={t("player.privateMessageFor", {name: ""}).trim()} />
       </div>
 
       {menu && (
@@ -265,6 +270,7 @@ export function PlayerTable({players, unreadById, loading, onPM, selectedIds = n
             {menu.player.nick || menu.player.account} · <span className="font-mono">{menu.player.account}</span>
           </div>
           {items.map((it) => {
+            if (it.requiresBanPlayers && !canBanPlayers) return null
             const Icon = it.icon
             return (
               <button

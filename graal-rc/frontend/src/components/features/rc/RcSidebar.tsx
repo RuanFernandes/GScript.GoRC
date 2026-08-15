@@ -68,8 +68,8 @@ export function RcSidebar({ncLabel: nc, ncConnected, openServerText}: RcSidebarP
       {/* NC status chip at the top */}
       <div className="flex h-11 items-center gap-3 px-3">
         <span
-          title={nc || "NC status"}
-          aria-label={nc || "NC status"}
+          title={nc || t("rc.ncStatus")}
+          aria-label={nc || t("rc.ncStatus")}
           className={`size-2.5 shrink-0 rounded-full ${
             ncConnected ? "bg-emerald-500" : "bg-muted-foreground/40"
           }`}

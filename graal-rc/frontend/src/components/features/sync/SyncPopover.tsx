@@ -53,6 +53,11 @@ export function SyncPopover({rail = false}: {rail?: boolean}) {
     window.addEventListener("resize", updatePanelPosition)
 
     const onDown = (e: MouseEvent) => {
+      // AlertDialog renders through a portal, outside wrapRef. Do not close
+      // this popover on the dialog's mousedown, otherwise the dialog unmounts
+      // before its buttons receive their click event.
+      const target = e.target instanceof Element ? e.target : null
+      if (target?.closest('[data-slot="alert-dialog-overlay"], [data-slot="alert-dialog-content"]')) return
       if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
         setOpen(false)
       }

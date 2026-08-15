@@ -278,13 +278,13 @@ function Shell() {
         destructive={pending?.kind === "delete"}
         title={
           pending?.kind === "delete"
-            ? `Delete account "${pending.account}"?`
-            : `Log in as "${pending?.account ?? ""}"?`
+            ? language.t("login.confirmDeleteTitle", {account: pending.account})
+            : language.t("login.confirmLoginTitle", {account: pending?.account ?? ""})
         }
         description={
           pending?.kind === "delete"
-            ? "This removes the saved account from this device. You can add it again later."
-            : "This will connect to the listserver with this account."
+            ? language.t("login.confirmDeleteDescription")
+            : language.t("login.confirmLoginDescription")
         }
         confirmLabel={pending?.kind === "delete" ? language.t("common.delete") : language.t("common.logIn")}
         cancelLabel={language.t("common.cancel")}
@@ -298,43 +298,44 @@ function Shell() {
 // App is the window router: external windows load the SPA at a hash route and
 // render their dedicated screen; the main window gets Shell.
 function App() {
+  const {t} = useLanguage()
   if (typeof window === "undefined") return <Shell />
   const hash = window.location.hash
   const route = hash.startsWith("#players")
-    ? {title: "Player List", content: <PlayerListWindowScreen />}
+    ? {title: t("window.playerList"), content: <PlayerListWindowScreen />}
     : hash.startsWith("#rights")
-      ? {title: "Rights", content: <RightsWindowScreen />}
+      ? {title: t("window.rights"), content: <RightsWindowScreen />}
       : hash.startsWith("#attrs")
-        ? {title: "Attributes", content: <AttrsWindowScreen />}
+        ? {title: t("window.attributes"), content: <AttrsWindowScreen />}
         : hash.startsWith("#banhistory") || hash.startsWith("#staffactivity")
-          ? {title: "Player Records", content: <PlayerTextRecordWindowScreen />}
+          ? {title: t("window.playerRecords"), content: <PlayerTextRecordWindowScreen />}
           : hash.startsWith("#ban")
-            ? {title: "Access", content: <BanWindowScreen />}
+            ? {title: t("window.access"), content: <BanWindowScreen />}
             : hash.startsWith("#comments")
-              ? {title: "Comments", content: <CommentsWindowScreen />}
+              ? {title: t("window.comments"), content: <CommentsWindowScreen />}
               : hash.startsWith("#files")
-                ? {title: "File Browser", content: <FileBrowserWindowScreen />}
+                ? {title: t("window.fileBrowser"), content: <FileBrowserWindowScreen />}
                 : hash.startsWith("#scripts")
-                  ? {title: "Script Manager", content: <ScriptManagerWindowScreen />}
+                  ? {title: t("window.scriptManager"), content: <ScriptManagerWindowScreen />}
     : hash.startsWith("#settings")
-      ? {title: "Settings", content: <SettingsWindowScreen />}
+      ? {title: t("window.settings"), content: <SettingsWindowScreen />}
       : hash.startsWith("#plugins")
-        ? {title: "Plugins", content: <PluginManagerWindowScreen />}
+        ? {title: t("window.plugins"), content: <PluginManagerWindowScreen />}
       : hash.startsWith("#plugin-docs")
-        ? {title: "Plugin Documentation", content: <PluginDocumentationWindowScreen />}
+        ? {title: t("window.pluginDocumentation"), content: <PluginDocumentationWindowScreen />}
       : hash.startsWith("#plugin-ui")
-        ? {title: "Plugin UI", content: <PluginUIWindowScreen />}
+        ? {title: t("window.pluginUI"), content: <PluginUIWindowScreen />}
                       : hash.startsWith("#sync")
-                      ? {title: "Sync Review", content: <SyncReviewWindowScreen />}
+                      ? {title: t("window.syncReview"), content: <SyncReviewWindowScreen />}
                       : hash.startsWith("#deployments")
-                        ? {title: "Change History", content: <DeploymentCenterWindowScreen />}
+                        ? {title: t("window.changeHistory"), content: <DeploymentCenterWindowScreen />}
                       : hash.startsWith("#editor")
-                        ? {title: "Script Editor", content: <ScriptEditorWindowScreen />}
+                        ? {title: t("window.scriptEditor"), content: <ScriptEditorWindowScreen />}
                         : hash.startsWith("#textfile")
-                          ? {title: "Text Editor", content: <TextEditorWindowScreen />}
+                          ? {title: t("window.textEditor"), content: <TextEditorWindowScreen />}
                           : hash.startsWith("#sqlite")
-                            ? {title: "SQLite Explorer", content: <SqliteExplorerWindowScreen />}
-                            : {title: "Graal Remote Control", content: <Shell />}
+                            ? {title: t("window.sqliteExplorer"), content: <SqliteExplorerWindowScreen />}
+                            : {title: t("window.appTitle"), content: <Shell />}
   return <AppWindowFrame title={route.title}>{route.content}</AppWindowFrame>
 }
 

@@ -13,6 +13,7 @@ import {ScrollArea} from "@/components/ui/scroll-area"
 import {Tabs, TabsContent, TabsList, TabsTrigger} from "@/components/ui/tabs"
 import {rcService} from "@/services/rcService"
 import type {BanData} from "@/types"
+import {useLanguage} from "@/hooks/useLanguage"
 
 interface ScopeState {
   target: string
@@ -23,7 +24,7 @@ interface ScopeState {
   reason: string
 }
 
-const SCOPE_NAMES = ["Local Ban", "Global Ban", "Computer Ban", "Global Computer Ban"]
+const SCOPE_KEYS = ["ban.scopeLocal", "ban.scopeGlobal", "ban.scopeComputer", "ban.scopeGlobalComputer"] as const
 
 function trimBanName(s: string): string {
   return s.replace(/^\s+|\s+$/g, "")
@@ -44,7 +45,7 @@ function parseBanTypes(raw: string): {name: string; seconds: number}[] {
 }
 
 function buildScopes(account: string, computerId: string, details: string, typeNames: string[]): ScopeState[] {
-  const scopes: ScopeState[] = SCOPE_NAMES.map((_, index) => ({
+  const scopes: ScopeState[] = SCOPE_KEYS.map((_, index) => ({
     target: index < 2 ? account : computerId ? "pc:" + computerId : "",
     banned: false,
     reset: false,
@@ -76,13 +77,13 @@ function buildScopes(account: string, computerId: string, details: string, typeN
   return scopes
 }
 
-function banTimeText(seconds: number): string {
-  if (seconds <= 0) return "permanent"
+function banTimeText(seconds: number, t: (key: string, vars?: Record<string, string | number>) => string): string {
+  if (seconds <= 0) return t("ban.permanent")
   const days = seconds / 86400
-  if (days >= 1) return `${days.toFixed(days % 1 ? 1 : 0)} day(s)`
+  if (days >= 1) return t("ban.days", {count: days.toFixed(days % 1 ? 1 : 0)})
   const hours = seconds / 3600
-  if (hours >= 1) return `${hours.toFixed(0)} hour(s)`
-  return `${(seconds / 60).toFixed(0)} minute(s)`
+  if (hours >= 1) return t("ban.hours", {count: hours.toFixed(0)})
+  return t("ban.minutes", {count: (seconds / 60).toFixed(0)})
 }
 
 function readAccount(): string {
@@ -93,6 +94,7 @@ function readAccount(): string {
 }
 
 export function BanWindowScreen() {
+  const {t} = useLanguage()
   const account = readAccount()
   const [data, setData] = useState<BanData | null>(null)
   const [typeNames, setTypeNames] = useState<string[]>([])
@@ -136,14 +138,14 @@ export function BanWindowScreen() {
     try {
       const world = index % 2 === 0 ? "local" : "all"
       await rcService.setBan(s.target, world, s.banned, s.banType, s.reset ? "" : s.releaseTime, s.reason)
-      toast.success(`${SCOPE_NAMES[index]} saved`)
+      toast.success(t("ban.saved", {scope: t(SCOPE_KEYS[index] ?? "ban.scopeLocal")}))
     } catch (e) {
-      toast.error("Save failed", {description: e instanceof Error ? e.message : String(e)})
+      toast.error(t("common.saveFailed"), {description: e instanceof Error ? e.message : String(e)})
     }
   }
 
   const showHistory = async () => {
-    setHistory("Loading…")
+    setHistory(t("ban.loading"))
     try {
       setHistory(await rcService.requestBanHistory(data?.account ?? account))
     } catch (e) {
@@ -151,7 +153,7 @@ export function BanWindowScreen() {
     }
   }
   const showActivity = async () => {
-    setActivity("Loading…")
+    setActivity(t("ban.loading"))
     try {
       setActivity(await rcService.requestStaffActivity(data?.account ?? account))
     } catch (e) {
@@ -165,17 +167,17 @@ export function BanWindowScreen() {
     <div className="bg-background flex h-svh flex-col">
       <header className="flex items-center gap-2 border-b px-4 py-2.5">
         <h1 className="text-sm font-semibold">
-          {target}&apos;s Access{data?.computerId ? ` (computer: ${data.computerId})` : ""}
+          {t("ban.title", {account: target})}{data?.computerId ? t("ban.computer", {id: data.computerId}) : ""}
         </h1>
         <div className="ml-auto flex items-center gap-1.5">
-          <Button variant="outline" size="sm" onClick={showHistory}>Ban History</Button>
-          <Button variant="outline" size="sm" onClick={showActivity}>Staff Activity</Button>
+          <Button variant="outline" size="sm" onClick={showHistory}>{t("ban.history")}</Button>
+          <Button variant="outline" size="sm" onClick={showActivity}>{t("ban.activity")}</Button>
         </div>
       </header>
       <ScrollArea className="min-h-0 flex-1 p-4">
         {loading && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" /> Loading ban data…
+            <Loader2 className="size-4 animate-spin" /> {t("ban.loadingData")}
           </div>
         )}
         {error && <div className="text-sm text-destructive">{error}</div>}
@@ -183,7 +185,7 @@ export function BanWindowScreen() {
           <Tabs defaultValue={String(availableScopes[0].i)}>
             <TabsList className="flex w-full">
               {availableScopes.map(({i}) => (
-                <TabsTrigger key={i} value={String(i)} className="flex-1">{SCOPE_NAMES[i]}</TabsTrigger>
+                <TabsTrigger key={i} value={String(i)} className="flex-1">{t(SCOPE_KEYS[i] ?? "ban.scopeLocal")}</TabsTrigger>
               ))}
             </TabsList>
             {availableScopes.map(({i, s}) => {
@@ -192,29 +194,29 @@ export function BanWindowScreen() {
                 <TabsContent key={i} value={String(i)} className="space-y-3 pt-3">
                   <label className="flex items-center gap-2 text-sm">
                     <input type="checkbox" checked={s.banned} onChange={(e) => patch(i, {banned: e.target.checked})} />
-                    Banned
+                    {t("ban.banned")}
                   </label>
                   <div className="space-y-1">
-                    <span className="text-xs font-medium uppercase text-muted-foreground">Ban type</span>
+                    <span className="text-xs font-medium uppercase text-muted-foreground">{t("ban.type")}</span>
                     <select
                       className="bg-background h-8 w-full rounded-md border px-2 text-sm"
                       value={s.banType}
                       onChange={(e) => patch(i, {banType: e.target.value})}
                     >
-                      {typeNames.length === 0 && <option value="">(no types)</option>}
+                      {typeNames.length === 0 && <option value="">{t("ban.noTypes")}</option>}
                       {typeNames.map((n) => <option key={n} value={n}>{n}</option>)}
                     </select>
                   </div>
-                  <div className="text-xs text-muted-foreground">Ban time left: {s.banned ? banTimeText(dur) : "-"}</div>
+                  <div className="text-xs text-muted-foreground">{t("ban.timeLeft", {time: s.banned ? banTimeText(dur, t) : "-"})}</div>
                   <label className="flex items-center gap-2 text-sm">
                     <input type="checkbox" checked={s.reset} onChange={(e) => patch(i, {reset: e.target.checked})} />
-                    Reset ban time
+                    {t("ban.resetTime")}
                   </label>
                   <div className="space-y-1">
-                    <span className="text-xs font-medium uppercase text-muted-foreground">Reason for update</span>
+                    <span className="text-xs font-medium uppercase text-muted-foreground">{t("ban.reason")}</span>
                     <Input value={s.reason} onChange={(e) => patch(i, {reason: e.target.value})} className="h-8" />
                   </div>
-                  <Button size="sm" onClick={() => applyScope(i)}>Apply</Button>
+                  <Button size="sm" onClick={() => applyScope(i)}>{t("common.apply")}</Button>
                 </TabsContent>
               )
             })}
@@ -224,13 +226,13 @@ export function BanWindowScreen() {
           <div className="mt-4 space-y-3 border-t pt-3">
             {history !== null && (
               <div>
-                <div className="text-xs font-medium uppercase text-muted-foreground">Ban History</div>
+                <div className="text-xs font-medium uppercase text-muted-foreground">{t("ban.history")}</div>
                 <pre className="bg-muted/40 max-h-40 overflow-auto rounded-md p-2 text-xs whitespace-pre-wrap">{history}</pre>
               </div>
             )}
             {activity !== null && (
               <div>
-                <div className="text-xs font-medium uppercase text-muted-foreground">Staff Activity</div>
+                <div className="text-xs font-medium uppercase text-muted-foreground">{t("ban.activity")}</div>
                 <pre className="bg-muted/40 max-h-40 overflow-auto rounded-md p-2 text-xs whitespace-pre-wrap">{activity}</pre>
               </div>
             )}

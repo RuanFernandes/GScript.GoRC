@@ -550,8 +550,8 @@ export function ScriptEditorWindowScreen() {
         <h1 className="text-sm font-semibold">
           {kind}: {(kind === "npc" || kind === "npcflags" || kind === "npcattr") ? (scriptName || key) : key}
         </h1>
-        {readOnly && <span className="text-muted-foreground text-xs">(read-only)</span>}
-        {dirty && !readOnly && <span className="text-amber-500 text-xs">• unsaved</span>}
+        {readOnly && <span className="text-muted-foreground text-xs">{t("editor.readOnly")}</span>}
+        {dirty && !readOnly && <span className="text-amber-500 text-xs">{t("editor.unsaved")}</span>}
         {saving && <Loader2 className="text-muted-foreground size-3.5 animate-spin" />}
         {!readOnly && dirty && (
           <div className="ml-auto flex items-center gap-1.5">
@@ -618,7 +618,7 @@ export function ScriptEditorWindowScreen() {
       <div className="min-h-0 flex-1">
         {loading ? (
           <div className="text-muted-foreground flex h-full items-center justify-center gap-2 text-sm">
-            <Loader2 className="size-4 animate-spin" /> Loading…
+            <Loader2 className="size-4 animate-spin" /> {t("common.loading")}
           </div>
         ) : loadError ? (
           <div className="text-muted-foreground flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-sm">
@@ -677,9 +677,7 @@ export function ScriptEditorWindowScreen() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>{t("editor.saveBeforeClosing")}</AlertDialogTitle>
-            <AlertDialogDescription>
-              This script has unsaved changes. Save them before the window closes, or discard them.
-            </AlertDialogDescription>
+            <AlertDialogDescription>{t("editor.scriptSaveBeforeClosingDescription")}</AlertDialogDescription>
           </AlertDialogHeader>
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setConfirmClose(false)}>

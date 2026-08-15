@@ -6,10 +6,12 @@ import {Button} from "@/components/ui/button"
 import {Input} from "@/components/ui/input"
 import {rcService} from "@/services/rcService"
 import type {PluginUIPrimitive, PluginUIView} from "@/plugins/types"
+import {useLanguage} from "@/hooks/useLanguage"
 
 type WindowInfo = {id: string; pluginId: string; title: string; width: number; height: number; view: PluginUIView}
 
 export function PluginUIWindowScreen() {
+  const {t} = useLanguage()
   const params = new URLSearchParams(window.location.hash.split("?")[1] ?? "")
   const pluginId = params.get("plugin") ?? ""
   const windowId = params.get("window") ?? ""
@@ -36,7 +38,7 @@ export function PluginUIWindowScreen() {
   }, [pluginId, windowId])
 
   if (error) return <div className="bg-background flex h-svh items-center justify-center p-6 text-sm text-destructive">{error}</div>
-  if (!info) return <div className="bg-background flex h-svh items-center justify-center p-6 text-sm text-muted-foreground">Loading plugin view…</div>
+  if (!info) return <div className="bg-background flex h-svh items-center justify-center p-6 text-sm text-muted-foreground">{t("plugin.loadingView")}</div>
   return <div className="bg-background min-h-svh p-5"><PluginViewNode node={info.view} pluginId={pluginId} windowId={windowId} /></div>
 }
 

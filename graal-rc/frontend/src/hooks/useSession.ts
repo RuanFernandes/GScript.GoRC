@@ -8,6 +8,7 @@ import {toast} from "sonner"
 import type {RcService} from "@/services/rcService"
 import type {LoginRequest, Server} from "@/types"
 import {serverDisplay} from "@/lib/server"
+import {useLanguage} from "@/hooks/useLanguage"
 
 export type SessionPhase = "idle" | "ready"
 
@@ -28,6 +29,7 @@ export interface UseSessionResult {
 }
 
 export function useSession(service: RcService): UseSessionResult {
+  const {t} = useLanguage()
   const [phase, setPhase] = useState<SessionPhase>("idle")
   const [servers, setServers] = useState<Server[]>([])
   const [selectedIndex, setSelectedIndex] = useState(0)
@@ -36,13 +38,13 @@ export function useSession(service: RcService): UseSessionResult {
   const [connectedServer, setConnectedServer] = useState("")
   const [activeAccount, setActiveAccount] = useState("")
 
-  const run = useCallback(async <T,>(label: string, fn: () => Promise<T>): Promise<T | null> => {
+  const run = useCallback(async <T,>(failureLabel: string, fn: () => Promise<T>): Promise<T | null> => {
     setBusy(true)
     try {
       return await fn()
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      toast.error(`${label} failed`, {description: message})
+      toast.error(failureLabel, {description: message})
       return null
     } finally {
       setBusy(false)
@@ -53,14 +55,14 @@ export function useSession(service: RcService): UseSessionResult {
     setServers(list)
     setSelectedIndex(0)
     setPhase("ready")
-    setStatusText(`${list.length} server${list.length === 1 ? "" : "s"} available`)
-    toast.success(`Logged in as ${account}`)
-  }, [])
+    setStatusText(t("session.serversAvailable", {count: list.length}))
+    toast.success(t("session.loggedInAs", {account}))
+  }, [t])
 
   const loginWithAccount = useCallback(
     async (accountName: string, nickname: string): Promise<boolean> => {
-      setStatusText("Connecting to listserver...")
-      const result = await run("Login", () => service.loginWithAccount(accountName, nickname))
+      setStatusText(t("session.connectingListserver"))
+      const result = await run(t("session.loginFailed"), () => service.loginWithAccount(accountName, nickname))
       if (!result) {
         setStatusText("")
         return false
@@ -69,13 +71,13 @@ export function useSession(service: RcService): UseSessionResult {
       enterReady(result, accountName)
       return true
     },
-    [run, service, enterReady]
+    [run, service, enterReady, t]
   )
 
   const addAccount = useCallback(
     async (req: LoginRequest, nickname: string): Promise<boolean> => {
-      setStatusText("Connecting to listserver...")
-      const result = await run("Login", () => service.addAccount(req, nickname))
+      setStatusText(t("session.connectingListserver"))
+      const result = await run(t("session.loginFailed"), () => service.addAccount(req, nickname))
       if (!result) {
         setStatusText("")
         return false
@@ -84,23 +86,23 @@ export function useSession(service: RcService): UseSessionResult {
       enterReady(result, req.account)
       return true
     },
-    [run, service, enterReady]
+    [run, service, enterReady, t]
   )
 
   const refresh = useCallback(async (): Promise<void> => {
-    const result = await run("Refresh", () => service.getServers())
+    const result = await run(t("session.refreshFailed"), () => service.getServers())
     if (!result) return
     setServers(result)
     setSelectedIndex(0)
-    setStatusText(`${result.length} server${result.length === 1 ? "" : "s"} available`)
-    toast.success("Server list refreshed")
-  }, [run, service])
+    setStatusText(t("session.serversAvailable", {count: result.length}))
+    toast.success(t("session.serverListRefreshed"))
+  }, [run, service, t])
 
   const connect = useCallback(
     async (index: number): Promise<boolean> => {
       const server = servers[index]
-      const label = server ? serverDisplay(server.name).label : `server ${index}`
-      setStatusText(`Connecting to ${label}...`)
+      const label = server ? serverDisplay(server.name).label : t("session.serverFallback", {index})
+      setStatusText(t("session.connectingTo", {server: label}))
       // connectToServer is a void/error-only binding: Wails resolves it to null
       // on success, so "no throw" (not a null return value) is the success
       // signal. Don't route through run() — its null return collides with the
@@ -109,19 +111,19 @@ export function useSession(service: RcService): UseSessionResult {
       try {
         await service.connectToServer(index)
         setConnectedServer(label)
-        setStatusText(`Connected to ${label}`)
-        toast.success(`Connected to ${label}`)
+        setStatusText(t("session.connectedTo", {server: label}))
+        toast.success(t("session.connectedTo", {server: label}))
         return true
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
-        toast.error(`Connect to ${label} failed`, {description: message})
+        toast.error(t("session.connectFailed", {server: label}), {description: message})
         setStatusText("")
         return false
       } finally {
         setBusy(false)
       }
     },
-    [service, servers]
+    [service, servers, t]
   )
 
   const logout = useCallback(async (): Promise<void> => {

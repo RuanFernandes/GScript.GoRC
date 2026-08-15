@@ -28,11 +28,12 @@ function prefixColor(source: ChatMessage["source"], s: ChatSettings): string {
 interface ChatLineProps {
   message: ChatMessage
   settings: ChatSettings
+  repeatLabel?: string
 }
 
-export function ChatLine({message, settings}: ChatLineProps) {
+export function ChatLine({message, settings, repeatLabel}: ChatLineProps) {
   if (message.source === "system") {
-    return <span className="text-muted-foreground italic">{message.text}</span>
+    return <span className="text-muted-foreground italic">{repeatLabel && <span className="mr-1 not-italic" title={repeatLabel}>{repeatLabel}</span>}{message.text}</span>
   }
 
   // The reference shows a source tag ([RC]/[NC]/[IRC]) only in the main server
@@ -42,6 +43,7 @@ export function ChatLine({message, settings}: ChatLineProps) {
 
   return (
     <span>
+      {repeatLabel && <span className="text-muted-foreground mr-1" title={repeatLabel}>{repeatLabel}</span>}
       <span style={{color: settings.timestamp}}>[{hhmm(message.ts)}]</span>{" "}
       {showTag && (
         <>

@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	stdsync "sync"
 	"time"
 
@@ -194,6 +195,7 @@ func (a *App) SetSyncConfig(enabled bool, outputDir string, pollingMinutes int, 
 	if err := ensureAppRunning(a); err != nil {
 		return err
 	}
+	outputDir = strings.TrimSpace(outputDir)
 	if pollingMinutes < 1 {
 		pollingMinutes = sync.DefaultPollingMinutes
 	}
@@ -246,6 +248,7 @@ func (a *App) SetSyncConfig(enabled bool, outputDir string, pollingMinutes int, 
 		b, _ := json.Marshal(cfg)
 		a.app.Event.Emit("rc:syncConfig", string(b))
 	}
+	a.emitSyncStatus()
 	return nil
 }
 
@@ -340,18 +343,22 @@ func (a *App) syncEmitter() func(string, ...any) {
 			return
 		}
 		if name == "rc:syncStatus" && len(data) > 0 {
-			if status, ok := data[0].(sync.SyncStatus); ok && status.SyncGeneration > 0 {
-				a.syncLSPMu.Lock()
-				shouldRefresh := status.SyncGeneration > a.syncLSPGeneration
-				if shouldRefresh {
-					a.syncLSPGeneration = status.SyncGeneration
-				}
-				a.syncLSPMu.Unlock()
-				// A generation is advanced only after the complete reconcile has
-				// finished. Refresh once per generation so an auto-poll does not
-				// repeatedly tear down an already-loaded LSP workspace.
-				if shouldRefresh {
-					go a.refreshGraalScriptWorkspace()
+			if status, ok := data[0].(sync.SyncStatus); ok {
+				status = a.decorateSyncStatus(status)
+				data[0] = status
+				if status.SyncGeneration > 0 {
+					a.syncLSPMu.Lock()
+					shouldRefresh := status.SyncGeneration > a.syncLSPGeneration
+					if shouldRefresh {
+						a.syncLSPGeneration = status.SyncGeneration
+					}
+					a.syncLSPMu.Unlock()
+					// A generation is advanced only after the complete reconcile has
+					// finished. Refresh once per generation so an auto-poll does not
+					// repeatedly tear down an already-loaded LSP workspace.
+					if shouldRefresh {
+						go a.refreshGraalScriptWorkspace()
+					}
 				}
 			}
 		}
@@ -546,10 +553,10 @@ func (a *App) SyncNow() error {
 // GetSyncStatus returns the engine's status snapshot.
 func (a *App) GetSyncStatus() sync.SyncStatus {
 	if eng := a.currentSyncEngine(); eng != nil {
-		return eng.Status()
+		return a.decorateSyncStatus(eng.Status())
 	}
 	c := a.GetSyncConfig()
-	return sync.SyncStatus{
+	return a.decorateSyncStatus(sync.SyncStatus{
 		Enabled:          c.Enabled,
 		Server:           a.currentSyncServer(),
 		OutputDir:        c.OutputDir,
@@ -557,7 +564,25 @@ func (a *App) GetSyncStatus() sync.SyncStatus {
 		PanicMode:        c.PanicMode,
 		PanicReason:      c.PanicReason,
 		PanicAt:          c.PanicAt,
+	})
+}
+
+func (a *App) emitSyncStatus() {
+	if a.app == nil {
+		return
 	}
+	a.syncEmitter()("rc:syncStatus", a.GetSyncStatus())
+}
+
+func (a *App) decorateSyncStatus(status sync.SyncStatus) sync.SyncStatus {
+	if a.sessions == nil {
+		return status
+	}
+	session := a.sessions.Status()
+	status.ScriptRightsReady = session.RightsReady
+	status.ScriptWriteAccess = session.ScriptWriteAccess
+	status.SyncRequired = session.RightsReady && session.ScriptWriteAccess
+	return status
 }
 
 // GetSyncScriptPair returns local+server content for the diff viewer.

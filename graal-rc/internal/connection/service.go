@@ -33,15 +33,19 @@ type Credentials struct {
 
 // Status describes the current session for the frontend.
 type Status struct {
-	Loaded        bool   `json:"loaded"`
-	DLLPath       string `json:"dllPath"`
-	Connected     bool   `json:"connected"`
-	Authenticated bool   `json:"authenticated"`
-	Account       string `json:"account"`
-	Nickname      string `json:"nickname"`
-	ServerName    string `json:"serverName"`
-	RealAccount   string `json:"realAccount"`
-	CommunityName string `json:"communityName"`
+	Loaded            bool   `json:"loaded"`
+	DLLPath           string `json:"dllPath"`
+	Connected         bool   `json:"connected"`
+	Authenticated     bool   `json:"authenticated"`
+	Account           string `json:"account"`
+	Nickname          string `json:"nickname"`
+	ServerName        string `json:"serverName"`
+	RealAccount       string `json:"realAccount"`
+	CommunityName     string `json:"communityName"`
+	Rights            int    `json:"rights"`
+	RightsReady       bool   `json:"rightsReady"`
+	CanBanPlayers     bool   `json:"canBanPlayers"`
+	ScriptWriteAccess bool   `json:"scriptWriteAccess"`
 }
 
 // Service manages the grclib connection handle and the credentials in use.
@@ -70,16 +74,28 @@ type Service struct {
 	// the MaxUploadSize callback. 0 means unknown. Guarded by mu.
 	maxUpload int64
 
-	// selfRights is the cached folder_config returned by openrights for the
-	// logged-in account on the current server. It is deliberately fail-closed:
-	// until a fresh response is cached, script reads and writes are rejected.
-	rightsMu          sync.RWMutex
-	rightsRefreshMu   sync.Mutex
-	rightsRequestSeq  uint64
-	selfRights        folderrights.Access
-	selfRightsLoaded  bool
-	selfRightsError   string
-	selfRightsAccount string
+	// selfRights is the cached openrights response for the logged-in account on
+	// the current server. It is deliberately fail-closed: until a fresh
+	// response is cached, script reads/writes and privileged player actions are
+	// rejected.
+	rightsMu         sync.RWMutex
+	rightsRefreshMu  sync.Mutex
+	rightsRequestSeq uint64
+	selfRights       folderrights.Access
+	selfStaffRights  int
+	selfRightsLoaded bool
+	selfRightsError  string
+	// selfRightsBaseline is the last successful server snapshot retained across
+	// disconnect/reconnect transitions. The active cache above is cleared while
+	// disconnected so callers remain fail-closed, but permission comparisons must
+	// still use the last server snapshot instead of treating every rejoin as a
+	// first load.
+	selfRightsBaseline        folderrights.Access
+	selfStaffRightsBaseline   int
+	selfRightsBaselineLoaded  bool
+	selfRightsBaselineAccount string
+	selfRightsBaselineServer  string
+	selfRightsAccount         string
 	// selfRightsCommunityName is the optional community name associated with
 	// selfRightsAccount. Both values come from the server's RC chat identity
 	// notification and are used to correlate later rights-change messages.
@@ -190,6 +206,7 @@ const scriptTimeout = 15 * time.Second
 const (
 	rightsChangedMessage = "has set rights of"
 	rightsLoadedMessage  = "loaded the rights of"
+	banPlayersRightBit   = 11
 )
 
 // downloadTimeout is how long a file download waits for the full content. File
@@ -727,6 +744,10 @@ func (s *Service) captureSelfRightsIdentity(message loadedRightsMessage) {
 		log.Printf("[rights] self identity captured actor=%q community=%q account=%q", message.Actor, community, account)
 		s.emitEvent("rc:scriptIdentityChanged")
 	}
+}
+
+func (s *Service) emitScriptPermissionsEvent(permissionChanged bool) {
+	s.emitEvent("rc:scriptPermissionsChanged", permissionChanged)
 }
 
 // handleRCMessage watches the server chat for rights identity/change
@@ -1391,6 +1412,14 @@ func (s *Service) connectToServer(ctx context.Context, index int) error {
 		s.mu.Lock()
 		s.serverName = serverName
 		s.mu.Unlock()
+		// Always warm the current server's openrights snapshot. Sync also calls
+		// this before its own work, but player moderation and chat commands must
+		// have the same fail-closed permission state even when sync is disabled.
+		// Keep this synchronous so the caller can decide whether script editing
+		// must be gated before the first post-login window is opened.
+		if err := s.RefreshSelfFolderRights(); err != nil {
+			log.Printf("[rights] login refresh failed: %v", err)
+		}
 		go s.refreshServerTextCache(h, epoch, serverName)
 		return nil
 	case reason := <-disconnected:
@@ -1606,11 +1635,21 @@ func (s *Service) SendAdminMessageAll(message string) error {
 	return rclib.SendAdminMessageAll(h, message)
 }
 
-// SelfAccount returns the logged-in account name.
+// SelfAccount returns the account name used by the active server for the
+// logged-in session. The canonical name from openrights wins once available;
+// the listserver credential is the startup fallback.
 func (s *Service) SelfAccount() string {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.creds.Account
+	account := s.creds.Account
+	s.mu.Unlock()
+
+	s.rightsMu.RLock()
+	canonical := strings.TrimSpace(s.selfRightsAccount)
+	s.rightsMu.RUnlock()
+	if canonical != "" {
+		return canonical
+	}
+	return account
 }
 
 // clearSelfFolderRights invalidates the permission snapshot when the active
@@ -1619,7 +1658,9 @@ func (s *Service) SelfAccount() string {
 // server.
 func (s *Service) clearSelfFolderRights() {
 	s.rightsMu.Lock()
+	stateChanged := s.selfRightsLoaded || s.selfRightsError != "" || s.selfRightsAccount != "" || s.selfRightsCommunityName != "" || s.selfRightsServer != ""
 	s.selfRights = folderrights.Access{}
+	s.selfStaffRights = 0
 	s.selfRightsLoaded = false
 	s.selfRightsError = ""
 	s.selfRightsAccount = ""
@@ -1627,7 +1668,9 @@ func (s *Service) clearSelfFolderRights() {
 	s.selfRightsServer = ""
 	s.selfRightsUpdated = time.Time{}
 	s.rightsMu.Unlock()
-	s.emitEvent("rc:scriptPermissionsChanged")
+	if stateChanged {
+		s.emitScriptPermissionsEvent(false)
+	}
 }
 
 // clearServerTextCache invalidates the options/flags snapshot when the active
@@ -1724,15 +1767,59 @@ func (s *Service) RefreshServerScriptContext() error {
 }
 
 func (s *Service) invalidateSelfFolderRights(err error) {
+	nextError := ""
+	if err != nil {
+		nextError = err.Error()
+	}
 	s.rightsMu.Lock()
+	previousError := s.selfRightsError
+	stateChanged := s.selfRightsLoaded || previousError != nextError
 	s.selfRights = folderrights.Access{}
+	s.selfStaffRights = 0
 	s.selfRightsLoaded = false
 	s.selfRightsError = ""
-	if err != nil {
-		s.selfRightsError = err.Error()
+	if nextError != "" {
+		s.selfRightsError = nextError
 	}
 	s.selfRightsUpdated = time.Time{}
 	s.rightsMu.Unlock()
+	if stateChanged {
+		s.emitScriptPermissionsEvent(false)
+	}
+}
+
+// replaceSelfFolderRights stores one server snapshot and reports whether the
+// observable rights state changed. The comparison uses the last successful
+// server snapshot, not the active cache: the latter is deliberately cleared on
+// disconnect/reconnect to keep access fail-closed. The boolean returned to the
+// frontend is intentionally narrower: a first load or a cache reset needs
+// subscribers to refresh, but it is not a server-side permission change worth
+// notifying the operator about.
+func (s *Service) replaceSelfFolderRights(access folderrights.Access, staffRights int, account, server string) (stateChanged, permissionChanged bool) {
+	s.rightsMu.Lock()
+	wasLoaded := s.selfRightsLoaded
+	sameBaseline := s.selfRightsBaselineLoaded &&
+		equalFoldAny(s.selfRightsBaselineAccount, account) &&
+		s.selfRightsBaselineServer == server
+	permissionChanged = sameBaseline && (!s.selfRightsBaseline.Equal(access) || s.selfStaffRightsBaseline != staffRights)
+	stateChanged = !wasLoaded || permissionChanged || s.selfRightsError != "" || !equalFoldAny(s.selfRightsAccount, account) || s.selfRightsServer != server
+	s.selfRights = access
+	s.selfStaffRights = staffRights
+	s.selfRightsLoaded = true
+	s.selfRightsError = ""
+	s.selfRightsAccount = account
+	s.selfRightsServer = server
+	s.selfRightsUpdated = time.Now()
+	// A successful snapshot becomes the new comparison point. If the server
+	// changed the rights, updating the baseline prevents the same poll result
+	// from generating the same warning repeatedly.
+	s.selfRightsBaseline = access
+	s.selfStaffRightsBaseline = staffRights
+	s.selfRightsBaselineLoaded = true
+	s.selfRightsBaselineAccount = account
+	s.selfRightsBaselineServer = server
+	s.rightsMu.Unlock()
+	return stateChanged, permissionChanged
 }
 
 // RefreshSelfFolderRights explicitly asks the current server for this
@@ -1781,16 +1868,11 @@ func (s *Service) RefreshSelfFolderRights() error {
 	s.mu.Lock()
 	server := s.serverName
 	s.mu.Unlock()
-	s.rightsMu.Lock()
-	s.selfRights = access
-	s.selfRightsLoaded = true
-	s.selfRightsError = ""
-	s.selfRightsAccount = returnedAccount
-	s.selfRightsServer = server
-	s.selfRightsUpdated = time.Now()
-	s.rightsMu.Unlock()
+	stateChanged, permissionChanged := s.replaceSelfFolderRights(access, data.Rights, returnedAccount, server)
 	log.Printf("[rights] refresh success localAccount=%q serverAccount=%q folderAccessLen=%d elapsed=%s", account, returnedAccount, len(data.FolderAccess), time.Since(started))
-	s.emitEvent("rc:scriptPermissionsChanged")
+	if stateChanged {
+		s.emitScriptPermissionsEvent(permissionChanged)
+	}
 	return nil
 }
 
@@ -1811,6 +1893,33 @@ func (s *Service) selfFolderRights() (folderrights.Access, bool) {
 	return access, loaded
 }
 
+// RequireBanPlayersRight authorizes actions that expose or mutate another
+// player's ban state. The cache is fail-closed while the login refresh is
+// still pending or has failed.
+func (s *Service) RequireBanPlayersRight() error {
+	s.rightsMu.RLock()
+	loaded := s.selfRightsLoaded
+	rights := s.selfStaffRights
+	errText := s.selfRightsError
+	s.rightsMu.RUnlock()
+	if !loaded {
+		if errText != "" {
+			return fmt.Errorf("staff rights are unavailable: %s", errText)
+		}
+		return errors.New("staff rights are still loading")
+	}
+	if rights&(1<<banPlayersRightBit) == 0 {
+		return errors.New("Ban players right is required for this action")
+	}
+	return nil
+}
+
+// CanBanPlayers reports the current cached moderation permission without
+// turning an unavailable snapshot into an accidental allow.
+func (s *Service) CanBanPlayers() bool {
+	return s.RequireBanPlayersRight() == nil
+}
+
 // CanReadScript reports the cached read permission for one logical script.
 // It returns false while the cache is unavailable, so callers cannot
 // accidentally use a stale or unknown permission state.
@@ -1825,6 +1934,15 @@ func (s *Service) CanWriteScript(scriptType, name string) bool {
 	return loaded && access.CanWrite(scriptType, name)
 }
 
+// HasWritableScriptAccess reports whether the current account can write at
+// least one Weapon, Class, or NPC script. It is deliberately based on the
+// complete folder-rights snapshot rather than the currently warmed NC lists,
+// so a write rule cannot be missed during the first login.
+func (s *Service) HasWritableScriptAccess() bool {
+	access, loaded := s.selfFolderRights()
+	return loaded && access.HasWriteAccessForScriptTypes("weapon", "class", "npc")
+}
+
 // OpenRights requests an account's staff rights and waits for the reply. An
 // empty account sends /openrights without an argument so the server resolves
 // the current RC session to itself; explicit accounts use the direct rights
@@ -1832,7 +1950,7 @@ func (s *Service) CanWriteScript(scriptType, name string) bool {
 func (s *Service) OpenRights(account string) (RightsData, error) {
 	account = strings.TrimSpace(account)
 	selfAccount := strings.TrimSpace(s.SelfAccount())
-	selfRequest := account == "" || (selfAccount != "" && strings.EqualFold(account, selfAccount))
+	selfRequest := account == "" || s.isSelfRightsAlias(account)
 	expectedAccount := account
 	if selfRequest {
 		expectedAccount = selfAccount
@@ -1943,6 +2061,9 @@ func (s *Service) ParseAttrsText(text string) (string, error) {
 // OpenBan requests an account's ban data and waits for the reply. Use
 // GetBanTypes separately (or before) to populate the duration dropdown.
 func (s *Service) OpenBan(account string) (BanData, error) {
+	if err := s.RequireBanPlayersRight(); err != nil {
+		return BanData{}, err
+	}
 	h, err := s.requireHandle()
 	if err != nil {
 		return BanData{}, err
@@ -1968,6 +2089,9 @@ func (s *Service) OpenBan(account string) (BanData, error) {
 // SetBan writes ban data for a target. world is "local" or "all"; target is the
 // account or "pc:<computerID>"; releaseTime "" resets the ban timer.
 func (s *Service) SetBan(target, world string, banned bool, banType, releaseTime, reason string) error {
+	if err := s.RequireBanPlayersRight(); err != nil {
+		return err
+	}
 	h, err := s.requireHandle()
 	if err != nil {
 		return err
@@ -2043,6 +2167,9 @@ func (s *Service) GetBanTypes() (string, error) {
 
 // RequestBanHistory asks for an account's ban history and waits for the reply.
 func (s *Service) RequestBanHistory(account string) (string, error) {
+	if err := s.RequireBanPlayersRight(); err != nil {
+		return "", err
+	}
 	h, err := s.requireHandle()
 	if err != nil {
 		return "", err
@@ -2981,6 +3108,10 @@ func (s *Service) Status() Status {
 	s.rightsMu.RLock()
 	st.RealAccount = s.selfRightsAccount
 	st.CommunityName = s.selfRightsCommunityName
+	st.Rights = s.selfStaffRights
+	st.RightsReady = s.selfRightsLoaded
+	st.CanBanPlayers = s.selfRightsLoaded && s.selfStaffRights&(1<<banPlayersRightBit) != 0
+	st.ScriptWriteAccess = s.selfRightsLoaded && s.selfRights.HasWriteAccessForScriptTypes("weapon", "class", "npc")
 	s.rightsMu.RUnlock()
 	return st
 }

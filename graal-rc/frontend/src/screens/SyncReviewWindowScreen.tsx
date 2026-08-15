@@ -66,7 +66,7 @@ function ReviewRow({
       {open && (
         <div className="grid gap-3 px-3 pb-3 sm:px-4">
           <div className="grid grid-cols-1 gap-1 text-xs sm:grid-cols-2 sm:gap-2">
-            <div className="text-muted-foreground">{t("sync.local")} {item.local ? "" : t("sync.absent")}</div>
+            <div className="text-muted-foreground">{t("sync.localCopy")} {item.local ? "" : t("sync.absent")}</div>
             <div className="text-muted-foreground">{t("sync.server")} {item.server ? "" : t("sync.absent")}</div>
           </div>
           <div ref={diffHostRef} className="h-64 min-h-0 overflow-hidden rounded-md border sm:h-80">

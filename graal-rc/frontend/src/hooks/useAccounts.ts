@@ -7,6 +7,7 @@ import {toast} from "sonner"
 
 import type {RcService} from "@/services/rcService"
 import type {AccountSummary} from "@/types"
+import {useLanguage} from "@/hooks/useLanguage"
 
 export interface UseAccountsResult {
   accounts: AccountSummary[]
@@ -15,6 +16,7 @@ export interface UseAccountsResult {
 }
 
 export function useAccounts(service: RcService): UseAccountsResult {
+  const {t} = useLanguage()
   const [accounts, setAccounts] = useState<AccountSummary[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -24,11 +26,11 @@ export function useAccounts(service: RcService): UseAccountsResult {
       setAccounts((await service.listAccounts()) ?? [])
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      toast.error("Failed to load accounts", {description: message})
+      toast.error(t("session.accountsLoadFailed"), {description: message})
     } finally {
       setLoading(false)
     }
-  }, [service])
+  }, [service, t])
 
   useEffect(() => {
     refresh()

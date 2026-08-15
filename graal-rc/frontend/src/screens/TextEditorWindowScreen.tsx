@@ -153,7 +153,7 @@ export function TextEditorWindowScreen() {
     <div className="bg-background flex h-svh flex-col">
       <header className="flex items-center gap-2 border-b px-4 py-2">
         <h1 className="text-sm font-semibold">{baseName || t("editor.textFile")}</h1>
-        {dirty && <span className="text-xs text-amber-500">• unsaved</span>}
+        {dirty && <span className="text-xs text-amber-500">{t("editor.unsaved")}</span>}
         {saving && <Loader2 className="size-3.5 animate-spin text-muted-foreground" />}
         <div className="ml-auto flex items-center gap-1.5">
           {dirty && <Button variant="outline" size="sm" onClick={() => setShowChanges((value) => !value)}><GitCompare className="size-4" />{t("editor.reviewChanges")}</Button>}
@@ -186,7 +186,7 @@ export function TextEditorWindowScreen() {
       <div className="min-h-0 flex-1">
         {loading ? (
           <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" /> Loading…
+            <Loader2 className="size-4 animate-spin" /> {t("common.loading")}
           </div>
         ) : loadError ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-muted-foreground">
@@ -221,9 +221,7 @@ export function TextEditorWindowScreen() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>{t("editor.saveBeforeClosing")}</AlertDialogTitle>
-            <AlertDialogDescription>
-              This file has unsaved changes. Save them before the window closes, or discard them.
-            </AlertDialogDescription>
+            <AlertDialogDescription>{t("editor.textSaveBeforeClosingDescription")}</AlertDialogDescription>
           </AlertDialogHeader>
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setConfirmClose(false)}>

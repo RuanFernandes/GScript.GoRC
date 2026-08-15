@@ -30,7 +30,7 @@ export function SettingsWindowScreen() {
   return (
     <div className="bg-background flex h-svh flex-col">
       <Tabs defaultValue="coding" orientation="vertical" className="flex min-h-0 flex-1 flex-row gap-0">
-        <TabsList aria-label="Settings sections" className="h-auto w-48 shrink-0 flex-col items-stretch justify-start gap-1 rounded-none border-b-0 border-r bg-muted/20 p-3">
+        <TabsList aria-label={t("settings.sections")} className="h-auto w-48 shrink-0 flex-col items-stretch justify-start gap-1 rounded-none border-b-0 border-r bg-muted/20 p-3">
           <TabsTrigger value="coding" className="justify-start border-b-0 border-l-2 border-transparent px-3 data-[state=active]:border-primary data-[state=active]:bg-accent">
             <Code2 />{t("settings.coding")}
           </TabsTrigger>
@@ -1061,7 +1061,7 @@ function FilesSection({t}: {t: (key: string) => string}) {
         </div>
         <div className="grid gap-3 p-4">
           <Label htmlFor="dl-dir">{t("settings.downloadsFolder")}</Label>
-          <Input id="dl-dir" value={dir} readOnly placeholder={`${t("settings.notSet")} — downloads disabled`} />
+          <Input id="dl-dir" value={dir} readOnly placeholder={`${t("settings.notSet")} — ${t("settings.downloadsDisabled")}`} />
           <div className="flex gap-2">
             <Button variant="outline" onClick={browse}>{t("settings.browse")}</Button>
             <Button variant="ghost" onClick={clear} disabled={!dir}>{t("settings.clear")}</Button>
@@ -1266,7 +1266,7 @@ function RemoteThemePicker({
       })
       await onActivate(name, definition)
     } catch {
-      setError(`Couldn't fetch "${name}" (online? exact name?)`)
+      setError(t("settings.themeFetchFailed", {name}))
     } finally {
       setBusy(false)
     }
@@ -1358,6 +1358,7 @@ const languageOptions: Array<{value: Language; label: string; region: string}> =
 ]
 
 function LanguagePicker({language, onChange}: {language: Language; onChange: (language: Language) => void}) {
+  const {t} = useLanguage()
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
   const selected = languageOptions.find((option) => option.value === language) ?? languageOptions[0]
@@ -1400,7 +1401,7 @@ function LanguagePicker({language, onChange}: {language: Language; onChange: (la
         <ChevronDown className={`text-muted-foreground size-4 shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
       {open && (
-        <div role="listbox" aria-label="Language options" className="border-border bg-popover text-popover-foreground absolute inset-x-0 top-[calc(100%+6px)] z-50 overflow-hidden rounded-md border p-1 shadow-lg">
+        <div role="listbox" aria-label={t("settings.languageOptions")} className="border-border bg-popover text-popover-foreground absolute inset-x-0 top-[calc(100%+6px)] z-50 overflow-hidden rounded-md border p-1 shadow-lg">
           {languageOptions.map((option) => {
             const active = option.value === language
             return (

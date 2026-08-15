@@ -17,26 +17,26 @@ import type {RightsData} from "@/types"
 import {cn} from "@/lib/utils"
 import {useLanguage} from "@/hooks/useLanguage"
 
-const RIGHTS_LAYOUT: {label: string; bit: number}[] = [
-  {label: "Warpto XY", bit: 0},
-  {label: "Set server flags", bit: 15},
-  {label: "Warpto player", bit: 1},
-  {label: "Change rights", bit: 10},
-  {label: "Warp players", bit: 2},
-  {label: "Ban players", bit: 11},
-  {label: "Update level", bit: 3},
-  {label: "Change comments", bit: 12},
-  {label: "Disconnect players", bit: 4},
-  {label: "Change staff accounts", bit: 14},
-  {label: "View player attributes", bit: 5},
-  {label: "Change server options", bit: 16},
-  {label: "Set player attributes", bit: 6},
-  {label: "Edit folder configuration", bit: 17},
-  {label: "Set the own attributes", bit: 7},
-  {label: "Edit folder rights", bit: 18},
-  {label: "Reset attributes", bit: 8},
-  {label: "NPC-Control", bit: 19},
-  {label: "Admin message", bit: 9},
+const RIGHTS_LAYOUT: {labelKey: string; bit: number}[] = [
+  {labelKey: "rights.label.warptoXY", bit: 0},
+  {labelKey: "rights.label.setServerFlags", bit: 15},
+  {labelKey: "rights.label.warptoPlayer", bit: 1},
+  {labelKey: "rights.label.changeRights", bit: 10},
+  {labelKey: "rights.label.warpPlayers", bit: 2},
+  {labelKey: "rights.label.banPlayers", bit: 11},
+  {labelKey: "rights.label.updateLevel", bit: 3},
+  {labelKey: "rights.label.changeComments", bit: 12},
+  {labelKey: "rights.label.disconnectPlayers", bit: 4},
+  {labelKey: "rights.label.changeStaffAccounts", bit: 14},
+  {labelKey: "rights.label.viewPlayerAttributes", bit: 5},
+  {labelKey: "rights.label.changeServerOptions", bit: 16},
+  {labelKey: "rights.label.setPlayerAttributes", bit: 6},
+  {labelKey: "rights.label.editFolderConfiguration", bit: 17},
+  {labelKey: "rights.label.ownAttributes", bit: 7},
+  {labelKey: "rights.label.editFolderRights", bit: 18},
+  {labelKey: "rights.label.resetAttributes", bit: 8},
+  {labelKey: "rights.label.npcControl", bit: 19},
+  {labelKey: "rights.label.adminMessage", bit: 9},
 ]
 
 function readAccount(): string {
@@ -94,39 +94,39 @@ export function RightsWindowScreen() {
   return (
     <div className="bg-background flex h-svh flex-col">
       <header className="flex items-center gap-2 border-b px-4 py-2.5">
-        <h1 className="text-sm font-semibold">{target}&apos;s Rights</h1>
+        <h1 className="text-sm font-semibold">{t("rights.title", {account: target})}</h1>
         <Button className="ml-auto" size="sm" onClick={apply} disabled={loading || saving || !!error}>
-          {saving && <Loader2 className="size-4 animate-spin" />} Apply
+          {saving && <Loader2 className="size-4 animate-spin" />} {t("common.apply")}
         </Button>
       </header>
       <ScrollArea className="min-h-0 flex-1 p-4">
         {loading && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" /> Loading rights…
+            <Loader2 className="size-4 animate-spin" /> {t("rights.loading")}
           </div>
         )}
         {error && <div className="text-sm text-destructive">{error}</div>}
         {data && !loading && (
           <Tabs defaultValue="flags">
             <TabsList className="grid w-full grid-cols-2">
-              <TabsTrigger value="flags">IP Range & flags</TabsTrigger>
-              <TabsTrigger value="folders">Folder rights</TabsTrigger>
+              <TabsTrigger value="flags">{t("rights.ipFlagsTab")}</TabsTrigger>
+              <TabsTrigger value="folders">{t("rights.folderTab")}</TabsTrigger>
             </TabsList>
             <TabsContent value="flags" className="space-y-3 pt-3">
               <div className="space-y-1">
-                <span className="text-xs font-medium uppercase text-muted-foreground">Account</span>
+                <span className="text-xs font-medium uppercase text-muted-foreground">{t("rights.account")}</span>
                 <Input value={data.account} readOnly className="h-8 bg-muted/40" />
               </div>
               <div className="space-y-1">
-                <span className="text-xs font-medium uppercase text-muted-foreground">IP range(s)</span>
+                <span className="text-xs font-medium uppercase text-muted-foreground">{t("rights.ipRanges")}</span>
                 <Input value={ipRange} onChange={(e) => setIpRange(e.target.value)} className="h-8" />
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-xs font-medium uppercase text-muted-foreground">Right flags</span>
-                <Button variant="ghost" size="sm" onClick={() => setFlags(0)}>Clear all</Button>
+                <span className="text-xs font-medium uppercase text-muted-foreground">{t("rights.flags")}</span>
+                <Button variant="ghost" size="sm" onClick={() => setFlags(0)}>{t("rights.clearAll")}</Button>
               </div>
               <div className="grid grid-cols-2 gap-1.5">
-                {RIGHTS_LAYOUT.map(({label, bit}) => {
+                {RIGHTS_LAYOUT.map(({labelKey, bit}) => {
                   const on = (flags & (1 << bit)) !== 0
                   return (
                     <label
@@ -137,14 +137,14 @@ export function RightsWindowScreen() {
                       )}
                     >
                       <input type="checkbox" checked={on} onChange={() => toggle(bit)} />
-                      <span className="truncate">{label}</span>
+                      <span className="truncate">{t(labelKey)}</span>
                     </label>
                   )
                 })}
               </div>
             </TabsContent>
             <TabsContent value="folders" className="space-y-1 pt-3">
-              <span className="text-xs font-medium uppercase text-muted-foreground">Folder rights</span>
+              <span className="text-xs font-medium uppercase text-muted-foreground">{t("rights.folderRights")}</span>
               <textarea
                 value={folders}
                 onChange={(e) => setFolders(e.target.value)}

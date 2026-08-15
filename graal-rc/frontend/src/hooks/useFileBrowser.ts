@@ -13,6 +13,7 @@ import {toast} from "sonner"
 
 import type {RcService} from "@/services/rcService"
 import type {FileBrowserConfig, FileBrowserEntry, FileBrowserFolder} from "@/types"
+import {useLanguage} from "@/hooks/useLanguage"
 
 type Evt = {seq: number; name: string; data: unknown[]}
 
@@ -70,6 +71,7 @@ function readAsBase64(file: File): Promise<string> {
 }
 
 export function useFileBrowser(service: RcService): UseFileBrowserResult {
+  const {t} = useLanguage()
   const [folders, setFolders] = useState<FileBrowserFolder[]>([])
   const [files, setFiles] = useState<FileBrowserEntry[]>([])
   const [currentFolder, setCurrentFolder] = useState("")
@@ -114,21 +116,21 @@ export function useFileBrowser(service: RcService): UseFileBrowserResult {
     try {
       await service.fileBrowserStart()
     } catch (err) {
-      toast.error("File browser start failed", {description: String(err)})
+      toast.error(t("file.startFailed"), {description: String(err)})
     } finally {
       setLoading(false)
     }
-  }, [service])
+  }, [service, t])
 
   const cd = useCallback(
     async (folder: string) => {
       try {
         await service.fileBrowserCd(folder)
       } catch (err) {
-        toast.error("Could not open folder", {description: String(err)})
+        toast.error(t("file.folderOpenFailed"), {description: String(err)})
       }
     },
-    [service],
+    [service, t],
   )
 
   const download = useCallback(
@@ -136,12 +138,12 @@ export function useFileBrowser(service: RcService): UseFileBrowserResult {
       if (entry.isDirectory) return
       try {
         const saved = await service.downloadFile(entry.path, saveAs)
-        if (saved) toast.success(`Saved to ${saved}`)
+        if (saved) toast.success(t("file.savedTo", {path: saved}))
       } catch (err) {
-        toast.error("Download failed", {description: String(err)})
+        toast.error(t("file.downloadFailed"), {description: String(err)})
       }
     },
-    [service],
+    [service, t],
   )
 
   const uploadOne = useCallback(
@@ -163,22 +165,22 @@ export function useFileBrowser(service: RcService): UseFileBrowserResult {
           await uploadOne(f)
           ok++
         } catch (err) {
-          toast.error(`Upload failed: ${f.name}`, {description: String(err)})
+          toast.error(t("file.uploadFailedFor", {name: f.name}), {description: String(err)})
         }
       }
-      if (ok > 0) toast.success(`Uploaded ${ok} file${ok > 1 ? "s" : ""}`)
+      if (ok > 0) toast.success(t("file.uploadedCount", {count: ok}))
     },
-    [uploadOne],
+    [uploadOne, t],
   )
 
   const uploadViaDialog = useCallback(async () => {
     try {
       await service.uploadFileViaDialog()
-      toast.success("Uploaded")
+      toast.success(t("file.uploaded"))
     } catch (err) {
-      toast.error("Upload failed", {description: String(err)})
+      toast.error(t("file.uploadFailed"), {description: String(err)})
     }
-  }, [service])
+  }, [service, t])
 
   const rename = useCallback(
     async (entry: FileBrowserEntry, newName: string) => {
@@ -188,10 +190,10 @@ export function useFileBrowser(service: RcService): UseFileBrowserResult {
       try {
         await service.fileBrowserRename(entry.path, joinPath(dir, newName))
       } catch (err) {
-        toast.error("Rename failed", {description: String(err)})
+        toast.error(t("file.renameFailed"), {description: String(err)})
       }
     },
-    [service],
+    [service, t],
   )
 
   const remove = useCallback(
@@ -199,10 +201,10 @@ export function useFileBrowser(service: RcService): UseFileBrowserResult {
       try {
         await service.fileBrowserDelete(entry.path)
       } catch (err) {
-        toast.error("Delete failed", {description: String(err)})
+        toast.error(t("file.deleteFailed"), {description: String(err)})
       }
     },
-    [service],
+    [service, t],
   )
 
   const move = useCallback(
@@ -221,10 +223,10 @@ export function useFileBrowser(service: RcService): UseFileBrowserResult {
           await service.fileBrowserMove(destFolder, entry.path)
         }
       } catch (err) {
-        toast.error("Move failed", {description: String(err)})
+        toast.error(t("file.moveFailed"), {description: String(err)})
       }
     },
-    [service],
+    [service, t],
   )
 
   useEffect(() => {

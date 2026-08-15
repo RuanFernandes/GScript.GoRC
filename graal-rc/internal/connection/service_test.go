@@ -3,6 +3,8 @@ package connection
 import (
 	"testing"
 	"time"
+
+	"graal-rc/internal/folderrights"
 )
 
 // snapshotLockedForTest is a test-only view of the joined set under the lock.
@@ -181,6 +183,118 @@ func TestCaptureSelfRightsIdentityWithoutCommunity(t *testing.T) {
 	s.rightsMu.RUnlock()
 	if account != "ruanf" || community != "" {
 		t.Fatalf("captured account-only identity = community %q account %q", community, account)
+	}
+}
+
+func TestRequireBanPlayersRightFailsClosed(t *testing.T) {
+	s := NewService()
+	if err := s.RequireBanPlayersRight(); err == nil {
+		t.Fatal("unloaded rights must not authorize ban actions")
+	}
+
+	s.rightsMu.Lock()
+	s.selfRightsLoaded = true
+	s.selfStaffRights = 1 << banPlayersRightBit
+	s.rightsMu.Unlock()
+	if err := s.RequireBanPlayersRight(); err != nil {
+		t.Fatalf("Ban players right should authorize the action: %v", err)
+	}
+
+	s.rightsMu.Lock()
+	s.selfStaffRights = 0
+	s.rightsMu.Unlock()
+	if err := s.RequireBanPlayersRight(); err == nil {
+		t.Fatal("missing Ban players right must be rejected")
+	}
+}
+
+func TestSelfAccountPrefersCanonicalRightsAccount(t *testing.T) {
+	s := NewService()
+	s.creds = Credentials{Account: "login-alias"}
+	if got := s.SelfAccount(); got != "login-alias" {
+		t.Fatalf("startup account = %q, want login-alias", got)
+	}
+
+	s.rightsMu.Lock()
+	s.selfRightsAccount = "Graal123"
+	s.rightsMu.Unlock()
+	if got := s.SelfAccount(); got != "Graal123" {
+		t.Fatalf("canonical account = %q, want Graal123", got)
+	}
+}
+
+func TestStatusReportsScriptWriteAccessFromFolderRights(t *testing.T) {
+	access, err := folderrights.Parse("r WEAPONS/*\nr CLASSES/*\nr NPCS/*")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	s := NewService()
+	s.rightsMu.Lock()
+	s.selfRights = access
+	s.selfRightsLoaded = true
+	s.rightsMu.Unlock()
+	if status := s.Status(); !status.RightsReady || status.ScriptWriteAccess {
+		t.Fatalf("read-only status = %+v", status)
+	}
+
+	access, err = folderrights.Parse("rw WEAPONS/*")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	s.rightsMu.Lock()
+	s.selfRights = access
+	s.rightsMu.Unlock()
+	if status := s.Status(); !status.ScriptWriteAccess {
+		t.Fatalf("write status = %+v", status)
+	}
+}
+
+func TestReplaceSelfFolderRightsOnlyReportsRealChanges(t *testing.T) {
+	readOnly, err := folderrights.Parse("r WEAPONS/*")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	s := NewService()
+	var events []struct {
+		name string
+		data []any
+	}
+	s.SetEmitter(func(name string, data ...any) {
+		events = append(events, struct {
+			name string
+			data []any
+		}{name: name, data: data})
+	})
+
+	if stateChanged, permissionChanged := s.replaceSelfFolderRights(readOnly, 0, "Graal123", "Testbed3d"); !stateChanged || permissionChanged {
+		t.Fatalf("initial rights load = stateChanged %v permissionChanged %v, want true false", stateChanged, permissionChanged)
+	}
+	if len(events) != 0 {
+		t.Fatalf("rights replacement helper must not emit by itself, got %d events", len(events))
+	}
+	if stateChanged, permissionChanged := s.replaceSelfFolderRights(readOnly, 0, "Graal123", "Testbed3d"); stateChanged || permissionChanged {
+		t.Fatalf("identical rights refresh = stateChanged %v permissionChanged %v, want false false", stateChanged, permissionChanged)
+	}
+
+	writeAccess, err := folderrights.Parse("rw WEAPONS/*")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if stateChanged, permissionChanged := s.replaceSelfFolderRights(writeAccess, 0, "Graal123", "Testbed3d"); !stateChanged || !permissionChanged {
+		t.Fatalf("changed folder rights = stateChanged %v permissionChanged %v, want true true", stateChanged, permissionChanged)
+	}
+	if stateChanged, permissionChanged := s.replaceSelfFolderRights(writeAccess, 0, "Graal123", "Testbed3d"); stateChanged || permissionChanged {
+		t.Fatalf("repeated changed rights refresh = stateChanged %v permissionChanged %v, want false false", stateChanged, permissionChanged)
+	}
+
+	// Disconnecting clears the active cache, but a reconnect to the same server
+	// must still compare against the last successful server snapshot.
+	s.clearSelfFolderRights()
+	if stateChanged, permissionChanged := s.replaceSelfFolderRights(writeAccess, 0, "Graal123", "Testbed3d"); !stateChanged || permissionChanged {
+		t.Fatalf("reconnect with unchanged rights = stateChanged %v permissionChanged %v, want true false", stateChanged, permissionChanged)
+	}
+	if stateChanged, permissionChanged := s.replaceSelfFolderRights(readOnly, 0, "Graal123", "Testbed3d"); !stateChanged || !permissionChanged {
+		t.Fatalf("reconnect with changed rights = stateChanged %v permissionChanged %v, want true true", stateChanged, permissionChanged)
 	}
 }
 

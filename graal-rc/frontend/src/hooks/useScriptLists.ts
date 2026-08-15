@@ -7,6 +7,7 @@ import {Events} from "@wailsio/runtime"
 
 import type {RcService} from "@/services/rcService"
 import type {Class, NPC, Weapon} from "@/types"
+import {useLanguage} from "@/hooks/useLanguage"
 
 type Evt = {seq: number; name: string; data: unknown[]}
 
@@ -20,6 +21,7 @@ export interface UseScriptListsResult {
 }
 
 export function useScriptLists(service: RcService, onlyReadable: boolean): UseScriptListsResult {
+  const {t} = useLanguage()
   const [weapons, setWeapons] = useState<Weapon[]>([])
   const [classes, setClasses] = useState<Class[]>([])
   const [npcs, setNPCs] = useState<NPC[]>([])
@@ -31,7 +33,7 @@ export function useScriptLists(service: RcService, onlyReadable: boolean): UseSc
     setError(null)
     try {
       const lists = await service.getScriptLists(onlyReadable)
-      if (!lists) throw new Error("The server returned no script lists")
+      if (!lists) throw new Error(t("scripts.noLists"))
       // Keep malformed entries for the manager's disabled fallback row. The
       // backend already filters them before any NC request; retaining them
       // here makes a stale/native cache entry visible without making it
@@ -47,7 +49,7 @@ export function useScriptLists(service: RcService, onlyReadable: boolean): UseSc
     } finally {
       setLoading(false)
     }
-  }, [onlyReadable, service])
+  }, [onlyReadable, service, t])
 
   useEffect(() => {
     void refresh()
