@@ -48,3 +48,20 @@ func TestReadAndRecoverRestoresValidBackup(t *testing.T) {
 		t.Fatalf("restored primary = %q, want %q", primary, first)
 	}
 }
+
+func TestAtomicReplaceFileDoesNotCreateBackupCopy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	if err := os.WriteFile(path, []byte("old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := AtomicReplaceFile(path, []byte("new\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "new\n" {
+		t.Fatalf("replaced data: %v %q", err, data)
+	}
+	if _, err := os.Stat(path + ".bak"); !os.IsNotExist(err) {
+		t.Fatalf("unexpected backup copy: %v", err)
+	}
+}

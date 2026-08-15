@@ -142,6 +142,97 @@ func (s *Store) Read(id string) (Backup, []byte, error) {
 	return meta, content, nil
 }
 
+// Delete removes one local backup and returns its metadata. The identifier is
+// validated before it is used to construct either filesystem path.
+func (s *Store) Delete(id string) (Backup, error) {
+	if s == nil {
+		return Backup{}, errors.New("backup store is unavailable")
+	}
+	if !validID(id) {
+		return Backup{}, errors.New("invalid backup id")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.deleteLocked(id)
+}
+
+// PruneOlderThan removes backups whose metadata timestamp is before cutoff.
+// Invalid metadata is skipped so automatic cleanup never deletes a file based
+// on an untrusted or malformed record.
+func (s *Store) PruneOlderThan(cutoff time.Time) (int, error) {
+	if s == nil {
+		return 0, errors.New("backup store is unavailable")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	files, err := os.ReadDir(s.root)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("list backups for cleanup: %w", err)
+	}
+
+	removed := 0
+	var cleanupErrs []error
+	for _, file := range files {
+		if file.IsDir() || !strings.HasSuffix(file.Name(), ".meta.json") {
+			continue
+		}
+		id := strings.TrimSuffix(file.Name(), ".meta.json")
+		if !validID(id) {
+			continue
+		}
+		metaBytes, readErr := os.ReadFile(filepath.Join(s.root, file.Name()))
+		if readErr != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("read backup metadata %q: %w", id, readErr))
+			continue
+		}
+		var meta Backup
+		if json.Unmarshal(metaBytes, &meta) != nil || !validID(meta.ID) || meta.ID != id {
+			continue
+		}
+		if meta.Timestamp <= 0 || !time.UnixMilli(meta.Timestamp).Before(cutoff) {
+			continue
+		}
+		if _, deleteErr := s.deleteLocked(id); deleteErr != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("delete backup %q: %w", id, deleteErr))
+			continue
+		}
+		removed++
+	}
+	return removed, errors.Join(cleanupErrs...)
+}
+
+func (s *Store) deleteLocked(id string) (Backup, error) {
+	metaPath := filepath.Join(s.root, id+".meta.json")
+	metaBytes, err := os.ReadFile(metaPath)
+	if err != nil {
+		return Backup{}, fmt.Errorf("read backup metadata: %w", err)
+	}
+	var meta Backup
+	if err := json.Unmarshal(metaBytes, &meta); err != nil {
+		return Backup{}, fmt.Errorf("decode backup metadata: %w", err)
+	}
+	if !validID(meta.ID) || meta.ID != id {
+		return Backup{}, errors.New("backup metadata id mismatch")
+	}
+
+	var deleteErrs []error
+	for _, path := range []string{filepath.Join(s.root, id+".data"), metaPath} {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			deleteErrs = append(deleteErrs, fmt.Errorf("remove %q: %w", filepath.Base(path), err))
+		}
+	}
+	if err := errors.Join(deleteErrs...); err != nil {
+		return meta, err
+	}
+	return meta, nil
+}
+
 func validID(id string) bool {
 	return id != "" && filepath.Base(id) == id && !strings.Contains(id, "..") && !strings.ContainsAny(id, `/\\`)
 }

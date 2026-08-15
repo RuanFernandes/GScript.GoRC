@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"graal-rc/internal/fileutil"
 )
 
 const defaultLimit = 200
@@ -135,4 +137,62 @@ func (s *Store) Clear() error {
 		return fmt.Errorf("clear audit log: %w", err)
 	}
 	return nil
+}
+
+// PruneOlderThan removes entries whose timestamp is before cutoff. Entries
+// without a timestamp and malformed lines are retained so cleanup cannot turn
+// an otherwise recoverable local log into a data-loss event.
+func (s *Store) PruneOlderThan(cutoff time.Time) (int, error) {
+	if s == nil {
+		return 0, errors.New("audit store is unavailable")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	f, err := os.Open(s.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("open audit log for cleanup: %w", err)
+	}
+
+	lines := make([][]byte, 0)
+	removed := 0
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 4096), 1<<20)
+	for scanner.Scan() {
+		line := append([]byte(nil), scanner.Bytes()...)
+		var entry Entry
+		if json.Unmarshal(line, &entry) != nil || entry.ID == "" {
+			lines = append(lines, line)
+			continue
+		}
+		if entry.Timestamp > 0 && time.UnixMilli(entry.Timestamp).Before(cutoff) {
+			removed++
+			continue
+		}
+		lines = append(lines, line)
+	}
+	if scanErr := scanner.Err(); scanErr != nil {
+		_ = f.Close()
+		return 0, fmt.Errorf("read audit log for cleanup: %w", scanErr)
+	}
+	if err := f.Close(); err != nil {
+		return 0, fmt.Errorf("close audit log for cleanup: %w", err)
+	}
+	if removed == 0 {
+		return 0, nil
+	}
+
+	data := make([]byte, 0, len(lines)*80)
+	for _, line := range lines {
+		data = append(data, line...)
+		data = append(data, '\n')
+	}
+	if err := fileutil.AtomicReplaceFile(s.path, data, 0o600); err != nil {
+		return 0, fmt.Errorf("replace audit log during cleanup: %w", err)
+	}
+	return removed, nil
 }

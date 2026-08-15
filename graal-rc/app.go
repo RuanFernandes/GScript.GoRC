@@ -121,6 +121,7 @@ type App struct {
 	plugins        *pluginlib.Manager
 	audit          *auditlib.Store
 	backups        *deploylib.Store
+	retention      *changeRetentionStore
 
 	languageMu sync.Mutex
 	language   string
@@ -178,8 +179,8 @@ func NewApp() *App {
 	if pluginErr != nil {
 		log.Printf("plugins: %v", pluginErr)
 	}
-	auditStore, backupStore := newLocalChangeStores()
-	return &App{
+	auditStore, backupStore, retentionStore := newLocalChangeStores()
+	app := &App{
 		sessions:              connection.NewService(),
 		vault:                 vault,
 		editorWindows:         map[string]*application.WebviewWindow{},
@@ -201,7 +202,17 @@ func NewApp() *App {
 		plugins:               pluginManager,
 		audit:                 auditStore,
 		backups:               backupStore,
+		retention:             retentionStore,
 	}
+	if retentionStore != nil {
+		settings, retentionErr := retentionStore.Load()
+		if retentionErr != nil {
+			log.Printf("change retention: %v", retentionErr)
+		} else if cleanupErr := app.cleanupExpiredChangeData(settings); cleanupErr != nil {
+			log.Printf("change retention cleanup: %v", cleanupErr)
+		}
+	}
+	return app
 }
 
 // attach wires the v3 application handle and the event emitter (grclib

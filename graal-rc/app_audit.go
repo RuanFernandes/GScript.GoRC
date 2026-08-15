@@ -19,11 +19,11 @@ import (
 type AuditEntry = auditlib.Entry
 type DeploymentBackup = deploylib.Backup
 
-func newLocalChangeStores() (*auditlib.Store, *deploylib.Store) {
+func newLocalChangeStores() (*auditlib.Store, *deploylib.Store, *changeRetentionStore) {
 	configDir, err := os.UserConfigDir()
 	if err != nil {
 		log.Printf("change history: %v", err)
-		return nil, nil
+		return nil, nil, nil
 	}
 	root := filepath.Join(configDir, "graal-rc")
 	var auditStore *auditlib.Store
@@ -38,7 +38,13 @@ func newLocalChangeStores() (*auditlib.Store, *deploylib.Store) {
 	} else {
 		backupStore = store
 	}
-	return auditStore, backupStore
+	var retentionStore *changeRetentionStore
+	if store, err := newChangeRetentionStore(filepath.Join(root, "retention.json")); err != nil {
+		log.Printf("retention store: %v", err)
+	} else {
+		retentionStore = store
+	}
+	return auditStore, backupStore, retentionStore
 }
 
 func (a *App) recordAudit(action, resource, target, outcome, detail string) {
@@ -58,9 +64,7 @@ func (a *App) recordAudit(action, resource, target, outcome, detail string) {
 		log.Printf("audit %s %s: %v", action, target, err)
 		return
 	}
-	if a.app != nil {
-		a.app.Event.Emit("rc:auditChanged")
-	}
+	a.emitChangeHistoryChanged()
 }
 
 func (a *App) saveDeploymentBackup(resource, target string, content []byte, hasPrevious bool) (DeploymentBackup, bool, error) {
@@ -143,6 +147,15 @@ func (a *App) GetAuditEntries(limit int) ([]AuditEntry, error) {
 	if a == nil || a.audit == nil {
 		return []AuditEntry{}, nil
 	}
+	if a.retention != nil {
+		if settings, err := a.retention.Load(); err == nil {
+			if cleanupErr := a.cleanupExpiredChangeData(settings); cleanupErr != nil {
+				log.Printf("change retention cleanup: %v", cleanupErr)
+			}
+		} else {
+			log.Printf("change retention: %v", err)
+		}
+	}
 	return a.audit.List(limit)
 }
 
@@ -153,9 +166,7 @@ func (a *App) ClearAuditEntries() error {
 	if err := a.audit.Clear(); err != nil {
 		return err
 	}
-	if a.app != nil {
-		a.app.Event.Emit("rc:auditChanged")
-	}
+	a.emitChangeHistoryChanged()
 	return nil
 }
 
@@ -163,7 +174,31 @@ func (a *App) GetDeploymentBackups(limit int) ([]DeploymentBackup, error) {
 	if a == nil || a.backups == nil {
 		return []DeploymentBackup{}, nil
 	}
+	if a.retention != nil {
+		if settings, err := a.retention.Load(); err == nil {
+			if cleanupErr := a.cleanupExpiredChangeData(settings); cleanupErr != nil {
+				log.Printf("change retention cleanup: %v", cleanupErr)
+			}
+		} else {
+			log.Printf("change retention: %v", err)
+		}
+	}
 	return a.backups.List(limit)
+}
+
+func (a *App) DeleteDeploymentBackup(backupID string) error {
+	if a == nil || a.backups == nil {
+		return errors.New("backup store is unavailable")
+	}
+	meta, err := a.backups.Delete(backupID)
+	if err != nil {
+		return err
+	}
+	a.recordAudit("delete", "backup", meta.Target, "success", "deleted backup "+meta.ID)
+	if a.audit == nil {
+		a.emitChangeHistoryChanged()
+	}
+	return nil
 }
 
 func (a *App) OpenDeploymentCenter() {
