@@ -4,6 +4,7 @@ import {loader as monacoLoader} from '@monaco-editor/react'
 import './index.css'
 import App from './App'
 import {Toaster} from '@/components/ui/sonner'
+import {useAppTheme} from '@/hooks/useAppTheme'
 
 monacoLoader.config({
   paths: {
@@ -15,9 +16,13 @@ const container = document.getElementById('root')
 
 const root = createRoot(container!)
 
+function FrontendRoot() {
+    useAppTheme()
+    return <><App/><Toaster position="bottom-right" /></>
+}
+
 root.render(
     <React.StrictMode>
-        <App/>
-        <Toaster position="bottom-right" />
+        <FrontendRoot/>
     </React.StrictMode>
 )

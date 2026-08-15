@@ -41,6 +41,8 @@ import type {
   MCPAgentStatus,
   MCPSetupResult,
   AuditEntry,
+  AppTheme,
+  AppThemeStore,
   DeploymentBackup,
   ChangeRetentionSettings,
 } from "@/types"
@@ -146,6 +148,10 @@ export interface RcService {
   listFonts(): Promise<string[] | null>
   getCodingSettings(): Promise<CodingSettings>
   setCodingSettings(theme: string, fontFamily: string, fontSize: number, tabSize: number): Promise<void>
+  getAppThemeStore(): Promise<AppThemeStore | null>
+  saveAppTheme(theme: AppTheme): Promise<void>
+  deleteAppTheme(key: string): Promise<void>
+  setActiveAppTheme(key: string): Promise<void>
   getCommandMacros(serverName: string): Promise<CommandMacroStore>
   setCommandMacros(serverName: string, macros: CommandMacro[]): Promise<void>
   saveCommandMacro(serverName: string, name: string, command: string, parameters: CommandMacroParameter[]): Promise<CommandMacro>
@@ -361,6 +367,10 @@ export const rcService: RcService = {
   listFonts: () => App.ListFonts(),
   getCodingSettings: () => App.GetCodingSettings(),
   setCodingSettings: (theme, fontFamily, fontSize, tabSize) => App.SetCodingSettings(theme, fontFamily, fontSize, tabSize),
+  getAppThemeStore: () => App.GetAppThemeStore(),
+  saveAppTheme: (theme) => App.SaveAppTheme(theme),
+  deleteAppTheme: (key) => App.DeleteAppTheme(key),
+  setActiveAppTheme: (key) => App.SetActiveAppTheme(key),
   getCommandMacros: async (serverName) => {
     const store = await App.GetCommandMacros(serverName)
     return {

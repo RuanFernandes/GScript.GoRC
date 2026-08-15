@@ -24,7 +24,7 @@ export function AppWindowFrame({title, children}: AppWindowFrameProps) {
   }
 
   return (
-    <div className="bg-background h-svh overflow-hidden">
+    <div className="app-window-shell bg-background h-svh overflow-hidden">
       <header
         className="bg-card/30 flex h-12 items-center border-b pl-4 select-none"
         style={{"--wails-draggable": "drag"} as React.CSSProperties}

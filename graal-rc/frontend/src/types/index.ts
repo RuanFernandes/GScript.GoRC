@@ -17,6 +17,8 @@ export type {
 } from "../../bindings/graal-rc/internal/sqlite/models"
 export type {
   CodingSettings,
+  AppTheme,
+  AppThemeStore,
   RemoteTheme,
   RemoteChangelog,
   UpdateInfo,

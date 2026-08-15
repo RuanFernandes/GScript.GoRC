@@ -4,7 +4,7 @@
 // ChatSettingsFields). Both persist to localStorage.
 import {useCallback, useEffect, useRef, useState} from "react"
 import {Events} from "@wailsio/runtime"
-import {BookOpen, Bot, Check, ChevronDown, Code2, FolderDown, Languages, MessageSquareText, Puzzle} from "lucide-react"
+import {BookOpen, Bot, Check, ChevronDown, Code2, FolderDown, Languages, MessageSquareText, Palette, Puzzle} from "lucide-react"
 
 import {Button} from "@/components/ui/button"
 import {Input} from "@/components/ui/input"
@@ -20,6 +20,7 @@ import {useLanguage, type Language} from "@/hooks/useLanguage"
 import {CustomThemeDialog, NewThemeButton, ThemePreview} from "@/components/features/settings/ThemePreview"
 import type {CustomTheme} from "@/types"
 import {MCPSection} from "@/components/features/settings/MCPSection"
+import {AppThemesSection} from "@/components/features/settings/AppThemesSection"
 
 export function SettingsWindowScreen() {
   const coding = useCodingSettings()
@@ -32,6 +33,9 @@ export function SettingsWindowScreen() {
         <TabsList aria-label={t("settings.sections")} className="h-auto w-48 shrink-0 flex-col items-stretch justify-start gap-1 rounded-none border-b-0 border-r bg-muted/20 p-3">
           <TabsTrigger value="coding" className="justify-start border-b-0 border-l-2 border-transparent px-3 data-[state=active]:border-primary data-[state=active]:bg-accent">
             <Code2 />{t("settings.coding")}
+          </TabsTrigger>
+          <TabsTrigger value="themes" className="justify-start border-b-0 border-l-2 border-transparent px-3 data-[state=active]:border-primary data-[state=active]:bg-accent">
+            <Palette />{t("settings.themes")}
           </TabsTrigger>
           <TabsTrigger value="chat" className="justify-start border-b-0 border-l-2 border-transparent px-3 data-[state=active]:border-primary data-[state=active]:bg-accent">
             <MessageSquareText />{t("settings.chat")}
@@ -59,6 +63,9 @@ export function SettingsWindowScreen() {
             onReset={coding.reset}
             t={t}
           />
+        </TabsContent>
+        <TabsContent value="themes" className="mt-0 min-h-0 flex-1 overflow-y-auto p-5 sm:p-6">
+          <AppThemesSection t={t} />
         </TabsContent>
         <TabsContent value="chat" className="mt-0 min-h-0 flex-1 overflow-y-auto p-5 sm:p-6">
           <ChatSection

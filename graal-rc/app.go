@@ -131,6 +131,7 @@ type App struct {
 
 	codingMu       sync.Mutex
 	codingSettings CodingSettings
+	appThemeMu     sync.Mutex
 
 	graalScriptLSP *graalscript.LanguageServer
 	plugins        *pluginlib.Manager
@@ -3175,6 +3176,34 @@ type CodingSettings struct {
 	TabSize    int    `json:"tabSize"`
 }
 
+// AppTheme contains the application surface colors. Monaco themes remain
+// separate because they control editor tokens rather than the RC chrome.
+type AppTheme struct {
+	Key    string            `json:"key"`
+	Name   string            `json:"name"`
+	Mode   string            `json:"mode"`
+	Colors map[string]string `json:"colors"`
+}
+
+// AppThemeStore is shared by every Wails window through the backend config
+// file and the rc:appTheme event.
+type AppThemeStore struct {
+	ActiveKey string     `json:"activeKey"`
+	Themes    []AppTheme `json:"themes"`
+}
+
+var appThemeColorKeys = map[string]struct{}{
+	"background": {}, "foreground": {}, "card": {}, "cardForeground": {},
+	"popover": {}, "popoverForeground": {}, "primary": {}, "primaryForeground": {},
+	"secondary": {}, "secondaryForeground": {}, "muted": {}, "mutedForeground": {},
+	"accent": {}, "accentForeground": {}, "destructive": {}, "destructiveForeground": {},
+	"border": {}, "windowBorder": {}, "input": {}, "ring": {}, "serverAccent": {},
+	"chart1": {}, "chart2": {}, "chart3": {}, "chart4": {}, "chart5": {},
+	"sidebar": {}, "sidebarForeground": {}, "sidebarPrimary": {},
+	"sidebarPrimaryForeground": {}, "sidebarAccent": {}, "sidebarAccentForeground": {},
+	"sidebarBorder": {}, "sidebarRing": {},
+}
+
 // GetLanguage returns the UI language persisted for this Windows user.
 func (a *App) GetLanguage() string {
 	a.languageMu.Lock()
@@ -3331,6 +3360,209 @@ func (a *App) SetCodingSettings(theme, fontFamily string, fontSize, tabSize int)
 	if a.app != nil {
 		a.app.Event.Emit("rc:codingSettings", string(b))
 	}
+	return nil
+}
+
+func appThemesPath() (string, error) {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "graal-rc", "app-themes.json"), nil
+}
+
+func normalizeAppTheme(theme AppTheme) AppTheme {
+	theme.Key = strings.TrimSpace(theme.Key)
+	theme.Name = strings.TrimSpace(theme.Name)
+	theme.Mode = strings.TrimSpace(theme.Mode)
+	if theme.Colors == nil {
+		theme.Colors = map[string]string{}
+	}
+	colors := make(map[string]string, len(theme.Colors))
+	for key, value := range theme.Colors {
+		colors[key] = strings.TrimSpace(value)
+	}
+	theme.Colors = colors
+	return theme
+}
+
+func isSafeAppThemeKey(key string) bool {
+	if key == "" || len(key) > 64 {
+		return false
+	}
+	for index, char := range key {
+		if index == 0 && !((char >= 'a' && char <= 'z') || (char >= '0' && char <= '9')) {
+			return false
+		}
+		if (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char == '-' || char == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func validateAppTheme(theme AppTheme) error {
+	if !isSafeAppThemeKey(theme.Key) {
+		return errors.New("theme key must contain only lowercase letters, numbers, '-' or '_'")
+	}
+	if theme.Name == "" || len(theme.Name) > 80 {
+		return errors.New("theme name is required and must be at most 80 characters")
+	}
+	if theme.Mode != "light" && theme.Mode != "dark" {
+		return fmt.Errorf("unsupported theme mode: %s", theme.Mode)
+	}
+	if len(theme.Colors) == 0 || len(theme.Colors) > len(appThemeColorKeys) {
+		return errors.New("theme must contain at least one supported color")
+	}
+	for key, value := range theme.Colors {
+		if _, ok := appThemeColorKeys[key]; !ok {
+			return fmt.Errorf("unsupported theme color: %s", key)
+		}
+		lowerValue := strings.ToLower(value)
+		if value == "" || len(value) > 160 || strings.ContainsAny(value, "{};") || strings.Contains(lowerValue, "url(") || strings.Contains(lowerValue, "expression(") || strings.Contains(lowerValue, "javascript:") {
+			return fmt.Errorf("invalid value for theme color: %s", key)
+		}
+	}
+	return nil
+}
+
+func (a *App) loadAppThemeStoreLocked() (AppThemeStore, error) {
+	path, err := appThemesPath()
+	if err != nil {
+		return AppThemeStore{}, err
+	}
+	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return AppThemeStore{Themes: []AppTheme{}}, nil
+	}
+	if err != nil {
+		return AppThemeStore{}, err
+	}
+	var store AppThemeStore
+	if err := json.Unmarshal(b, &store); err != nil {
+		return AppThemeStore{Themes: []AppTheme{}}, nil
+	}
+	validThemes := make([]AppTheme, 0, len(store.Themes))
+	for _, theme := range store.Themes {
+		theme = normalizeAppTheme(theme)
+		if validateAppTheme(theme) == nil {
+			validThemes = append(validThemes, theme)
+		}
+	}
+	store.Themes = validThemes
+	return store, nil
+}
+
+func persistAppThemeStoreLocked(store AppThemeStore) error {
+	path, err := appThemesPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(store, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, b, 0o644)
+}
+
+func (a *App) broadcastAppThemeStore(store AppThemeStore) {
+	if a.app == nil {
+		return
+	}
+	if payload, err := json.Marshal(store); err == nil {
+		a.app.Event.Emit("rc:appTheme", string(payload))
+	}
+}
+
+// GetAppThemeStore loads persisted custom themes and the active theme key.
+func (a *App) GetAppThemeStore() (AppThemeStore, error) {
+	a.appThemeMu.Lock()
+	defer a.appThemeMu.Unlock()
+	return a.loadAppThemeStoreLocked()
+}
+
+// SaveAppTheme creates or updates a user-defined application theme.
+func (a *App) SaveAppTheme(theme AppTheme) error {
+	theme = normalizeAppTheme(theme)
+	if err := validateAppTheme(theme); err != nil {
+		return err
+	}
+	a.appThemeMu.Lock()
+	store, err := a.loadAppThemeStoreLocked()
+	if err == nil {
+		found := false
+		for index := range store.Themes {
+			if store.Themes[index].Key == theme.Key {
+				store.Themes[index] = theme
+				found = true
+				break
+			}
+		}
+		if !found {
+			store.Themes = append(store.Themes, theme)
+		}
+	}
+	if err == nil {
+		err = persistAppThemeStoreLocked(store)
+	}
+	a.appThemeMu.Unlock()
+	if err != nil {
+		return err
+	}
+	a.broadcastAppThemeStore(store)
+	return nil
+}
+
+// SetActiveAppTheme selects a built-in or user-defined application theme.
+func (a *App) SetActiveAppTheme(key string) error {
+	key = strings.TrimSpace(key)
+	if key != "" && !isSafeAppThemeKey(key) {
+		return errors.New("invalid theme key")
+	}
+	a.appThemeMu.Lock()
+	store, err := a.loadAppThemeStoreLocked()
+	if err == nil {
+		store.ActiveKey = key
+		err = persistAppThemeStoreLocked(store)
+	}
+	a.appThemeMu.Unlock()
+	if err != nil {
+		return err
+	}
+	a.broadcastAppThemeStore(store)
+	return nil
+}
+
+// DeleteAppTheme removes a user-defined application theme.
+func (a *App) DeleteAppTheme(key string) error {
+	key = strings.TrimSpace(key)
+	if !isSafeAppThemeKey(key) {
+		return errors.New("invalid theme key")
+	}
+	a.appThemeMu.Lock()
+	store, err := a.loadAppThemeStoreLocked()
+	if err == nil {
+		filtered := store.Themes[:0]
+		for _, theme := range store.Themes {
+			if theme.Key != key {
+				filtered = append(filtered, theme)
+			}
+		}
+		store.Themes = filtered
+		if store.ActiveKey == key {
+			store.ActiveKey = ""
+		}
+		err = persistAppThemeStoreLocked(store)
+	}
+	a.appThemeMu.Unlock()
+	if err != nil {
+		return err
+	}
+	a.broadcastAppThemeStore(store)
 	return nil
 }
 

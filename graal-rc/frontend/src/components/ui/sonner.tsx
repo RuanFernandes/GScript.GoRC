@@ -1,14 +1,9 @@
-import {useEffect} from "react"
 import {Toaster as Sonner, type ToasterProps} from "sonner"
 
 const Toaster = ({...props}: ToasterProps) => {
-  useEffect(() => {
-    document.documentElement.classList.add("dark")
-  }, [])
-
   return (
     <Sonner
-      theme="dark"
+      theme="system"
       richColors
       className="toaster group"
       style={
