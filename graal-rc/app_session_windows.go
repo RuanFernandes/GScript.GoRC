@@ -39,6 +39,14 @@ func (a *App) closeSessionWindows() {
 	a.playerListWindow = nil
 	a.playerListMu.Unlock()
 
+	a.pmWindowMu.Lock()
+	for playerID, window := range a.pmWindows {
+		add(window)
+		delete(a.pmWindows, playerID)
+	}
+	a.pmWindows = make(map[int]*application.WebviewWindow)
+	a.pmWindowMu.Unlock()
+
 	a.scriptMgrMu.Lock()
 	add(a.scriptMgrWindow)
 	a.scriptMgrWindow = nil

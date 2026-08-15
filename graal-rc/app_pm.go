@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -26,6 +27,62 @@ type PMState struct {
 	UnreadTotal   int              `json:"unreadTotal"`
 }
 
+// normalizePMText decodes the comma-text representation used by the Graal
+// protocol for multiline PMs. Depending on the native library version, the
+// payload can arrive as a JSON string array or as the equivalent unwrapped
+// comma-text value, for example: `"Oi","Linha 2","Linha3",`.
+//
+// Keeping this normalization at the application boundary makes the PM state,
+// event stream and log output consistent even when an older native DLL is
+// still installed next to the executable.
+func normalizePMText(text string) string {
+	text = strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\r", "\n"))
+	if text == "" {
+		return ""
+	}
+
+	if lines, ok := decodePMStringArray(text); ok {
+		return strings.TrimSpace(strings.Join(lines, "\n"))
+	}
+	return text
+}
+
+func decodePMStringArray(text string) ([]string, bool) {
+	trimmed := strings.TrimSpace(text)
+	if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+		var lines []string
+		if err := json.Unmarshal([]byte(trimmed), &lines); err == nil {
+			return lines, true
+		}
+	}
+
+	// The native protocol's comma-text format has a trailing separator. The
+	// csv reader handles Graal's doubled-quote escaping and preserves commas
+	// inside a quoted line.
+	if !strings.HasPrefix(trimmed, `"`) {
+		return nil, false
+	}
+	hasTrailingSeparator := strings.HasSuffix(trimmed, ",")
+	if !hasTrailingSeparator && !strings.Contains(trimmed, `",`) {
+		// A message such as `"Oi"` may already be decoded user text. Only
+		// treat it as comma-text when there is an actual field separator.
+		return nil, false
+	}
+	trimmed = strings.TrimSpace(strings.TrimSuffix(trimmed, ","))
+	reader := csv.NewReader(strings.NewReader(trimmed))
+	reader.FieldsPerRecord = -1
+	records, err := reader.ReadAll()
+	if err != nil || len(records) != 1 || len(records[0]) == 0 {
+		return nil, false
+	}
+	for i := range records[0] {
+		// gtokenize escapes a literal backslash by doubling it. csv.Reader
+		// already resolves doubled quotes, so mirror the remaining escape here.
+		records[0][i] = strings.ReplaceAll(records[0][i], `\\`, `\`)
+	}
+	return records[0], true
+}
+
 func (a *App) hasUnreadPM() bool {
 	a.pmMu.RLock()
 	defer a.pmMu.RUnlock()
@@ -38,7 +95,7 @@ func (a *App) hasUnreadPM() bool {
 }
 
 func (a *App) recordIncomingPM(playerID int, account, nick, message string) {
-	message = strings.TrimSpace(message)
+	message = normalizePMText(message)
 	if message == "" || playerID < 0 {
 		return
 	}

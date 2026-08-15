@@ -2,6 +2,13 @@
 
 package main
 
-import "os/exec"
+import (
+	"errors"
+	"os/exec"
+)
 
 func configureDetachedUpdateCommand(_ *exec.Cmd) {}
+
+func launchDetachedUpdateHelper(_ string) error {
+	return errors.New("the Windows updater helper is unavailable on this platform")
+}

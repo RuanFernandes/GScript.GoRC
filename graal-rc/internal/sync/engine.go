@@ -254,6 +254,16 @@ func (e *Engine) ApplyConfig(cfg SyncConfig) {
 	e.emitStatus()
 }
 
+// MarkPermissionsReady adopts the permission snapshot loaded by the session
+// before the engine was created. This avoids issuing the same openrights
+// request again during the first bootstrap.
+func (e *Engine) MarkPermissionsReady() {
+	e.mu.Lock()
+	e.permissionsReady = true
+	e.permissionsError = ""
+	e.mu.Unlock()
+}
+
 func (e *Engine) SetPaused(until int64) {
 	e.mu.Lock()
 	e.cfg.PauseUntil = until
@@ -729,9 +739,6 @@ func (e *Engine) pollLocked(ctx context.Context, refreshRights bool) {
 	}
 	e.setNextSyncAt(e.now().Add(pollDuration(cfg)))
 	e.setProgress("Downloading", 0, 0, "")
-	if err := e.backend.RefreshWeapons(); err != nil {
-		log.Printf("[sync poll] refresh weapons failed: %v", err)
-	}
 	log.Printf("[sync poll] fetching readable scripts after openrights")
 	replies, err := e.fetchScripts(ctx, func(done, total int) {
 		e.setProgress("Downloading", done, total, "")
@@ -843,7 +850,9 @@ func (e *Engine) fetchScripts(ctx context.Context, progress func(done, total int
 			}
 		}
 		if refreshErr := e.backend.RefreshWeapons(); refreshErr != nil {
-			log.Printf("[sync fetch] refresh weapons attempt=%d/%d failed: %v", attempt, scriptListWarmupAttempts, refreshErr)
+			// Never continue with a partial cache: a classes/NPC-only snapshot
+			// would make reconciliation remove valid local weapons.
+			return replies, fmt.Errorf("refresh weapons attempt=%d/%d: %w", attempt, scriptListWarmupAttempts, refreshErr)
 		}
 		replies, err = e.backend.FetchAllScripts(ctx, e.backend.CanReadScript, progress)
 		if err != nil || len(replies) > 0 || attempt == scriptListWarmupAttempts {

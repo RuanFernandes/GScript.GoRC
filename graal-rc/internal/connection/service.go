@@ -65,10 +65,16 @@ type Service struct {
 	lastNCAttempt   time.Time  // last ConnectToNCServer attempt; throttles retries
 	lastNCKeepalive time.Time  // last silent NC keepalive (weapon-list ping)
 	ncRequestMu     sync.Mutex // serializes brief NC sends and synchronous mutations
-	emitMu          sync.RWMutex
-	emit            func(name string, data ...any)
-	chatMu          sync.RWMutex
-	chatHistory     []ChatLine
+	// weaponListGeneration advances only after grclib has rebuilt its complete
+	// weapon cache from a list response. Sync waits for the next generation
+	// before reading the cache, rather than racing the asynchronous NC packet.
+	weaponListMu         sync.Mutex
+	weaponListGeneration uint64
+	weaponListSignal     chan struct{}
+	emitMu               sync.RWMutex
+	emit                 func(name string, data ...any)
+	chatMu               sync.RWMutex
+	chatHistory          []ChatLine
 
 	// maxUpload is the latest server-reported max upload size (bytes), pushed via
 	// the MaxUploadSize callback. 0 means unknown. Guarded by mu.
@@ -167,6 +173,12 @@ type ScriptLists struct {
 	Weapons []rclib.Weapon `json:"weapons"`
 	Classes []rclib.Class  `json:"classes"`
 	NPCs    []rclib.NPC    `json:"npcs"`
+}
+
+type scriptFetchJob struct {
+	stype string
+	key   string
+	name  string
 }
 
 // AttrsData is the reply payload for an OpenAttrs request.
@@ -1277,8 +1289,12 @@ func (s *Service) connectToServer(ctx context.Context, index int) error {
 			s.emitEvent("rc:scriptReceived", scriptType, name, id, script)
 		},
 		WeaponChanged: func(name string) { s.emitEvent("rc:weaponsChanged", name) },
-		ClassChanged:  func(name string) { s.emitEvent("rc:classesChanged", name) },
-		NPCChanged:    func(id int) { s.emitEvent("rc:npcsChanged", id) },
+		WeaponListReceived: func(count int) {
+			s.markWeaponListReceived(count)
+			s.emitEvent("rc:weaponsChanged", count)
+		},
+		ClassChanged: func(name string) { s.emitEvent("rc:classesChanged", name) },
+		NPCChanged:   func(id int) { s.emitEvent("rc:npcsChanged", id) },
 		NPCFlags: func(id int, flags string) {
 			s.resolvePending(pendingKey("npcflags", strconv.Itoa(id)), rclib.ScriptReply{Type: "npcflags", ID: id, Script: flags})
 			s.emitEvent("rc:npcFlags", id, flags)
@@ -1608,6 +1624,9 @@ func (s *Service) SendPrivateMessage(playerID int, message string) error {
 	if err != nil {
 		return err
 	}
+	if err := validatePrivateMessage(message); err != nil {
+		return err
+	}
 	return rclib.SendPrivateMessage(h, playerID, message)
 }
 
@@ -1616,6 +1635,9 @@ func (s *Service) SendPrivateMessage(playerID int, message string) error {
 func (s *Service) SendMassPM(playerIDs []int, message string) error {
 	h, err := s.requireHandle()
 	if err != nil {
+		return err
+	}
+	if err := validatePrivateMessage(message); err != nil {
 		return err
 	}
 	return rclib.SendMassPM(h, playerIDs, message)
@@ -2406,10 +2428,7 @@ func (s *Service) FetchAllScripts(ctx context.Context, allowed func(scriptType, 
 	}
 	log.Printf("[sync fetch] script lists received weapons=%d classes=%d npcs=%d", len(weapons), len(classes), len(npcs))
 
-	type job struct {
-		stype, key, name string
-	}
-	var jobs []job
+	var jobs []scriptFetchJob
 	skipped := 0
 	for _, w := range weapons {
 		if !rclib.IsUsableScriptName(w.Name) {
@@ -2418,7 +2437,7 @@ func (s *Service) FetchAllScripts(ctx context.Context, allowed func(scriptType, 
 			continue
 		}
 		if allowed == nil || allowed("weapon", w.Name) {
-			jobs = append(jobs, job{"weapon", w.Name, w.Name})
+			jobs = append(jobs, scriptFetchJob{stype: "weapon", key: w.Name, name: w.Name})
 		} else {
 			skipped++
 		}
@@ -2430,7 +2449,7 @@ func (s *Service) FetchAllScripts(ctx context.Context, allowed func(scriptType, 
 			continue
 		}
 		if allowed == nil || allowed("class", c.Name) {
-			jobs = append(jobs, job{"class", c.Name, c.Name})
+			jobs = append(jobs, scriptFetchJob{stype: "class", key: c.Name, name: c.Name})
 		} else {
 			skipped++
 		}
@@ -2442,7 +2461,7 @@ func (s *Service) FetchAllScripts(ctx context.Context, allowed func(scriptType, 
 			continue
 		}
 		if allowed == nil || allowed("npc", n.Name) {
-			jobs = append(jobs, job{"npc", strconv.Itoa(n.ID), n.Name})
+			jobs = append(jobs, scriptFetchJob{stype: "npc", key: strconv.Itoa(n.ID), name: n.Name})
 		} else {
 			skipped++
 		}
@@ -2450,42 +2469,88 @@ func (s *Service) FetchAllScripts(ctx context.Context, allowed func(scriptType, 
 	total := len(jobs)
 	log.Printf("[sync fetch] permission filter kept=%d skipped=%d", total, skipped)
 
+	return s.fetchScriptJobs(ctx, jobs, progress)
+}
+
+// fetchScriptJobs processes a bulk script fetch with a fixed number of
+// workers. Keeping the job queue bounded is important here: a server can
+// legitimately expose thousands of scripts, and creating one goroutine per
+// script would retain a large amount of stack and scheduler state while the
+// workers wait on the NC request limit.
+func (s *Service) fetchScriptJobs(ctx context.Context, jobs []scriptFetchJob, progress func(done, total int)) ([]rclib.ScriptReply, error) {
+	return runScriptFetchJobs(ctx, jobs, ncFetchConcurrency, func(ctx context.Context, job scriptFetchJob) (rclib.ScriptReply, error) {
+		return s.openScriptContext(ctx, job.stype, job.key, job.name)
+	}, progress)
+}
+
+func runScriptFetchJobs(ctx context.Context, jobs []scriptFetchJob, workerCount int, fetch func(context.Context, scriptFetchJob) (rclib.ScriptReply, error), progress func(done, total int)) ([]rclib.ScriptReply, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	total := len(jobs)
 	out := make([]rclib.ScriptReply, 0, total)
+	if total == 0 {
+		return out, ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return out, err
+	}
+
+	if workerCount < 1 {
+		workerCount = 1
+	}
+	if workerCount > total {
+		workerCount = total
+	}
+	jobCh := make(chan scriptFetchJob)
 	var outMu sync.Mutex
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, ncFetchConcurrency)
 	var done int32
+	wg.Add(workerCount)
+	for i := 0; i < workerCount; i++ {
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case j, ok := <-jobCh:
+					if !ok {
+						return
+					}
+					r, err := fetch(ctx, j)
+					if err == nil {
+						// Some NC callbacks return only the NPC id. Keep the
+						// display name from the cached NPC list so local sync
+						// never falls back to an ID-based filename.
+						if r.Type == "npc" && r.Name == "" {
+							r.Name = j.name
+						}
+						outMu.Lock()
+						out = append(out, r)
+						outMu.Unlock()
+					} else {
+						log.Printf("sync fetch %s:%s failed: %v", j.stype, j.key, err)
+					}
+					if progress != nil {
+						progress(int(atomic.AddInt32(&done, 1)), total)
+					}
+				}
+			}
+		}()
+	}
+
 	for _, j := range jobs {
+		select {
+		case <-ctx.Done():
+			break
+		case jobCh <- j:
+		}
 		if ctx.Err() != nil {
 			break
 		}
-		wg.Add(1)
-		go func(j job) {
-			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-			case <-ctx.Done():
-				return
-			}
-			defer func() { <-sem }()
-			if r, err := s.openScriptContext(ctx, j.stype, j.key, j.name); err == nil {
-				// Some NC callbacks return only the NPC id. Keep the display
-				// name from the cached NPC list so local sync never falls back
-				// to an ID-based filename.
-				if r.Type == "npc" && r.Name == "" {
-					r.Name = j.name
-				}
-				outMu.Lock()
-				out = append(out, r)
-				outMu.Unlock()
-			} else {
-				log.Printf("sync fetch %s:%s failed: %v", j.stype, j.key, err)
-			}
-			if progress != nil {
-				progress(int(atomic.AddInt32(&done, 1)), total)
-			}
-		}(j)
 	}
+	close(jobCh)
 	wg.Wait()
 	return out, ctx.Err()
 }
@@ -2909,18 +2974,82 @@ func (s *Service) WarpNPC(id int, x, y float64, level string) error {
 	return rclib.WarpNPC(h, id, x, y, level)
 }
 
+const weaponListRefreshTimeout = 15 * time.Second
+
+// markWeaponListReceived records that the native weapon cache was rebuilt from
+// a complete list response and wakes callers waiting for that response.
+func (s *Service) markWeaponListReceived(count int) {
+	s.weaponListMu.Lock()
+	s.weaponListGeneration++
+	previousSignal := s.weaponListSignal
+	s.weaponListSignal = make(chan struct{})
+	generation := s.weaponListGeneration
+	s.weaponListMu.Unlock()
+
+	if previousSignal != nil {
+		close(previousSignal)
+	}
+	log.Printf("[connection] weapon list received count=%d generation=%d", count, generation)
+}
+
+// waitForWeaponList waits until a list response newer than generation has
+// rebuilt the native cache. The generation check avoids treating an older
+// callback as the response to a refresh that has not been issued yet.
+func (s *Service) waitForWeaponList(ctx context.Context, generation uint64) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, weaponListRefreshTimeout)
+	defer cancel()
+
+	for {
+		s.weaponListMu.Lock()
+		if s.weaponListGeneration > generation {
+			s.weaponListMu.Unlock()
+			return nil
+		}
+		signal := s.weaponListSignal
+		if signal == nil {
+			signal = make(chan struct{})
+			s.weaponListSignal = signal
+		}
+		s.weaponListMu.Unlock()
+
+		select {
+		case <-signal:
+		case <-waitCtx.Done():
+			return fmt.Errorf("waiting for weapon list: %w", waitCtx.Err())
+		}
+	}
+}
+
 // RefreshWeapons re-requests the weapon list via grclib's dedicated
-// rc_request_weapon_list primitive (the same call the reference C++ RC makes),
-// forcing the server to repopulate the cache and re-emit add events. Note:
-// grclib exposes NO equivalent for class/npc lists — those are maintained by
-// the server's live add/delete push packets (rc_on_class_added/deleted,
-// rc_on_npc_added/deleted), wired into the sync engine via HandleListChanged.
+// rc_request_weapon_list primitive (the same call the reference C++ RC makes)
+// and waits until rc_on_weapon_list_received confirms that the native cache is
+// complete. Reading GetWeapons before that callback can produce a partial
+// snapshot containing only classes and NPCs. Note: grclib exposes NO equivalent
+// for class/npc lists — those are maintained by the server's live add/delete
+// push packets (rc_on_class_added/deleted, rc_on_npc_added/deleted).
 func (s *Service) RefreshWeapons() error {
 	h, err := s.requireNC()
 	if err != nil {
 		return err
 	}
-	return rclib.RequestWeaponList(h)
+
+	s.weaponListMu.Lock()
+	generation := s.weaponListGeneration
+	if s.weaponListSignal == nil {
+		s.weaponListSignal = make(chan struct{})
+	}
+	s.weaponListMu.Unlock()
+
+	if err := rclib.RequestWeaponList(h); err != nil {
+		return err
+	}
+	if err := s.waitForWeaponList(context.Background(), generation); err != nil {
+		return err
+	}
+	return nil
 }
 
 // weaponListGetPacket is PLI_NC_WEAPONLISTGET (IEnums.h) — re-request the

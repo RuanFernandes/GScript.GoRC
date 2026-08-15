@@ -1,10 +1,13 @@
 package connection
 
 import (
+	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"graal-rc/internal/folderrights"
+	"graal-rc/rclib"
 )
 
 // snapshotLockedForTest is a test-only view of the joined set under the lock.
@@ -35,6 +38,78 @@ func TestApplyChannelDelta_LoginBurst(t *testing.T) {
 	// Duplicate Joined is idempotent: no snapshot.
 	if s.applyChannelDelta("#a", "* Joined #a") != nil {
 		t.Fatalf("duplicate Join should not emit snapshot")
+	}
+}
+
+func TestRunScriptFetchJobsUsesFixedWorkerPool(t *testing.T) {
+	const (
+		total       = 2048
+		workerCount = 4
+	)
+
+	jobs := make([]scriptFetchJob, total)
+	for i := range jobs {
+		jobs[i] = scriptFetchJob{stype: "weapon", key: string(rune(i)), name: "weapon"}
+	}
+
+	var active int32
+	var maxActive int32
+	var completed int32
+	replies, err := runScriptFetchJobs(context.Background(), jobs, workerCount, func(_ context.Context, job scriptFetchJob) (rclib.ScriptReply, error) {
+		current := atomic.AddInt32(&active, 1)
+		for {
+			previous := atomic.LoadInt32(&maxActive)
+			if current <= previous || atomic.CompareAndSwapInt32(&maxActive, previous, current) {
+				break
+			}
+		}
+		time.Sleep(time.Microsecond)
+		atomic.AddInt32(&active, -1)
+		atomic.AddInt32(&completed, 1)
+		return rclib.ScriptReply{Type: job.stype, Name: job.name}, nil
+	}, nil)
+	if err != nil {
+		t.Fatalf("runScriptFetchJobs returned error: %v", err)
+	}
+	if len(replies) != total {
+		t.Fatalf("replies = %d, want %d", len(replies), total)
+	}
+	if got := atomic.LoadInt32(&completed); got != total {
+		t.Fatalf("completed = %d, want %d", got, total)
+	}
+	if got := atomic.LoadInt32(&maxActive); got > workerCount {
+		t.Fatalf("max active workers = %d, want <= %d", got, workerCount)
+	}
+}
+
+func TestWaitForWeaponListRequiresNextGeneration(t *testing.T) {
+	s := NewService()
+	s.weaponListMu.Lock()
+	generation := s.weaponListGeneration
+	s.weaponListSignal = make(chan struct{})
+	s.weaponListMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		result <- s.waitForWeaponList(ctx, generation)
+	}()
+
+	select {
+	case err := <-result:
+		t.Fatalf("wait returned before a new list callback: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	s.markWeaponListReceived(3523)
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("wait returned error after list callback: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("wait did not return after weapon list callback")
 	}
 }
 

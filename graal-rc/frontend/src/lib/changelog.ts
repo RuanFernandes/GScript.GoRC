@@ -11,11 +11,22 @@ export interface ChangelogEntry {
 // the visible history from nullborne.com when the release service is reachable.
 const CHANGELOG_PT_BR: ChangelogEntry[] = [
   {
+    version: "3.1.5",
+    date: "15/08/2026",
+    title: "Updater Windows definitivo e versão visível",
+    summary: "Corrige o fluxo final do auto-update Windows e mostra a versão na tela de login.",
+    current: true,
+    changes: [
+      "O helper do auto-update Windows agora é iniciado pelo broker do Windows com elevação antes do RC fechar, aguarda o processo, instala a atualização e relança o aplicativo.",
+      "A tela de login agora mostra a versão atual do RC no título para facilitar a confirmação do build instalado.",
+    ],
+  },
+  {
     version: "3.1.4",
     date: "15/08/2026",
     title: "Frame customizada e tema NightOwl",
     summary: "Melhora a experiência das janelas de links e adiciona um tema dedicado para desenvolvimento GS2.",
-    current: true,
+    current: false,
     changes: [
       "Links abertos pelo RC Chat agora usam a mesma frame customizada, controles de janela e WebView interno das demais janelas do RC.",
       "Adicionado o tema NightOwl ao editor Monaco, com destaque alinhado aos tokens de sintaxe do GS2.",
@@ -166,8 +177,16 @@ const CHANGELOG_PT_BR: ChangelogEntry[] = [
 
 const CHANGELOG_EN: ChangelogEntry[] = [
   {
+    version: "3.1.5", date: "2026-08-15", title: "Definitive Windows updater and visible version",
+    summary: "Fixes the final Windows auto-update flow and shows the version on the login screen.", current: true,
+    changes: [
+      "The Windows automatic-update helper now starts through the Windows shell broker with elevation before the RC closes, waits for the process, installs the update and relaunches the application.",
+      "The login screen now shows the current RC version in its title to make the installed build easy to confirm.",
+    ],
+  },
+  {
     version: "3.1.4", date: "2026-08-15", title: "Custom window frame and NightOwl theme",
-    summary: "Improves link windows and adds a dedicated theme for GS2 development.", current: true,
+    summary: "Improves link windows and adds a dedicated theme for GS2 development.", current: false,
     changes: [
       "Links opened from RC Chat now use the same custom frame, window controls and internal WebView as the rest of the RC windows.",
       "Added the NightOwl theme to Monaco with highlighting aligned to GS2 syntax tokens.",
@@ -277,8 +296,16 @@ const CHANGELOG_EN: ChangelogEntry[] = [
 
 const CHANGELOG_ES: ChangelogEntry[] = [
   {
+    version: "3.1.5", date: "2026-08-15", title: "Actualizador definitivo de Windows y versión visible",
+    summary: "Corrige el flujo final de actualización automática de Windows y muestra la versión en la pantalla de inicio de sesión.", current: true,
+    changes: [
+      "El helper de actualización automática de Windows ahora se inicia mediante el broker del sistema con elevación antes de cerrar el RC, espera al proceso, instala la actualización y vuelve a abrir la aplicación.",
+      "La pantalla de inicio de sesión ahora muestra la versión actual del RC en el título para confirmar fácilmente el build instalado.",
+    ],
+  },
+  {
     version: "3.1.4", date: "2026-08-15", title: "Marco personalizada y tema NightOwl",
-    summary: "Mejora las ventanas de enlaces y añade un tema dedicado para el desarrollo GS2.", current: true,
+    summary: "Mejora las ventanas de enlaces y añade un tema dedicado para el desarrollo GS2.", current: false,
     changes: [
       "Los enlaces abiertos desde RC Chat ahora usan el mismo marco personalizado, controles de ventana y WebView interno que el resto de las ventanas del RC.",
       "Se añadió el tema NightOwl a Monaco, con resaltado alineado con los tokens de sintaxis de GS2.",

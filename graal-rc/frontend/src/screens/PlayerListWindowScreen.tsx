@@ -1,40 +1,37 @@
 // PlayerListWindowScreen is the content rendered in the external "Players"
 // window (opened via App.OpenPlayerList, URL "/#players"). It polls the shared
 // backend service for the live player cache — same data the main window sees —
-// renders a grouped avatar player list, and wires private messaging (single PM
-// thread per player, Mass PM, and Admin Message), mirroring the reference C++
-// client's TPlayerList. Inbound PMs arrive as rc:pm events on the uniform
-// rc:evt channel and feed the per-player thread + unread badge.
+// renders a grouped avatar player list, and wires private-message window
+// actions, Mass PM, and Admin Message, mirroring the reference C++ client's
+// TPlayerList. Inbound PMs arrive through the shared backend state and keep
+// their unread badge here while each conversation lives in its own window.
 import {useEffect, useMemo, useState} from "react"
 import {Events} from "@wailsio/runtime"
 import {Loader2, Megaphone, Search, Send, Users} from "lucide-react"
 import {toast} from "sonner"
 
 import {MessageComposeDialog} from "@/components/features/playerlist/MessageComposeDialog"
-import {PmDialog, type PmLine, type PmTarget} from "@/components/features/playerlist/PmDialog"
 import {PlayerInspector} from "@/components/features/playerlist/PlayerInspector"
 import {PlayerTable, type PlayerEditKind} from "@/components/features/playerlist/PlayerTable"
 import {Button} from "@/components/ui/button"
 import {Input} from "@/components/ui/input"
 import {ScrollArea} from "@/components/ui/scroll-area"
 import {usePlayers} from "@/hooks/usePlayers"
-import {useChatSettings} from "@/hooks/useChatSettings"
 import {rcService} from "@/services/rcService"
 import type {Player, SessionStatus} from "@/types"
 import {useLanguage} from "@/hooks/useLanguage"
 import {usePrivateMessages} from "@/hooks/usePrivateMessages"
+import {containsUnsafePrivateMessageMarkup} from "@/lib/privateMessage"
 
 export function PlayerListWindowScreen() {
   const {t} = useLanguage()
   const {players, loading} = usePlayers(rcService, true)
-  const chat = useChatSettings()
   const [query, setQuery] = useState("")
   const [selectedPlayerId, setSelectedPlayerId] = useState<number | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [canBanPlayers, setCanBanPlayers] = useState(false)
 
-  const {state: pmState, unreadById, markRead, recordOutgoing} = usePrivateMessages()
-  const [pmTarget, setPmTarget] = useState<PmTarget | null>(null)
+  const {unreadById} = usePrivateMessages()
   const [massPmOpen, setMassPmOpen] = useState(false)
   const [adminOpen, setAdminOpen] = useState(false)
 
@@ -66,20 +63,6 @@ export function PlayerListWindowScreen() {
     }
   }, [])
 
-  // Push PM-log config to the backend (same App process as the main window, but
-  // this window issues the AppendPmLog calls, so ensure the config is set).
-  useEffect(() => {
-    rcService.setPmLogConfig(chat.settings.pmLog, chat.settings.pmLogDir).catch(() => {})
-  }, [chat.settings.pmLog, chat.settings.pmLogDir])
-
-  // pmLogLine builds a timestamped log line for a PM direction.
-  const pmLogLine = (dir: "in" | "out", text: string) => {
-    const now = new Date()
-    const hh = String(now.getHours()).padStart(2, "0")
-    const mm = String(now.getMinutes()).padStart(2, "0")
-    return `[${hh}:${mm}] ${dir === "out" ? "->" : "<-"} ${text}`
-  }
-
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
     if (!q) return players
@@ -102,22 +85,10 @@ export function PlayerListWindowScreen() {
     if (selectedPlayerId !== null && !online.has(selectedPlayerId)) setSelectedPlayerId(null)
   }, [players, selectedPlayerId])
 
-  useEffect(() => {
-    const off = Events.On("rc:openPM", (e: {data: number}) => {
-      const player = players.find((p) => p.id === Number(e.data))
-      const conversation = pmState.conversations.find((c) => c.playerId === Number(e.data))
-      if (player) openPM(player)
-      else if (conversation) {
-        setPmTarget({id: conversation.playerId, account: conversation.account, nick: conversation.nick || conversation.account})
-        markRead(conversation.playerId)
-      }
-    })
-    return off
-  }, [players, pmState.conversations, markRead])
-
   const openPM = (player: Player) => {
-    setPmTarget({id: player.id, account: player.account, nick: player.nick || player.account})
-    markRead(player.id)
+    void rcService.openPlayerListPM(player.id).catch((err) => {
+      toast.error(t("player.actionFailed"), {description: err instanceof Error ? err.message : String(err)})
+    })
   }
 
   // Right-click admin actions: open the editor window for the row's (server-
@@ -174,21 +145,14 @@ export function PlayerListWindowScreen() {
     ? t("player.selectedCount", {count: selectedIds.size, suffix: selectedIds.size === 1 ? "" : "s"})
     : t("player.allPlayers")
 
-  const sendPM = async (message: string) => {
-    if (!pmTarget) return
-    try {
-      await rcService.sendPrivateMessage(pmTarget.id, message)
-      recordOutgoing(pmTarget.id, pmTarget.account, pmTarget.nick, message)
-      if (pmTarget.account) rcService.appendPmLog(pmTarget.account, pmLogLine("out", message)).catch(() => {})
-    } catch (err) {
-      toast.error(t("player.pmFailed"), {description: err instanceof Error ? err.message : String(err)})
-    }
-  }
-
   const sendMassPM = async (message: string) => {
     const ids = selectedRecipients.map((p) => p.id)
     if (ids.length === 0) {
       toast.error(t("player.noPlayersMessage"))
+      return
+    }
+    if (containsUnsafePrivateMessageMarkup(message)) {
+      toast.error(t("player.pmUnsafeContent"))
       return
     }
     try {
@@ -248,12 +212,6 @@ export function PlayerListWindowScreen() {
         <PlayerInspector player={selectedPlayer} canBanPlayers={canBanPlayers} onPM={openPM} onEdit={editPlayer} onClose={() => setSelectedPlayerId(null)} />
       </div>
 
-      <PmDialog
-        target={pmTarget}
-        lines={pmTarget ? (pmState.conversations.find((c) => c.playerId === pmTarget.id)?.lines ?? []).map((l) => ({dir: l.direction, text: l.text, ts: l.timestamp} as PmLine)) : []}
-        onClose={() => setPmTarget(null)}
-        onSend={sendPM}
-      />
       <MessageComposeDialog
         open={massPmOpen}
         title={t("player.massPm")}

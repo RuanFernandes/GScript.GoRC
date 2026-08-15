@@ -15,6 +15,7 @@ import {AccountSelectScreen} from "@/screens/AccountSelectScreen"
 import {AddAccountScreen} from "@/screens/AddAccountScreen"
 import {FileBrowserWindowScreen} from "@/screens/FileBrowserWindowScreen"
 import {PlayerListWindowScreen} from "@/screens/PlayerListWindowScreen"
+import {PmWindowScreen} from "@/screens/PmWindowScreen"
 import {RightsWindowScreen} from "@/screens/RightsWindowScreen"
 import {AttrsWindowScreen} from "@/screens/AttrsWindowScreen"
 import {BanWindowScreen} from "@/screens/BanWindowScreen"
@@ -38,6 +39,7 @@ import {PluginManagerWindowScreen} from "@/screens/PluginManagerWindowScreen"
 import {PluginDocumentationWindowScreen} from "@/screens/PluginDocumentationWindowScreen"
 import {PluginUIWindowScreen} from "@/screens/PluginUIWindowScreen"
 import {ChatLinkWindowScreen} from "@/screens/ChatLinkWindowScreen"
+import {APP_VERSION} from "@/lib/appVersion"
 
 type PendingConfirm =
   | {kind: "login"; account: string}
@@ -55,11 +57,23 @@ function Shell() {
   const [view, setView] = useState<AppView>("select")
   const [pending, setPending] = useState<PendingConfirm>(null)
   const [confirmBusy, setConfirmBusy] = useState(false)
+  const [appVersion, setAppVersion] = useState(APP_VERSION)
   const [sessionNickname, setSessionNickname] = useState(() => {
     if (typeof window === "undefined") return ""
     return window.localStorage.getItem(NICKNAME_STORAGE_KEY) ?? ""
   })
   const updateCheckStarted = useRef(false)
+
+  useEffect(() => {
+    let active = true
+    void rcService.getAppVersion().then((version) => {
+      const normalized = version?.trim()
+      if (active && normalized) setAppVersion(normalized)
+    }).catch(() => {
+      // The embedded frontend version remains a safe fallback while bindings load.
+    })
+    return () => { active = false }
+  }, [])
 
   useEffect(() => {
     if (!language.configured) return
@@ -280,6 +294,7 @@ function Shell() {
         accounts={accounts.accounts}
         loading={accounts.loading}
         busy={session.busy}
+        version={appVersion}
         nickname={sessionNickname}
         onNicknameChange={setSessionNickname}
         onSelect={(accountName, nickname) => {
@@ -346,8 +361,10 @@ function App() {
   const {t} = useLanguage()
   if (typeof window === "undefined") return <Shell />
   const hash = window.location.hash
-  const route = hash.startsWith("#players")
-    ? {title: t("window.playerList"), content: <PlayerListWindowScreen />}
+  const route = hash.startsWith("#pm")
+    ? {title: t("window.privateMessage"), content: <PmWindowScreen />}
+    : hash.startsWith("#players")
+      ? {title: t("window.playerList"), content: <PlayerListWindowScreen />}
     : hash.startsWith("#chat-link")
       ? {title: t("window.chatLink"), content: <ChatLinkWindowScreen />}
     : hash.startsWith("#rights")

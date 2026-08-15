@@ -67,6 +67,20 @@ func TestBootstrapRetryReusesLoadedPermissions(t *testing.T) {
 	}
 }
 
+func TestBootstrapReusesSessionPermissions(t *testing.T) {
+	backend := &permissionBackendStub{fetchReplies: []rclib.ScriptReply{{Type: "weapon", Name: "Test", Script: ""}}}
+	engine := NewEngine(backend, "TestServer", nil)
+	engine.ApplyConfig(SyncConfig{Enabled: true, OutputDir: t.TempDir(), PollingMinutes: 1})
+	engine.MarkPermissionsReady()
+
+	if err := engine.bootstrap(context.Background(), engine.config().OutputDir); err != nil {
+		t.Fatalf("bootstrap with a loaded session snapshot failed: %v", err)
+	}
+	if backend.permissionRefreshes != 0 {
+		t.Fatalf("permission refreshes = %d, want 0 when the session snapshot is reused", backend.permissionRefreshes)
+	}
+}
+
 func TestReconcileRefreshesSelfPermissionsEveryPoll(t *testing.T) {
 	backend := &permissionBackendStub{fetchReplies: []rclib.ScriptReply{{Type: "weapon", Name: "Test", Script: ""}}}
 	engine := NewEngine(backend, "TestServer", nil)

@@ -39,8 +39,8 @@ func TestDownloadInstallerRejectsUntrustedRoutesBeforeNetworkAccess(t *testing.T
 }
 
 func TestAppVersionIsReleaseVersion(t *testing.T) {
-	if (&App{}).GetAppVersion() != "3.1.4" {
-		t.Fatalf("GetAppVersion() = %q, want 3.1.4", (&App{}).GetAppVersion())
+	if (&App{}).GetAppVersion() != "3.1.5" {
+		t.Fatalf("GetAppVersion() = %q, want 3.1.5", (&App{}).GetAppVersion())
 	}
 }
 
@@ -163,9 +163,12 @@ func TestWindowsUpdateScriptRelaunchesTheApplication(t *testing.T) {
 		"throw \"Timed out waiting for Nullborne RC (PID $parentPid) to exit.\"",
 		"$parentExited = $true",
 		"$installer = Start-Process -FilePath $installerPath -ArgumentList @('/S') -Verb RunAs -Wait -PassThru -WindowStyle Hidden",
+		"$updateSucceeded = $false",
+		"Write-UpdateLog 'Updater helper started.'",
+		"Installer did not complete successfully; keeping the downloaded files for diagnosis.",
 		"if (-not $parentExited)",
-		"Start-Process -FilePath $applicationPath -WorkingDirectory $workingDirectory -WindowStyle Normal",
-		"Set-Content -LiteralPath $logPath",
+		"Start-Process -FilePath $applicationPath -WorkingDirectory $workingDirectory -WindowStyle Normal -PassThru",
+		"Remove-Item -LiteralPath $logPath -Force -ErrorAction SilentlyContinue",
 		"Ruan''s",
 	} {
 		if !strings.Contains(script, fragment) {

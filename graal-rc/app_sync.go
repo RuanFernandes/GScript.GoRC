@@ -451,6 +451,9 @@ func (a *App) startSyncEngine() {
 		a.persistSyncPanic(srv, cfg, reason, at)
 	})
 	eng.SetPullRecorder(a.backupSyncScript, a.auditSyncPull)
+	if a.sessions != nil && a.sessions.Status().RightsReady {
+		eng.MarkPermissionsReady()
+	}
 
 	a.syncEngineMu.Lock()
 	a.syncEngine = eng

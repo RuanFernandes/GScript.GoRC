@@ -1,10 +1,10 @@
 {
 	"fixed": {
-		"file_version": "3.1.4"
+		"file_version": "3.1.5"
 	},
 	"info": {
 		"0000": {
-			"ProductVersion": "3.1.4",
+			"ProductVersion": "3.1.5",
 			"CompanyName": "RuanFernandes",
 			"FileDescription": "Graal Remote Control client",
 			"LegalCopyright": "© 2026, RuanFernandes",

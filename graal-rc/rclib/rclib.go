@@ -296,15 +296,16 @@ var (
 	procUploadServerFlags    *proc
 
 	// Script/NC event callbacks.
-	procOnScriptReceived *proc
-	procOnWeaponAdded    *proc
-	procOnWeaponDeleted  *proc
-	procOnClassAdded     *proc
-	procOnClassDeleted   *proc
-	procOnNPCAdded       *proc
-	procOnNPCDeleted     *proc
-	procOnNPCFlags       *proc
-	procOnNPCAttributes  *proc
+	procOnScriptReceived     *proc
+	procOnWeaponAdded        *proc
+	procOnWeaponDeleted      *proc
+	procOnWeaponListReceived *proc
+	procOnClassAdded         *proc
+	procOnClassDeleted       *proc
+	procOnNPCAdded           *proc
+	procOnNPCDeleted         *proc
+	procOnNPCFlags           *proc
+	procOnNPCAttributes      *proc
 
 	// File browser (main server socket).
 	procFileBrowserStart       *proc
@@ -525,6 +526,7 @@ func registerAll(resolve func(name string) (*proc, error)) error {
 	procOnScriptReceived = get("rc_on_script_received")
 	procOnWeaponAdded = get("rc_on_weapon_added")
 	procOnWeaponDeleted = get("rc_on_weapon_deleted")
+	procOnWeaponListReceived = get("rc_on_weapon_list_received")
 	procOnClassAdded = get("rc_on_class_added")
 	procOnClassDeleted = get("rc_on_class_deleted")
 	procOnNPCAdded = get("rc_on_npc_added")
@@ -646,12 +648,13 @@ type EventCallbacks struct {
 	PrivateMessage func(playerID int, account, nick, message string)
 
 	// Script/NC callbacks (fired on the pump goroutine).
-	ScriptReceived func(scriptType, name string, id int, script string)
-	WeaponChanged  func(name string) // weapon added or deleted
-	ClassChanged   func(name string) // class added or deleted
-	NPCChanged     func(id int)      // npc added or deleted
-	NPCFlags       func(id int, flags string)
-	NPCAttributes  func(id int, attrs string)
+	ScriptReceived     func(scriptType, name string, id int, script string)
+	WeaponChanged      func(name string) // weapon added or deleted
+	WeaponListReceived func(count int)   // full weapon-list response completed
+	ClassChanged       func(name string) // class added or deleted
+	NPCChanged         func(id int)      // npc added or deleted
+	NPCFlags           func(id int, flags string)
+	NPCAttributes      func(id int, attrs string)
 
 	// File browser callbacks (main server socket). The folders/files callbacks
 	// only signal readiness with a count; the app snapshots via CopyFileBrowser*.
@@ -677,15 +680,16 @@ var (
 	cbServerData     = newCallback(serverDataEntry)
 	cbPrivateMessage = newCallback(privateMessageEntry)
 
-	cbScriptReceived = newCallback(scriptReceivedEntry)
-	cbWeaponAdded    = newCallback(weaponCacheChangedEntry)
-	cbWeaponDeleted  = newCallback(weaponCacheChangedEntry)
-	cbClassAdded     = newCallback(classCacheChangedEntry)
-	cbClassDeleted   = newCallback(classCacheChangedEntry)
-	cbNPCAdded       = newCallback(npcAddedEntry)
-	cbNPCDeleted     = newCallback(npcDeletedEntry)
-	cbNPCFlags       = newCallback(npcFlagsEntry)
-	cbNPCAttributes  = newCallback(npcAttributesEntry)
+	cbScriptReceived     = newCallback(scriptReceivedEntry)
+	cbWeaponAdded        = newCallback(weaponCacheChangedEntry)
+	cbWeaponDeleted      = newCallback(weaponCacheChangedEntry)
+	cbWeaponListReceived = newCallback(weaponListReceivedEntry)
+	cbClassAdded         = newCallback(classCacheChangedEntry)
+	cbClassDeleted       = newCallback(classCacheChangedEntry)
+	cbNPCAdded           = newCallback(npcAddedEntry)
+	cbNPCDeleted         = newCallback(npcDeletedEntry)
+	cbNPCFlags           = newCallback(npcFlagsEntry)
+	cbNPCAttributes      = newCallback(npcAttributesEntry)
 
 	cbFileBrowserFolders = newCallback(fileBrowserFoldersEntry)
 	cbFileBrowserFiles   = newCallback(fileBrowserFilesEntry)
@@ -799,6 +803,25 @@ func weaponCacheChangedEntry(name unsafe.Pointer, userData uintptr) uintptr {
 	fire(userData, func(c *EventCallbacks) {
 		if c.WeaponChanged != nil {
 			c.WeaponChanged(nm)
+		}
+	})
+	return 0
+}
+
+// weaponListReceivedEntry is the shim for RC_OnWeaponListReceived(count, user_data).
+// Unlike the add/delete callbacks, this fires after the native cache contains
+// the complete response to rc_request_weapon_list.
+func weaponListReceivedEntry(count, userData uintptr) uintptr {
+	defer safeRecover("on_weapon_list_received", userData)
+	weaponCount, err := nativeCount(count)
+	if err != nil {
+		recordCallbackFault(Handle(userData), fmt.Errorf("on_weapon_list_received: %w", err))
+		log.Printf("[rclib] on_weapon_list_received rejected count: %v", err)
+		return 0
+	}
+	fire(userData, func(c *EventCallbacks) {
+		if c.WeaponListReceived != nil {
+			c.WeaponListReceived(weaponCount)
 		}
 	})
 	return 0
@@ -1057,6 +1080,7 @@ func RegisterCallbacks(h Handle, cbs *EventCallbacks) (err error) {
 	procOnScriptReceived.Call(uintptr(h), cbScriptReceived, uintptr(h))
 	procOnWeaponAdded.Call(uintptr(h), cbWeaponAdded, uintptr(h))
 	procOnWeaponDeleted.Call(uintptr(h), cbWeaponDeleted, uintptr(h))
+	procOnWeaponListReceived.Call(uintptr(h), cbWeaponListReceived, uintptr(h))
 	procOnClassAdded.Call(uintptr(h), cbClassAdded, uintptr(h))
 	procOnClassDeleted.Call(uintptr(h), cbClassDeleted, uintptr(h))
 	procOnNPCAdded.Call(uintptr(h), cbNPCAdded, uintptr(h))
@@ -1104,6 +1128,7 @@ func UnregisterCallbacks(h Handle) (err error) {
 	procOnScriptReceived.Call(uintptr(h), 0, 0)
 	procOnWeaponAdded.Call(uintptr(h), 0, 0)
 	procOnWeaponDeleted.Call(uintptr(h), 0, 0)
+	procOnWeaponListReceived.Call(uintptr(h), 0, 0)
 	procOnClassAdded.Call(uintptr(h), 0, 0)
 	procOnClassDeleted.Call(uintptr(h), 0, 0)
 	procOnNPCAdded.Call(uintptr(h), 0, 0)
@@ -2180,8 +2205,8 @@ func SendNCPacket(h Handle, packetID int) error {
 
 // RequestWeaponList re-requests the full weapon list from the server (the
 // dedicated refresh primitive the reference C++ RC uses; equivalent to
-// SendNCPacket(PLI_NC_WEAPONLISTGET) but explicit). The list arrives via the
-// rc_on_weapon_added push packets, repopulating grclib's cache.
+// SendNCPacket(PLI_NC_WEAPONLISTGET) but explicit). The complete list is
+// signalled through rc_on_weapon_list_received after grclib's cache is rebuilt.
 func RequestWeaponList(h Handle) error {
 	if err := load(); err != nil {
 		return err

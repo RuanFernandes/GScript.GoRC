@@ -2,13 +2,18 @@
 param(
     [ValidateSet('amd64', '386')]
     [string]$Architecture,
-    [string]$OutputDirectory = ''
+    [string]$OutputDirectory = '',
+    [string]$Version = ''
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+if ($Version -ne '' -and $Version -notmatch '^\d+\.\d+\.\d+$') {
+    throw "Version '$Version' must contain exactly three numeric components."
+}
+
 if ($OutputDirectory -eq '') {
     $OutputDirectory = Join-Path $repositoryRoot (Join-Path 'ci-artifacts\windows' $Architecture)
 }
@@ -53,6 +58,16 @@ if ($hadSyso) {
     Copy-Item -LiteralPath $sysoPath -Destination $sysoBackup -Force
 }
 
+$sysoInfoPath = Join-Path $repositoryRoot 'build\windows\info.json'
+if ($Version -ne '') {
+    $testInfoPath = Join-Path $temporaryRoot 'info.json'
+    $testInfo = Get-Content -LiteralPath $sysoInfoPath -Raw | ConvertFrom-Json
+    $testInfo.fixed.file_version = $Version
+    $testInfo.info.'0000'.ProductVersion = $Version
+    $testInfo | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $testInfoPath -Encoding utf8
+    $sysoInfoPath = $testInfoPath
+}
+
 $buildModFile = ''
 if ($Architecture -eq '386') {
     # Wails alpha2.117 cannot compile for 386: its updater package passes a
@@ -80,9 +95,14 @@ try {
     $env:GOARCH = $Architecture
     $env:CGO_ENABLED = '0'
 
-    & $wails.Source generate syso -arch $Architecture -icon 'build/windows/icon.ico' -manifest 'build/windows/wails.exe.manifest' -info 'build/windows/info.json' -out $sysoPath
+    & $wails.Source generate syso -arch $Architecture -icon 'build/windows/icon.ico' -manifest 'build/windows/wails.exe.manifest' -info $sysoInfoPath -out $sysoPath
     if ($LASTEXITCODE -ne 0) {
         throw "wails3 generate syso failed with exit code $LASTEXITCODE"
+    }
+
+    $ldflags = '-w -s -H windowsgui'
+    if ($Version -ne '') {
+        $ldflags += " -X main.RCVersion=$Version"
     }
 
     $buildArguments = @(
@@ -91,7 +111,7 @@ try {
         '-tags', 'production',
         '-trimpath',
         '-buildvcs=false',
-        '-ldflags', '-w -s -H windowsgui',
+        '-ldflags', $ldflags,
         '-o', $binaryPath,
         '.'
     )

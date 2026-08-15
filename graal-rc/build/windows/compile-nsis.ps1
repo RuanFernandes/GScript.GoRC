@@ -26,7 +26,9 @@ param(
 
     [string]$ProjectPath,
 
-    [string]$MakensisPath = 'makensis'
+    [string]$MakensisPath = 'makensis',
+
+    [string]$ProductVersion = ''
 )
 
 Set-StrictMode -Version Latest
@@ -130,16 +132,27 @@ if ($null -eq $metadata) {
 
 $companyName = Get-RequiredMetadataValue -Metadata $metadata -Name 'CompanyName'
 $productName = Get-RequiredMetadataValue -Metadata $metadata -Name 'ProductName'
-$productVersion = Get-RequiredMetadataValue -Metadata $metadata -Name 'ProductVersion'
+$metadataProductVersion = Get-RequiredMetadataValue -Metadata $metadata -Name 'ProductVersion'
 $copyright = Get-RequiredMetadataValue -Metadata $metadata -Name 'LegalCopyright'
 
-if ($productVersion -notmatch '^\d+\.\d+\.\d+$') {
-    throw "Windows metadata ProductVersion '$productVersion' must contain exactly three numeric components for NSIS."
+if ($metadataProductVersion -notmatch '^\d+\.\d+\.\d+$') {
+    throw "Windows metadata ProductVersion '$metadataProductVersion' must contain exactly three numeric components for NSIS."
 }
 
 $fixedVersionProperty = $infoDocument.fixed.PSObject.Properties['file_version']
-if ($null -ne $fixedVersionProperty -and [string]$fixedVersionProperty.Value -ne $productVersion) {
-    throw "The generated Windows metadata contains conflicting versions: info.0000.ProductVersion='$productVersion', fixed.file_version='$($fixedVersionProperty.Value)'."
+if ($null -ne $fixedVersionProperty -and [string]$fixedVersionProperty.Value -ne $metadataProductVersion) {
+    throw "The generated Windows metadata contains conflicting versions: info.0000.ProductVersion='$metadataProductVersion', fixed.file_version='$($fixedVersionProperty.Value)'."
+}
+
+$productVersion = if ([string]::IsNullOrWhiteSpace($ProductVersion)) {
+    $metadataProductVersion
+}
+else {
+    $ProductVersion
+}
+
+if ($productVersion -notmatch '^\d+\.\d+\.\d+$') {
+    throw "ProductVersion '$productVersion' must contain exactly three numeric components for NSIS."
 }
 
 $resolvedMakensisPath = Resolve-Makensis -RequestedPath $MakensisPath

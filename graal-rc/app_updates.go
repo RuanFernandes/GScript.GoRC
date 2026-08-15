@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -20,13 +19,17 @@ import (
 )
 
 const (
-	RCVersion          = "3.1.4"
 	releaseAPIBaseURL  = "https://nullborne.com"
 	updateRequestLimit = 512 * 1024
 	maxInstallerBytes  = 512 * 1024 * 1024
 	updateParentWait   = 30 * time.Second
 	updateQuitWait     = 2 * time.Second
 )
+
+// RCVersion is a variable so local release builds can override the client
+// version through Go's -ldflags -X option without changing production source
+// metadata. Normal builds keep the checked-in release version.
+var RCVersion = "3.1.5"
 
 // UpdateInstaller describes the artifact advertised by the release service.
 // The checksum is verified before the executable is handed to the installer
@@ -508,28 +511,9 @@ func launchWindowsInstallerAfterExit(installerPath string) error {
 		return err
 	}
 
-	command := exec.Command(
-		"powershell.exe",
-		"-NoLogo",
-		"-NoProfile",
-		"-NonInteractive",
-		"-ExecutionPolicy",
-		"Bypass",
-		"-WindowStyle",
-		"Hidden",
-		"-File",
-		scriptPath,
-	)
-	command.Stdin = nil
-	command.Stdout = nil
-	command.Stderr = nil
-	configureDetachedUpdateCommand(command)
-	if err := command.Start(); err != nil {
+	if err := launchDetachedUpdateHelper(scriptPath); err != nil {
 		_ = os.Remove(scriptPath)
 		return err
-	}
-	if err := command.Process.Release(); err != nil {
-		log.Printf("automatic update helper process release failed: %v", err)
 	}
 	return nil
 }
@@ -546,6 +530,11 @@ func buildWindowsUpdateScript(parentPID, installerPath, applicationPath, logPath
 		fmt.Sprintf("$workingDirectory = %s", quotePowerShellLiteral(filepath.Dir(applicationPath))),
 		fmt.Sprintf("$logPath = %s", quotePowerShellLiteral(logPath)),
 		"$parentExited = $false",
+		"$updateSucceeded = $false",
+		"function Write-UpdateLog([string]$message) {",
+		"  try { Add-Content -LiteralPath $logPath -Value ((Get-Date -Format o) + ' ' + $message) -Encoding UTF8 } catch { }",
+		"}",
+		"Write-UpdateLog 'Updater helper started.'",
 		"try {",
 		fmt.Sprintf("  $waitDeadline = (Get-Date).AddSeconds(%d)", int(updateParentWait.Seconds())),
 		"  while (Get-Process -Id ([int]$parentPid) -ErrorAction SilentlyContinue) {",
@@ -555,40 +544,45 @@ func buildWindowsUpdateScript(parentPID, installerPath, applicationPath, logPath
 		"    Start-Sleep -Milliseconds 250",
 		"  }",
 		"  $parentExited = $true",
+		"  Write-UpdateLog 'RC process exited.'",
 		"  if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {",
 		"    throw \"The downloaded installer was not found.\"",
 		"  }",
+		"  Write-UpdateLog ('Starting installer: ' + $installerPath)",
 		// Release installers use the legacy machine-wide Program Files path so
 		// upgrades replace old installations instead of creating a second copy.
 		// RunAs is required because that path is protected by Windows/UAC.
 		"  $installer = Start-Process -FilePath $installerPath -ArgumentList @('/S') -Verb RunAs -Wait -PassThru -WindowStyle Hidden",
+		"  Write-UpdateLog ('Installer exited with code ' + $installer.ExitCode)",
 		"  if ($installer.ExitCode -ne 0) {",
 		"    throw \"The installer exited with code $($installer.ExitCode).\"",
 		"  }",
-		"  Remove-Item -LiteralPath $logPath -Force -ErrorAction SilentlyContinue",
+		"  $updateSucceeded = $true",
 		"} catch {",
-		"  try {",
-		"    Set-Content -LiteralPath $logPath -Value (\"Nullborne RC update failed: \" + $_.Exception.Message) -Encoding UTF8",
-		"  } catch {",
-		"  }",
-		"} finally {",
-		"  Remove-Item -LiteralPath $installerPath -Force -ErrorAction SilentlyContinue",
+		"  Write-UpdateLog (\"Update failed: \" + $_.Exception.Message)",
 		"}",
 		"if (-not $parentExited) {",
-		"  Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue",
+		"  Write-UpdateLog 'Updater stopped because the RC process did not exit.'",
+		"  exit 1",
+		"}",
+		"if (-not $updateSucceeded) {",
+		"  Write-UpdateLog 'Installer did not complete successfully; keeping the downloaded files for diagnosis.'",
 		"  exit 1",
 		"}",
 		"try {",
 		"  if (Test-Path -LiteralPath $applicationPath -PathType Leaf) {",
-		"    Start-Process -FilePath $applicationPath -WorkingDirectory $workingDirectory -WindowStyle Normal",
+		"    $relaunch = Start-Process -FilePath $applicationPath -WorkingDirectory $workingDirectory -WindowStyle Normal -PassThru",
+		"    Write-UpdateLog ('RC relaunch requested with PID ' + $relaunch.Id)",
+		"  } else {",
+		"    throw \"The installed RC executable was not found: $applicationPath\"",
 		"  }",
 		"} catch {",
-		"  try {",
-		"    Add-Content -LiteralPath $logPath -Value (\"Could not relaunch Nullborne RC: \" + $_.Exception.Message) -Encoding UTF8",
-		"  } catch {",
-		"  }",
+		"  Write-UpdateLog (\"Could not relaunch Nullborne RC: \" + $_.Exception.Message)",
+		"  exit 1",
 		"}",
+		"Remove-Item -LiteralPath $installerPath -Force -ErrorAction SilentlyContinue",
 		"Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue",
+		"Remove-Item -LiteralPath $logPath -Force -ErrorAction SilentlyContinue",
 	}
 	return strings.Join(lines, "\r\n") + "\r\n"
 }

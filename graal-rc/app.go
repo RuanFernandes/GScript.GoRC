@@ -77,6 +77,12 @@ type App struct {
 	playerListMu     sync.Mutex
 	playerListWindow *application.WebviewWindow
 
+	// pmWindows keeps one independent frameless window per player conversation.
+	// The PM state itself remains shared so every window receives the same live
+	// updates without coupling its lifecycle to the player list window.
+	pmWindowMu sync.Mutex
+	pmWindows  map[int]*application.WebviewWindow
+
 	scriptMgrMu     sync.Mutex
 	scriptMgrWindow *application.WebviewWindow
 
@@ -211,6 +217,7 @@ func NewApp() *App {
 		pluginMonacoLanguages: map[string]PluginMonacoLanguage{},
 		pluginUIWindows:       map[string]*pluginUIWindowState{},
 		playerWindows:         map[string]*application.WebviewWindow{},
+		pmWindows:             map[int]*application.WebviewWindow{},
 		pmConversations:       map[int]PMConversation{},
 		graalScriptLSP:        lsp,
 		plugins:               pluginManager,
@@ -285,6 +292,11 @@ func (a *App) attach(app *application.App) {
 			nick, nickOK := data[2].(string)
 			message, messageOK := data[3].(string)
 			if idOK && accountOK && nickOK && messageOK {
+				// PM payloads use Graal's comma-text encoding for multiline
+				// messages. Normalize before recording and forwarding the event so
+				// the UI, plugins and local history all see the same text.
+				message = normalizePMText(message)
+				data[3] = message
 				a.recordIncomingPM(id, account, nick, message)
 			}
 		}
@@ -2416,6 +2428,13 @@ func (a *App) refreshServerChrome() {
 	a.setWindowTitleLocked(&a.scriptMgrMu, &a.scriptMgrWindow, scriptsTitle)
 	a.setWindowTitleLocked(&a.settingsMu, &a.settingsWindow, settingsTitle)
 	a.setWindowTitleLocked(&a.fileBrowserMu, &a.fileBrowserWindow, filesTitle)
+	a.pmWindowMu.Lock()
+	for _, window := range a.pmWindows {
+		if window != nil {
+			window.SetTitle(serverWindowTitle(st.ServerName, "PM"))
+		}
+	}
+	a.pmWindowMu.Unlock()
 	if a.tray != nil {
 		a.updateTrayPMBadge()
 		if a.hasUnreadPM() {
@@ -2566,16 +2585,60 @@ func (a *App) OpenPlayerList() {
 	})
 }
 
-// OpenPlayerListPM focuses the player list and asks it to open a conversation.
-// The event is emitted after the window exists, so it also works when the list
-// was previously closed.
+// OpenPlayerListPM opens (or focuses) the independent PM window for a player.
+// The method name is kept for binding compatibility with existing plugins and
+// frontend clients, but PM windows no longer depend on the player list.
 func (a *App) OpenPlayerListPM(playerID int) {
-	a.OpenPlayerList()
-	if a.app != nil {
-		// A newly-created webview needs a moment to mount its route before it can
-		// receive app events; the delayed emit also works for an existing window.
-		time.AfterFunc(250*time.Millisecond, func() { a.app.Event.Emit("rc:openPM", playerID) })
+	if playerID < 0 {
+		return
 	}
+
+	a.pmWindowMu.Lock()
+	if a.pmWindows == nil {
+		a.pmWindows = make(map[int]*application.WebviewWindow)
+	}
+	if window, ok := a.pmWindows[playerID]; ok && window != nil {
+		window.Show()
+		window.Focus()
+		a.pmWindowMu.Unlock()
+		return
+	}
+	a.pmWindowMu.Unlock()
+
+	window := a.newWebviewWindow(application.WebviewWindowOptions{
+		Name:             "pm-" + strconv.Itoa(playerID),
+		Title:            serverWindowTitle(a.sessions.Status().ServerName, "PM"),
+		URL:              "/#pm?id=" + strconv.Itoa(playerID),
+		Width:            520,
+		Height:           560,
+		MinWidth:         360,
+		MinHeight:        360,
+		Frameless:        true,
+		BackgroundColour: application.NewRGB(15, 17, 21),
+	})
+
+	a.pmWindowMu.Lock()
+	// A second call can race the native window creation. Focus whichever
+	// instance won the registration and close the redundant one.
+	if existing, ok := a.pmWindows[playerID]; ok && existing != nil {
+		existing.Show()
+		existing.Focus()
+		a.pmWindowMu.Unlock()
+		window.Close()
+		return
+	}
+	a.pmWindows[playerID] = window
+	a.pmWindowMu.Unlock()
+
+	window.Show()
+	window.Focus()
+	window.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
+		a.pmWindowMu.Lock()
+		if a.pmWindows[playerID] == window {
+			delete(a.pmWindows, playerID)
+		}
+		a.pmWindowMu.Unlock()
+	})
 }
 
 // OpenScriptManager opens (or focuses) the Script Manager window (Weapons /
