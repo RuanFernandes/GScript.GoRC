@@ -97,7 +97,7 @@ func decodeSyncConfigs(data []byte) (map[string]sync.SyncConfig, error) {
 		}
 		for k, c := range sf.Servers {
 			if c.PollingMinutes < 1 {
-				c.PollingMinutes = 5
+				c.PollingMinutes = sync.DefaultPollingMinutes
 			}
 			sf.Servers[k] = c
 		}
@@ -118,7 +118,7 @@ func decodeSyncConfigs(data []byte) (map[string]sync.SyncConfig, error) {
 		return nil, err
 	}
 	if single.PollingMinutes < 1 {
-		single.PollingMinutes = 5
+		single.PollingMinutes = sync.DefaultPollingMinutes
 	}
 	return map[string]sync.SyncConfig{"": single}, nil
 }
@@ -146,7 +146,7 @@ func (a *App) persistSyncCfgsLocked() error {
 // normalizeSyncCfg fills sane defaults for zero values.
 func normalizeSyncCfg(c sync.SyncConfig) sync.SyncConfig {
 	if c.PollingMinutes < 1 {
-		c.PollingMinutes = 5
+		c.PollingMinutes = sync.DefaultPollingMinutes
 	}
 	// Sync is intentionally always bidirectional. Keeping these enabled avoids
 	// a stale local copy after an upload or a stale server copy after a local
@@ -195,7 +195,7 @@ func (a *App) SetSyncConfig(enabled bool, outputDir string, pollingMinutes int, 
 		return err
 	}
 	if pollingMinutes < 1 {
-		pollingMinutes = 5
+		pollingMinutes = sync.DefaultPollingMinutes
 	}
 	a.syncCfgMu.Lock()
 	if err := a.ensureSyncCfgsLoaded(); err != nil {
@@ -257,6 +257,12 @@ func (a *App) hasSyncEngine() bool {
 	return a.currentSyncEngine() != nil
 }
 
+func (a *App) resetSyncLSPGeneration() {
+	a.syncLSPMu.Lock()
+	a.syncLSPGeneration = 0
+	a.syncLSPMu.Unlock()
+}
+
 // syncEmitter builds the engine's emit callback: marshals the single payload to
 // JSON and emits a raw event (mirrors rc:fbConfig/rc:codingSettings).
 func (a *App) syncEmitter() func(string, ...any) {
@@ -265,11 +271,19 @@ func (a *App) syncEmitter() func(string, ...any) {
 			return
 		}
 		if name == "rc:syncStatus" && len(data) > 0 {
-			if status, ok := data[0].(sync.SyncStatus); ok && !status.Progress.Active {
-				// The sync engine writes server changes to disk asynchronously. Once
-				// a reconcile finishes, refresh the semantic summaries so a still-open
-				// editor sees the new NPC/class public API without reopening it.
-				go a.refreshGraalScriptWorkspace()
+			if status, ok := data[0].(sync.SyncStatus); ok && status.SyncGeneration > 0 {
+				a.syncLSPMu.Lock()
+				shouldRefresh := status.SyncGeneration > a.syncLSPGeneration
+				if shouldRefresh {
+					a.syncLSPGeneration = status.SyncGeneration
+				}
+				a.syncLSPMu.Unlock()
+				// A generation is advanced only after the complete reconcile has
+				// finished. Refresh once per generation so an auto-poll does not
+				// repeatedly tear down an already-loaded LSP workspace.
+				if shouldRefresh {
+					go a.refreshGraalScriptWorkspace()
+				}
 			}
 		}
 		if a.app == nil || len(data) == 0 {
@@ -397,6 +411,7 @@ func (a *App) stopSyncEngineLocked() {
 	if eng != nil {
 		eng.Stop()
 	}
+	a.resetSyncLSPGeneration()
 }
 
 func (a *App) applySyncConfig(cfg sync.SyncConfig) {

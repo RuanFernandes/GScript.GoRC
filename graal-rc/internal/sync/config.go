@@ -20,10 +20,12 @@ type SyncConfig struct {
 	PauseUntil int64 `json:"pauseUntil,omitempty"`
 }
 
+const DefaultPollingMinutes = 60
+
 // DefaultSyncConfig returns sane defaults.
 func DefaultSyncConfig() SyncConfig {
 	return SyncConfig{
-		PollingMinutes: 5,
+		PollingMinutes: DefaultPollingMinutes,
 		AutoPushLocal:  true,
 		AutoPullServer: true,
 	}

@@ -30,9 +30,11 @@ type SyncStatus struct {
 	Paused           bool         `json:"paused"`
 	NCDown           bool         `json:"ncDown"`
 	OutputDirMissing bool         `json:"outputDirMissing"`
+	InitialSync      bool         `json:"initialSync"`
 	Server           string       `json:"server"`
 	OutputDir        string       `json:"outputDir"`
 	LastSyncAt       int64        `json:"lastSyncAt"`
+	SyncGeneration   uint64       `json:"syncGeneration"`
 	ReviewCount      int          `json:"reviewCount"`
 	Items            []ReviewItem `json:"items"`
 	Progress         SyncProgress `json:"progress"`
@@ -83,6 +85,9 @@ type Engine struct {
 	nextSyncAt        int64
 	permissionsReady  bool
 	permissionsError  string
+	initialSyncActive bool
+	initialSyncDone   bool
+	syncGeneration    uint64
 	running           bool
 	stop              chan struct{}
 	stopped           chan struct{}
@@ -153,7 +158,13 @@ func (e *Engine) SetPaused(until int64) {
 
 func (e *Engine) Start(ctx context.Context) {
 	e.mu.Lock()
-	if e.running || !e.cfg.Enabled || e.cfg.OutputDir == "" {
+	if e.running {
+		e.mu.Unlock()
+		e.emitStatus()
+		return
+	}
+	if !e.cfg.Enabled || e.cfg.OutputDir == "" {
+		e.initialSyncActive = false
 		e.mu.Unlock()
 		e.emitStatus()
 		return
@@ -163,6 +174,7 @@ func (e *Engine) Start(ctx context.Context) {
 	e.stopped = make(chan struct{})
 	stop, stopped, cfg := e.stop, e.stopped, e.cfg
 	e.nextSyncAt = 0
+	e.initialSyncActive = !e.initialSyncDone
 	e.mu.Unlock()
 	// NC connects asynchronously after the main server login. The first
 	// bootstrap therefore cannot assume the NC socket is ready yet; retrying
@@ -218,6 +230,7 @@ func (e *Engine) Stop() {
 	e.mu.Lock()
 	if e.running {
 		e.running = false
+		e.initialSyncActive = false
 		close(e.stop)
 	}
 	w := e.watcher
@@ -268,7 +281,7 @@ func (e *Engine) bootstrap(ctx context.Context, dir string) error {
 		// permission-filtered result as a completed bootstrap; the next regular
 		// poll will pick up lists that were still warming up on the NC socket.
 		e.removeUnlistedLocalFiles(dir, serverPaths(nil))
-		e.markSynced()
+		e.markReconcileCompleted()
 		e.finishProgress(0)
 		e.emitStatus()
 		return nil
@@ -303,7 +316,11 @@ func (e *Engine) bootstrap(ctx context.Context, dir string) error {
 		}
 	}
 	e.removeUnlistedLocalFiles(dir, serverPaths(replies))
-	e.markSynced()
+	if err == nil {
+		e.markReconcileCompleted()
+	} else {
+		e.markSynced()
+	}
 	e.finishProgress(len(replies))
 	e.emitStatus()
 	return err
@@ -391,7 +408,7 @@ func (e *Engine) loop(ctx context.Context, stop <-chan struct{}, stopped chan<- 
 	mins := e.cfg.PollingMinutes
 	e.mu.RUnlock()
 	if mins < 1 {
-		mins = 1
+		mins = DefaultPollingMinutes
 	}
 	ticker := time.NewTicker(time.Duration(mins) * time.Minute)
 	defer ticker.Stop()
@@ -658,8 +675,10 @@ func (e *Engine) pollLocked(ctx context.Context, refreshRights bool) {
 	}
 	if err == nil {
 		e.removeUnlistedLocalFiles(cfg.OutputDir, serverPaths(replies), changedLocalPaths(cfg.OutputDir, localBaseline))
+		e.markReconcileCompleted()
+	} else {
+		e.markSynced()
 	}
-	e.markSynced()
 	e.finishProgress(len(replies))
 	e.emitStatus()
 }
@@ -707,7 +726,7 @@ func (e *Engine) fetchScripts(ctx context.Context, progress func(done, total int
 func pollDuration(cfg SyncConfig) time.Duration {
 	mins := cfg.PollingMinutes
 	if mins < 1 {
-		mins = 1
+		mins = DefaultPollingMinutes
 	}
 	return time.Duration(mins) * time.Minute
 }
@@ -918,6 +937,15 @@ func (e *Engine) isRecentDownload(path string) bool {
 	return false
 }
 func (e *Engine) markSynced() { e.mu.Lock(); e.lastSyncAt = e.now().Unix(); e.mu.Unlock() }
+
+func (e *Engine) markReconcileCompleted() {
+	e.mu.Lock()
+	e.lastSyncAt = e.now().Unix()
+	e.syncGeneration++
+	e.initialSyncDone = true
+	e.initialSyncActive = false
+	e.mu.Unlock()
+}
 func (e *Engine) paused() bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -1072,7 +1100,7 @@ func (e *Engine) Status() SyncStatus {
 		items = append(items, it)
 	}
 	ncDown := e.cfg.Enabled && e.cfg.OutputDir != "" && !e.backend.IsNCConnected()
-	return SyncStatus{Enabled: e.cfg.Enabled, Paused: e.cfg.PauseUntil != 0 && e.now().Unix() < e.cfg.PauseUntil, NCDown: ncDown, OutputDirMissing: e.cfg.OutputDir == "", Server: e.server, OutputDir: e.cfg.OutputDir, LastSyncAt: e.lastSyncAt, ReviewCount: len(items), Items: items, Progress: e.progress, NextSyncAt: e.nextSyncAt, PermissionsReady: e.permissionsReady, PermissionsError: e.permissionsError}
+	return SyncStatus{Enabled: e.cfg.Enabled, Paused: e.cfg.PauseUntil != 0 && e.now().Unix() < e.cfg.PauseUntil, NCDown: ncDown, OutputDirMissing: e.cfg.OutputDir == "", InitialSync: e.initialSyncActive && e.cfg.Enabled && e.cfg.OutputDir != "", Server: e.server, OutputDir: e.cfg.OutputDir, LastSyncAt: e.lastSyncAt, SyncGeneration: e.syncGeneration, ReviewCount: len(items), Items: items, Progress: e.progress, NextSyncAt: e.nextSyncAt, PermissionsReady: e.permissionsReady, PermissionsError: e.permissionsError}
 }
 
 func (e *Engine) GetScriptPair(kind, key string) (ScriptPair, error) {

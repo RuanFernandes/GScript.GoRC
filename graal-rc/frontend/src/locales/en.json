@@ -514,6 +514,7 @@
   "scripts.warpFailed": "Warp failed",
   "scripts.createFailed": "Create NPC failed",
   "scripts.openFailed": "Couldn't open script",
+  "scripts.initialSyncBusy": "Wait for the initial sync to finish before opening the Script Manager.",
   "scripts.noPermission": "No response from server — your account likely lacks read permission."
   ,"scripts.addWeapon": "Add Weapon",
   "scripts.addClass": "Add Class",

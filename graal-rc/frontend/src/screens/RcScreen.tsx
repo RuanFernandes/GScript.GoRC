@@ -554,6 +554,12 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
   const [notificationsOpen, setNotificationsOpen] = useState(false)
   const notificationCenter = useOperationalNotifications()
 
+  const openScriptManager = () => {
+    void rcService.openScriptManager().catch(() => {
+      toast.error(t("scripts.initialSyncBusy"))
+    })
+  }
+
   useEffect(() => {
     let cancelled = false
     const tick = async () => {
@@ -819,7 +825,7 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
         onOpen={() => setSearchOpen(true)}
         onClose={() => setSearchOpen(false)}
         onOpenPlayers={() => rcService.openPlayerList()}
-        onOpenScripts={() => rcService.openScriptManager()}
+        onOpenScripts={openScriptManager}
         onOpenFiles={() => rcService.openFileBrowser()}
         onOpenSync={() => rcService.openSyncReview()}
         onOpenDeployments={() => rcService.openDeploymentCenter()}

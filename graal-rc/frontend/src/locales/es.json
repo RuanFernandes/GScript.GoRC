@@ -514,6 +514,7 @@
   "scripts.warpFailed": "No se pudo teletransportar",
   "scripts.createFailed": "No se pudo crear el NPC",
   "scripts.openFailed": "No se pudo abrir el script",
+  "scripts.initialSyncBusy": "Espera a que termine la sincronización inicial para abrir el gestor de scripts.",
   "scripts.noPermission": "El servidor no respondió, probablemente tu cuenta no tiene permiso de lectura."
   ,"scripts.addWeapon": "Añadir Weapon",
   "scripts.addClass": "Añadir Class",

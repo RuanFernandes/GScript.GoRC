@@ -30,6 +30,53 @@ func (b *blockingFetchBackend) FetchAllScripts(context.Context, func(string, str
 	return b.fetchReplies, nil
 }
 
+func TestInitialSyncStateAndCompletionGeneration(t *testing.T) {
+	backend := &blockingFetchBackend{
+		permissionBackendStub: permissionBackendStub{
+			fetchReplies: []rclib.ScriptReply{{Type: "class", Name: "Example", Script: ""}},
+		},
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	engine := NewEngine(backend, "TestServer", nil)
+	engine.ApplyConfig(SyncConfig{Enabled: true, OutputDir: t.TempDir(), PollingMinutes: 1})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan struct{})
+	go func() {
+		engine.Start(ctx)
+		close(started)
+	}()
+	select {
+	case <-backend.started:
+	case <-time.After(time.Second):
+		t.Fatal("initial sync did not start")
+	}
+	if !engine.Status().InitialSync {
+		t.Fatal("initial sync should remain active while bootstrap is fetching scripts")
+	}
+
+	close(backend.release)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("initial sync did not finish")
+	}
+	status := engine.Status()
+	if status.InitialSync {
+		t.Fatal("initial sync should be inactive after bootstrap completes")
+	}
+	if status.SyncGeneration != 1 {
+		t.Fatalf("sync generation = %d, want 1", status.SyncGeneration)
+	}
+
+	engine.markSynced()
+	if got := engine.Status().SyncGeneration; got != 1 {
+		t.Fatalf("per-file update advanced sync generation to %d", got)
+	}
+	engine.Stop()
+}
+
 func (b *recordingBackend) AddClass(name string) error {
 	b.addedClasses = append(b.addedClasses, name)
 	return nil
