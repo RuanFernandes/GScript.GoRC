@@ -17,6 +17,7 @@ import {RcSidebar} from "@/components/features/rc/RcSidebar"
 import {ChangelogPopover} from "@/components/features/rc/ChangelogPopover"
 import {GlobalSearchPalette} from "@/components/features/rc/GlobalSearchPalette"
 import {NotificationCenterPopover} from "@/components/features/rc/NotificationCenterPopover"
+import {SyncProgressToast} from "@/components/SyncProgressToast"
 import {useChat} from "@/hooks/useChat"
 import {useChatAutocomplete} from "@/hooks/useChatAutocomplete"
 import {useChatInputHistory} from "@/hooks/useChatInputHistory"
@@ -678,6 +679,7 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
 
   return (
     <div className="bg-background flex h-svh flex-col overflow-hidden">
+      <SyncProgressToast />
       {/* Top header: account profile (client-only) + server/online count + global
           actions (Settings, Disconnect). Sits above the RC action header. */}
       <header className="flex items-center gap-3 border-b px-4 py-2">

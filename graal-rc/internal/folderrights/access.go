@@ -58,21 +58,79 @@ func (a Access) CanWrite(scriptType, name string) bool {
 	return a.has(scriptType, name, 'w')
 }
 
+// HasWriteAccessForScriptTypes reports whether this snapshot contains a write
+// rule that can target one of the requested script directories. The check is
+// intentionally conservative for wildcard rules: when an account may write
+// anywhere under WEAPONS, CLASSES, or NPCS, Local Sync must be enabled even if
+// the NC list has not finished warming up yet.
+//
+// This method is used to protect the local workspace before a concrete script
+// name is known. It does not replace CanWrite, which remains the authoritative
+// check for an individual server request.
+func (a Access) HasWriteAccessForScriptTypes(scriptTypes ...string) bool {
+	if a.unrestricted {
+		return true
+	}
+
+	for _, rule := range a.entries {
+		if rule.deny || !rule.w {
+			continue
+		}
+		for _, scriptType := range scriptTypes {
+			prefix := resourcePrefix(scriptType)
+			if prefix == "" {
+				continue
+			}
+			if writeRuleTargetsPrefix(rule.pattern, prefix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // ResourcePath converts a logical script type and name to the path checked by
 // the RC server.
 func ResourcePath(scriptType, name string) string {
-	prefix := ""
-	switch strings.ToLower(strings.TrimSpace(scriptType)) {
-	case "weapon", "weapons":
-		prefix = "WEAPONS/"
-	case "class", "classes":
-		prefix = "CLASSES/"
-	case "npc", "npcs":
-		prefix = "NPCS/"
-	default:
+	prefix := resourcePrefix(scriptType)
+	if prefix == "" {
 		return ""
 	}
 	return prefix + strings.TrimSpace(name)
+}
+
+func resourcePrefix(scriptType string) string {
+	switch strings.ToLower(strings.TrimSpace(scriptType)) {
+	case "weapon", "weapons":
+		return "WEAPONS/"
+	case "class", "classes":
+		return "CLASSES/"
+	case "npc", "npcs":
+		return "NPCS/"
+	default:
+		return ""
+	}
+}
+
+func writeRuleTargetsPrefix(pattern, prefix string) bool {
+	pattern = normalizePath(pattern)
+	if pattern == "" {
+		return false
+	}
+
+	// Most server responses use rules such as WEAPONS/* or
+	// WEAPONS/MyWeapon. This fast path also catches exact writable scripts that
+	// are not present in the NC list yet.
+	if pattern == strings.TrimSuffix(prefix, "/") || strings.HasPrefix(pattern, prefix) {
+		return true
+	}
+
+	// A broad rule such as * or */WEAPONS/* can still match a resource below the
+	// requested directory. Probe a safe synthetic name instead of treating an
+	// arbitrary wildcard as a grant for every script type.
+	probe := prefix + "__gorc_write_permission_probe__"
+	matched, err := path.Match(pattern, probe)
+	return err == nil && matched
 }
 
 func (a Access) has(scriptType, name string, right rune) bool {

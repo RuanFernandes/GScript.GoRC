@@ -20,7 +20,7 @@ import {ScrollArea} from "@/components/ui/scroll-area"
 import {usePlayers} from "@/hooks/usePlayers"
 import {useChatSettings} from "@/hooks/useChatSettings"
 import {rcService} from "@/services/rcService"
-import type {Player} from "@/types"
+import type {Player, SessionStatus} from "@/types"
 import {useLanguage} from "@/hooks/useLanguage"
 import {usePrivateMessages} from "@/hooks/usePrivateMessages"
 
@@ -31,11 +31,40 @@ export function PlayerListWindowScreen() {
   const [query, setQuery] = useState("")
   const [selectedPlayerId, setSelectedPlayerId] = useState<number | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  const [canBanPlayers, setCanBanPlayers] = useState(false)
 
   const {state: pmState, unreadById, markRead, recordOutgoing} = usePrivateMessages()
   const [pmTarget, setPmTarget] = useState<PmTarget | null>(null)
   const [massPmOpen, setMassPmOpen] = useState(false)
   const [adminOpen, setAdminOpen] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    const refreshPermissions = async () => {
+      try {
+        const value = await rcService.status()
+        if (cancelled || !value || typeof value !== "object") return
+        const status = value as SessionStatus
+        setCanBanPlayers(Boolean(status.rightsReady && status.canBanPlayers))
+      } catch {
+        if (!cancelled) setCanBanPlayers(false)
+      }
+    }
+
+    void refreshPermissions()
+    const off = Events.On("rc:evt", (event: {data: string}) => {
+      try {
+        const payload = JSON.parse(event.data) as {name?: string}
+        if (payload.name === "rc:scriptPermissionsChanged") void refreshPermissions()
+      } catch {
+        // Ignore unrelated or malformed event payloads.
+      }
+    })
+    return () => {
+      cancelled = true
+      off()
+    }
+  }, [])
 
   // Push PM-log config to the backend (same App process as the main window, but
   // this window issues the AppendPmLog calls, so ensure the config is set).
@@ -97,6 +126,10 @@ export function PlayerListWindowScreen() {
     const account = player.account
     if (!account) {
       toast.error(t("player.noAccount"))
+      return
+    }
+    if ((kind === "ban" || kind === "banhistory") && !canBanPlayers) {
+      toast.error(t("player.banPlayersRightRequired"))
       return
     }
     const open = async () => {
@@ -210,9 +243,9 @@ export function PlayerListWindowScreen() {
       </header>
       <div className="flex min-h-0 flex-1 flex-col gap-2 p-2 lg:flex-row">
         <ScrollArea className="min-h-0 flex-1">
-          <PlayerTable players={filtered} loading={loading} unreadById={unreadById} selectedIds={selectedIds} onSelect={(player) => setSelectedPlayerId(player.id)} onToggleSelection={toggleSelection} onPM={openPM} onEdit={editPlayer} />
+          <PlayerTable players={filtered} loading={loading} unreadById={unreadById} canBanPlayers={canBanPlayers} selectedIds={selectedIds} onSelect={(player) => setSelectedPlayerId(player.id)} onToggleSelection={toggleSelection} onPM={openPM} onEdit={editPlayer} />
         </ScrollArea>
-        <PlayerInspector player={selectedPlayer} onPM={openPM} onEdit={editPlayer} />
+        <PlayerInspector player={selectedPlayer} canBanPlayers={canBanPlayers} onPM={openPM} onEdit={editPlayer} onClose={() => setSelectedPlayerId(null)} />
       </div>
 
       <PmDialog

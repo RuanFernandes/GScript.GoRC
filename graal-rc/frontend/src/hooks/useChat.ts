@@ -296,18 +296,13 @@ export function useChat(service: RcService): UseChatResult {
         return true
       }
       // /openrights, /openaccess, /open {account} open a client-side editor
-      // window (self if no account). Intercepted locally — never sent to server.
+      // window. An omitted account targets the account resolved by the latest
+      // openrights response for this RC session. Intercepted locally — never
+      // sent to the server.
       const adminCmd = trimmed.match(/^\/(openrights|openaccess|opencomments|open)(?:\s+(.*))?$/i)
       if (adminCmd) {
         const arg = (adminCmd[2] ?? "").trim()
         const cmdName = adminCmd[1].toLowerCase()
-        // These editors target a specific account — right-click a player in the
-        // list, or pass the account explicitly. No implicit self: grclib never
-        // exposes the logged-in account name, so an empty arg can't resolve.
-        if (!arg) {
-          push(channel, `Usage: /${cmdName} <account> — or right-click a player in the list`, "system")
-          return true
-        }
         try {
           switch (cmdName) {
             case "openrights":

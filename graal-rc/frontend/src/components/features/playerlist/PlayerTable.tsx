@@ -19,6 +19,7 @@ export type PlayerEditKind = "rights" | "ban" | "attrs" | "comments" | "banhisto
 interface PlayerTableProps {
   players: Player[]
   unreadById: Record<number, number>
+  canBanPlayers: boolean
   loading?: boolean
   onPM: (player: Player) => void
   selectedIds?: Set<number>
@@ -163,7 +164,7 @@ function Group({label, icon: Icon, rows, unreadById, onPM, onContext, selectedId
   )
 }
 
-export function PlayerTable({players, unreadById, loading, onPM, selectedIds = new Set<number>(), onSelect, onToggleSelection, onEdit}: PlayerTableProps) {
+export function PlayerTable({players, unreadById, canBanPlayers, loading, onPM, selectedIds = new Set<number>(), onSelect, onToggleSelection, onEdit}: PlayerTableProps) {
   const [menu, setMenu] = useState<{x: number; y: number; player: Player} | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   // Clamp the menu inside the viewport so a right-click near a window edge
@@ -235,13 +236,13 @@ export function PlayerTable({players, unreadById, loading, onPM, selectedIds = n
   const admins = players.filter((p) => !p.level)
   const regular = players.filter((p) => !!p.level)
 
-  const items: {label: string; icon: typeof Users; kind?: PlayerEditKind; pm?: boolean}[] = [
+  const items: {label: string; icon: typeof Users; kind?: PlayerEditKind; pm?: boolean; requiresBanPlayers?: boolean}[] = [
     {label: "Private Message", icon: MessageSquare, pm: true},
     {label: "Edit Rights", icon: Shield, kind: "rights"},
-    {label: "Edit Access (Ban)", icon: Wand2, kind: "ban"},
+    {label: "Edit Access (Ban)", icon: Wand2, kind: "ban", requiresBanPlayers: true},
     {label: "Edit Attributes", icon: SquareUser, kind: "attrs"},
     {label: "Edit Comments", icon: ScrollText, kind: "comments"},
-    {label: "Ban History", icon: History, kind: "banhistory"},
+    {label: "Ban History", icon: History, kind: "banhistory", requiresBanPlayers: true},
     {label: "Staff Activity", icon: History, kind: "staffactivity"},
   ]
 
@@ -265,6 +266,7 @@ export function PlayerTable({players, unreadById, loading, onPM, selectedIds = n
             {menu.player.nick || menu.player.account} · <span className="font-mono">{menu.player.account}</span>
           </div>
           {items.map((it) => {
+            if (it.requiresBanPlayers && !canBanPlayers) return null
             const Icon = it.icon
             return (
               <button

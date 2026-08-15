@@ -26,24 +26,27 @@ type ReviewItem struct {
 }
 
 type SyncStatus struct {
-	Enabled          bool         `json:"enabled"`
-	Paused           bool         `json:"paused"`
-	NCDown           bool         `json:"ncDown"`
-	OutputDirMissing bool         `json:"outputDirMissing"`
-	InitialSync      bool         `json:"initialSync"`
-	PanicMode        bool         `json:"panicMode"`
-	Server           string       `json:"server"`
-	OutputDir        string       `json:"outputDir"`
-	LastSyncAt       int64        `json:"lastSyncAt"`
-	SyncGeneration   uint64       `json:"syncGeneration"`
-	PanicReason      string       `json:"panicReason,omitempty"`
-	PanicAt          int64        `json:"panicAt,omitempty"`
-	ReviewCount      int          `json:"reviewCount"`
-	Items            []ReviewItem `json:"items"`
-	Progress         SyncProgress `json:"progress"`
-	NextSyncAt       int64        `json:"nextSyncAt"`
-	PermissionsReady bool         `json:"permissionsReady"`
-	PermissionsError string       `json:"permissionsError,omitempty"`
+	Enabled           bool         `json:"enabled"`
+	Paused            bool         `json:"paused"`
+	NCDown            bool         `json:"ncDown"`
+	OutputDirMissing  bool         `json:"outputDirMissing"`
+	InitialSync       bool         `json:"initialSync"`
+	PanicMode         bool         `json:"panicMode"`
+	Server            string       `json:"server"`
+	OutputDir         string       `json:"outputDir"`
+	LastSyncAt        int64        `json:"lastSyncAt"`
+	SyncGeneration    uint64       `json:"syncGeneration"`
+	PanicReason       string       `json:"panicReason,omitempty"`
+	PanicAt           int64        `json:"panicAt,omitempty"`
+	ReviewCount       int          `json:"reviewCount"`
+	Items             []ReviewItem `json:"items"`
+	Progress          SyncProgress `json:"progress"`
+	NextSyncAt        int64        `json:"nextSyncAt"`
+	PermissionsReady  bool         `json:"permissionsReady"`
+	PermissionsError  string       `json:"permissionsError,omitempty"`
+	ScriptRightsReady bool         `json:"scriptRightsReady"`
+	ScriptWriteAccess bool         `json:"scriptWriteAccess"`
+	SyncRequired      bool         `json:"syncRequired"`
 }
 
 type SyncProgress struct {

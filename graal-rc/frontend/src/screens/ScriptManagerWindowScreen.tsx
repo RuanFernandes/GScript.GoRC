@@ -30,19 +30,30 @@ import {rcService} from "@/services/rcService"
 import type {NPC} from "@/types"
 import {useLanguage} from "@/hooks/useLanguage"
 import {useSync} from "@/hooks/useSync"
+import {ScriptSyncRequiredDialog} from "@/components/ScriptSyncRequiredDialog"
 
 // openScriptEditorOrFail opens the editor; OpenScriptEditor fetches the script
 // server-side first and only opens a window on success. A failure (e.g. the
 // account lacks read permission and the server never replies → timeout) cancels
-// the open and surfaces a toast instead.
-async function openScriptEditorOrFail(scriptType: string, key: string) {
+// the open and surfaces a toast instead. A mandatory-sync rejection gets a
+// blocking translated prompt so the user cannot miss why editing is locked.
+async function openScriptEditorOrFail(
+  scriptType: string,
+  key: string,
+  t: (key: string, vars?: Record<string, string | number>) => string,
+  onSyncRequired: () => void,
+) {
   try {
     await rcService.openScriptEditor(scriptType, key)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    toast.error("Couldn't open script", {
+    if (msg.toLowerCase().includes("script sync is required")) {
+      onSyncRequired()
+      return
+    }
+    toast.error(t("scripts.openFailed"), {
       description: msg.includes("timed out")
-        ? "No response from server — your account likely lacks read permission."
+        ? t("scripts.noPermission")
         : msg,
     })
   }
@@ -102,6 +113,7 @@ function LspStatusBadge() {
 export function ScriptManagerWindowScreen() {
   const {t} = useLanguage()
   const [onlyReadable, setOnlyReadable] = useState(false)
+  const [syncPromptOpen, setSyncPromptOpen] = useState(false)
   const lists = useScriptLists(rcService, onlyReadable)
   const [tab, setTab] = useState<"weapons" | "classes" | "npcs">("weapons")
   const weaponRows = useMemo(() => lists.weapons.map((weapon, index) => {
@@ -151,6 +163,7 @@ export function ScriptManagerWindowScreen() {
             kind="weapon"
             rows={weaponRows}
             loading={lists.loading}
+            onSyncRequired={() => setSyncPromptOpen(true)}
             onRefresh={async () => {
               try {
                 await rcService.refreshWeapons()
@@ -167,13 +180,15 @@ export function ScriptManagerWindowScreen() {
             kind="class"
             rows={classRows}
             loading={lists.loading}
+            onSyncRequired={() => setSyncPromptOpen(true)}
             onRefresh={lists.refresh}
           />
         </TabsContent>
         <TabsContent value="npcs" className="mt-3 min-h-0 flex-1">
-          <NPCTab npcs={lists.npcs} loading={lists.loading} onRefresh={lists.refresh} />
+          <NPCTab npcs={lists.npcs} loading={lists.loading} onSyncRequired={() => setSyncPromptOpen(true)} onRefresh={lists.refresh} />
         </TabsContent>
       </Tabs>
+      <ScriptSyncRequiredDialog open={syncPromptOpen} onClose={() => setSyncPromptOpen(false)} />
     </div>
   )
 }
@@ -190,11 +205,13 @@ function WeaponClassTab({
   kind,
   rows,
   loading,
+  onSyncRequired,
   onRefresh,
 }: {
   kind: "weapon" | "class"
   rows: Row[]
   loading: boolean
+  onSyncRequired: () => void
   onRefresh: () => Promise<void> | void
 }) {
   const {t} = useLanguage()
@@ -236,7 +253,7 @@ function WeaponClassTab({
     openingKeysRef.current.add(key)
     setOpeningKeys(new Set(openingKeysRef.current))
     try {
-      await openScriptEditorOrFail(kind, key)
+      await openScriptEditorOrFail(kind, key, t, onSyncRequired)
     } finally {
       openingKeysRef.current.delete(key)
       setOpeningKeys(new Set(openingKeysRef.current))
@@ -397,10 +414,12 @@ function WeaponClassTab({
 function NPCTab({
   npcs,
   loading,
+  onSyncRequired,
   onRefresh,
 }: {
   npcs: NPC[]
   loading: boolean
+  onSyncRequired: () => void
   onRefresh: () => Promise<void> | void
 }) {
   const {t} = useLanguage()
@@ -548,7 +567,7 @@ function NPCTab({
               <tr
                 key={n.id}
                 onClick={() => { if (isUsableScriptName(n.name)) setSelected(n.id) }}
-                onDoubleClick={() => { if (isUsableScriptName(n.name)) void openScriptEditorOrFail("npc", String(n.id)) }}
+                onDoubleClick={() => { if (isUsableScriptName(n.name)) void openScriptEditorOrFail("npc", String(n.id), t, onSyncRequired) }}
                 onContextMenu={(event) => {
                   event.preventDefault()
                   if (!isUsableScriptName(n.name)) return
@@ -585,10 +604,10 @@ function NPCTab({
           <button type="button" className="hover:bg-accent flex w-full items-center gap-2 px-3 py-2 text-left" onClick={() => { void doReset(npcMenu.npc.id); setNpcMenu(null) }}>
             <RotateCcw className="size-4" />{t("scripts.reset")}
           </button>
-          <button type="button" className="hover:bg-accent flex w-full items-center gap-2 px-3 py-2 text-left" onClick={() => { setNpcMenu(null); void openScriptEditorOrFail("npcflags", String(npcMenu.npc.id)) }}>
+          <button type="button" className="hover:bg-accent flex w-full items-center gap-2 px-3 py-2 text-left" onClick={() => { setNpcMenu(null); void openScriptEditorOrFail("npcflags", String(npcMenu.npc.id), t, onSyncRequired) }}>
             <Flag className="size-4" />{t("scripts.editFlags")}
           </button>
-          <button type="button" className="hover:bg-accent flex w-full items-center gap-2 px-3 py-2 text-left" onClick={() => { setNpcMenu(null); void openScriptEditorOrFail("npcattr", String(npcMenu.npc.id)) }}>
+          <button type="button" className="hover:bg-accent flex w-full items-center gap-2 px-3 py-2 text-left" onClick={() => { setNpcMenu(null); void openScriptEditorOrFail("npcattr", String(npcMenu.npc.id), t, onSyncRequired) }}>
             <UserRound className="size-4" />{t("scripts.viewAttributes")}
           </button>
           <button type="button" className="hover:bg-accent flex w-full items-center gap-2 px-3 py-2 text-left" onClick={() => { setNpcMenu(null); setSelected(npcMenu.npc.id); setWarping(true) }}>

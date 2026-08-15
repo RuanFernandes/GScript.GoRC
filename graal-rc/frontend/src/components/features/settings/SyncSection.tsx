@@ -8,6 +8,7 @@ import {Input} from "@/components/ui/input"
 import {Label} from "@/components/ui/label"
 import {Badge} from "@/components/ui/badge"
 import {rcService} from "@/services/rcService"
+import {ScriptSyncRequiredDialog} from "@/components/ScriptSyncRequiredDialog"
 
 function Toggle({checked, onChange, label}: {checked: boolean; onChange: (v: boolean) => void; label: string}) {
   return (
@@ -44,6 +45,8 @@ export function SyncSection() {
   const {config, status, loaded, saveConfig, syncNow} = useSync()
   const {t} = useLanguage()
   const [now, setNow] = useState(() => Date.now())
+  const [syncPromptOpen, setSyncPromptOpen] = useState(false)
+  const [disablePromptOpen, setDisablePromptOpen] = useState(false)
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000)
@@ -58,6 +61,8 @@ export function SyncSection() {
   // Status comes from the engine for the currently connected server. It is
   // authoritative during reconnects, while config is still being refreshed.
   const enabled = status.enabled && status.outputDir !== ""
+  const syncRequired = status.syncRequired
+  const configuredFolder = Boolean((config.outputDir || status.outputDir).trim())
   const progress = status.progress ?? {active: false, phase: "", current: "", completed: 0, total: 0}
   const total = progress.total
   const completed = Math.min(progress.completed, total || progress.completed)
@@ -66,6 +71,18 @@ export function SyncSection() {
   const tone = status.panicMode ? "bg-red-500" : status.permissionsError || status.ncDown || status.paused ? "bg-amber-500" : enabled ? "bg-emerald-500" : "bg-muted-foreground/50"
   const lastSync = status.lastSyncAt ? new Date(status.lastSyncAt * 1000).toLocaleTimeString() : "never"
   const countdown = useMemo(() => formatCountdown(status.nextSyncAt, now, t), [status.nextSyncAt, now, t])
+
+  const toggleSync = (next: boolean) => {
+    if (syncRequired && !next) {
+      setDisablePromptOpen(true)
+      return
+    }
+    if (syncRequired && !configuredFolder) {
+      setSyncPromptOpen(true)
+      return
+    }
+    saveConfig({enabled: next})
+  }
 
   return (
     <div className="grid gap-4">
@@ -99,7 +116,9 @@ export function SyncSection() {
 
       {status.panicMode && <div role="alert" className="border-destructive/40 bg-destructive/10 text-destructive-foreground flex items-start gap-2 rounded-md border px-3 py-2 text-xs"><AlertTriangle className="mt-0.5 size-3.5 shrink-0" /><span>{t("sync.panicDescription")}</span></div>}
 
-      <Toggle checked={status.enabled} onChange={(v) => saveConfig({enabled: v})} label={t("sync.enable")} />
+      {syncRequired && <div className="border-primary/30 bg-primary/10 text-muted-foreground flex items-start gap-2 rounded-md border px-3 py-2 text-xs leading-relaxed"><Info className="text-primary mt-0.5 size-3.5 shrink-0" /><span>{t("sync.requiredDescription")}</span></div>}
+
+      <Toggle checked={status.enabled} onChange={toggleSync} label={t("sync.enable")} />
 
       <div className="border-primary/25 bg-primary/8 text-muted-foreground flex items-start gap-2 rounded-md border px-3 py-2 text-xs leading-relaxed">
         <Info className="text-primary mt-0.5 size-3.5 shrink-0" />
@@ -113,6 +132,16 @@ export function SyncSection() {
       <p className="text-muted-foreground bg-muted/60 -mx-1 rounded-md px-3 py-2 text-xs leading-relaxed">{t("sync.description")}</p>
 
       <Button onClick={syncNow} disabled={!loaded || !enabled || status.panicMode} className="w-full gap-2"><RefreshCw className="size-4" />{t("sync.syncNow")}</Button>
+
+      <ScriptSyncRequiredDialog open={syncPromptOpen} onClose={() => setSyncPromptOpen(false)} />
+      <ScriptSyncRequiredDialog
+        open={disablePromptOpen}
+        onClose={() => setDisablePromptOpen(false)}
+        onConfirmDisable={() => {
+          setDisablePromptOpen(false)
+          saveConfig({enabled: false})
+        }}
+      />
     </div>
   )
 }

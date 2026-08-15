@@ -1,4 +1,4 @@
-import {History, MessageSquare, ScrollText, Shield, SquareUser, UserRound, Wand2} from "lucide-react"
+import {History, MessageSquare, ScrollText, Shield, SquareUser, UserRound, Wand2, X} from "lucide-react"
 
 import {Badge} from "@/components/ui/badge"
 import {Button} from "@/components/ui/button"
@@ -8,11 +8,13 @@ import type {PlayerEditKind} from "./PlayerTable"
 
 interface PlayerInspectorProps {
   player: Player | null
+  canBanPlayers: boolean
   onPM: (player: Player) => void
   onEdit: (player: Player, kind: PlayerEditKind) => void
+  onClose: () => void
 }
 
-export function PlayerInspector({player, onPM, onEdit}: PlayerInspectorProps) {
+export function PlayerInspector({player, canBanPlayers, onPM, onEdit, onClose}: PlayerInspectorProps) {
   const {t} = useLanguage()
 
   if (!player) {
@@ -42,6 +44,16 @@ export function PlayerInspector({player, onPM, onEdit}: PlayerInspectorProps) {
             {player.level && <Badge variant="secondary">{player.level}</Badge>}
           </div>
         </div>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="ml-auto size-7 shrink-0"
+          onClick={onClose}
+          aria-label={t("common.close")}
+          title={t("common.close")}
+        >
+          <X className="size-4" />
+        </Button>
       </div>
 
       <div className="grid gap-1.5">
@@ -49,10 +61,10 @@ export function PlayerInspector({player, onPM, onEdit}: PlayerInspectorProps) {
         <Button size="sm" className="justify-start" onClick={() => onPM(player)}><MessageSquare className="size-4" />{t("player.privateMessage")}</Button>
         <div className="grid grid-cols-2 gap-1.5">
           <Button variant="outline" size="sm" className="justify-start" onClick={() => action("rights")}><Shield className="size-3.5" />{t("player.rights")}</Button>
-          <Button variant="outline" size="sm" className="justify-start" onClick={() => action("ban")}><Wand2 className="size-3.5" />{t("player.access")}</Button>
+          <Button variant="outline" size="sm" className="justify-start" onClick={() => action("ban")} disabled={!canBanPlayers} title={!canBanPlayers ? t("player.banPlayersRightRequired") : undefined}><Wand2 className="size-3.5" />{t("player.access")}</Button>
           <Button variant="outline" size="sm" className="justify-start" onClick={() => action("attrs")}><SquareUser className="size-3.5" />{t("player.attributes")}</Button>
           <Button variant="outline" size="sm" className="justify-start" onClick={() => action("comments")}><ScrollText className="size-3.5" />{t("player.comments")}</Button>
-          <Button variant="outline" size="sm" className="justify-start" onClick={() => action("banhistory")}><History className="size-3.5" />{t("player.banHistory")}</Button>
+          <Button variant="outline" size="sm" className="justify-start" onClick={() => action("banhistory")} disabled={!canBanPlayers} title={!canBanPlayers ? t("player.banPlayersRightRequired") : undefined}><History className="size-3.5" />{t("player.banHistory")}</Button>
           <Button variant="outline" size="sm" className="justify-start" onClick={() => action("staffactivity")}><History className="size-3.5" />{t("player.staffActivity")}</Button>
         </div>
       </div>

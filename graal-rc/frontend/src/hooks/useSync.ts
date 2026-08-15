@@ -26,6 +26,9 @@ const EMPTY_STATUS: SyncStatus = {
   progress: {active: false, phase: "", current: "", completed: 0, total: 0},
   nextSyncAt: 0,
   permissionsReady: false,
+  scriptRightsReady: false,
+  scriptWriteAccess: false,
+  syncRequired: false,
 }
 
 const DEFAULT_CONFIG: SyncConfig = {
@@ -117,6 +120,17 @@ export function useSync(): UseSyncResult {
         // ignore
       }
     })
+    const offPermissions = Events.On("rc:evt", (e: {data: string}) => {
+      try {
+        const payload = JSON.parse(e.data) as {name?: string}
+        if (payload.name !== "rc:scriptPermissionsChanged") return
+        rcService.getSyncStatus().then((next) => {
+          if (!cancelled && next) setStatus(next)
+        }).catch(() => {})
+      } catch {
+        // Ignore malformed envelopes from unrelated events.
+      }
+    })
     // A finished reconcile resets progress.
     return () => {
       cancelled = true
@@ -124,6 +138,7 @@ export function useSync(): UseSyncResult {
       offStatus()
       offConflict()
       offProgress()
+      offPermissions()
     }
   }, [])
 
@@ -139,7 +154,10 @@ export function useSync(): UseSyncResult {
             next.autoPushLocal,
             next.autoPullServer,
           )
-          .catch((err) => toast.error("Failed to save sync config: " + String(err)))
+          .catch((err) => {
+            if (String(err).toLowerCase().includes("script sync is required")) return
+            toast.error("Failed to save sync config: " + String(err))
+          })
         return next
       })
     },
