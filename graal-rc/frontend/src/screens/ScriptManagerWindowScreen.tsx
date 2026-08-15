@@ -6,8 +6,9 @@
 import {useEffect, useMemo, useRef, useState, type RefObject} from "react"
 import {toast} from "sonner"
 import {Events} from "@wailsio/runtime"
-import {CircleAlert, CircleCheck, CircleOff, Flag, LocateFixed, Loader2, RotateCcw, UserRound} from "lucide-react"
+import {CircleAlert, CircleCheck, CircleOff, Flag, FolderOpen, LocateFixed, Loader2, RotateCcw, UserRound} from "lucide-react"
 
+import {ContextMenu} from "@/components/ContextMenu"
 import {Button} from "@/components/ui/button"
 import {Badge} from "@/components/ui/badge"
 import {Input} from "@/components/ui/input"
@@ -223,6 +224,20 @@ interface Row {
   disabled?: boolean
 }
 
+type ScriptKind = "weapon" | "class" | "npc"
+
+async function openLocalScriptOrFail(
+  kind: ScriptKind,
+  name: string,
+  t: (key: string, vars?: Record<string, string | number>) => string,
+) {
+  try {
+    await rcService.openLocalScriptInFileBrowser(kind, name)
+  } catch (err) {
+    toast.error(t("scripts.openLocalFailed"), {description: String(err)})
+  }
+}
+
 // WeaponClassTab handles weapon and class lists (both name-keyed; weapons add an
 // Image column). Add takes a single name; delete takes the selected name.
 function WeaponClassTab({
@@ -251,6 +266,7 @@ function WeaponClassTab({
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc")
   const openingKeysRef = useRef<Set<string>>(new Set())
   const [openingKeys, setOpeningKeys] = useState<Set<string>>(new Set())
+  const [scriptMenu, setScriptMenu] = useState<{name: string; x: number; y: number} | null>(null)
 
   const filtered = useMemo(() => {
     const f = rows.filter((r) => r.key.toLowerCase().includes(filter.toLowerCase()))
@@ -379,6 +395,12 @@ function WeaponClassTab({
                   aria-disabled={opening || r.disabled}
                   onClick={() => { if (!opening && !r.disabled) setSelected(r.key) }}
                   onDoubleClick={() => { if (!opening && !r.disabled) void openRow(r.key) }}
+                  onContextMenu={(event) => {
+                    event.preventDefault()
+                    if (opening || r.disabled) return
+                    setSelected(r.key)
+                    setScriptMenu({name: r.key, x: event.clientX, y: event.clientY})
+                  }}
                   className={`border-b ${
                     r.disabled
                       ? "cursor-not-allowed opacity-60"
@@ -403,6 +425,18 @@ function WeaponClassTab({
           </tbody>
         </table>
       </ScrollArea>
+
+      {scriptMenu && (
+        <ContextMenu
+          x={scriptMenu.x}
+          y={scriptMenu.y}
+          items={[{
+            label: t("scripts.openLocalFile"),
+            onSelect: () => { void openLocalScriptOrFail(kind, scriptMenu.name, t) },
+          }]}
+          onClose={() => setScriptMenu(null)}
+        />
+      )}
 
       <AlertDialog open={adding} onOpenChange={(v) => { if (!creating) setAdding(v) }}>
         <AlertDialogContent aria-busy={creating}>
@@ -648,6 +682,9 @@ function NPCTab({
           <div className="text-muted-foreground border-b px-3 py-2 text-xs">
             {npcMenu.npc.name} <span className="font-mono">#{npcMenu.npc.id}</span>
           </div>
+          <button type="button" className="hover:bg-accent flex w-full items-center gap-2 px-3 py-2 text-left" onClick={() => { const npc = npcMenu.npc; setNpcMenu(null); void openLocalScriptOrFail("npc", npc.name, t) }}>
+            <FolderOpen className="size-4" />{t("scripts.openLocalFile")}
+          </button>
           <button type="button" className="hover:bg-accent flex w-full items-center gap-2 px-3 py-2 text-left" onClick={() => { void doReset(npcMenu.npc.id); setNpcMenu(null) }}>
             <RotateCcw className="size-4" />{t("scripts.reset")}
           </button>

@@ -226,6 +226,7 @@ export interface RcService {
   // Type-aware file open (double-click).
   openRemoteFile(path: string): Promise<string>
   openRemoteFileAsText(path: string): Promise<void>
+  openLocalScriptInFileBrowser(kind: string, name: string): Promise<void>
   getTextFile(path: string): Promise<string>
   saveTextFile(path: string, content: string): Promise<void>
   // SQLite explorer.
@@ -546,6 +547,7 @@ export const rcService: RcService = {
   // Type-aware file open (double-click).
   openRemoteFile: (path) => App.OpenRemoteFile(path),
   openRemoteFileAsText: (path) => App.OpenRemoteFileAsText(path),
+  openLocalScriptInFileBrowser: (kind, name) => App.OpenLocalScriptInFileBrowser(kind, name),
   getTextFile: (path) => App.GetTextFile(path),
   saveTextFile: (path, content) => App.SaveTextFile(path, content),
   // SQLite explorer.

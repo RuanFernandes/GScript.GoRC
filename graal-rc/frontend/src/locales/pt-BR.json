@@ -613,6 +613,8 @@
   "scripts.warpFailed": "Falha ao teleportar",
   "scripts.createFailed": "Falha ao criar NPC",
   "scripts.openFailed": "Não foi possível abrir o script",
+  "scripts.openLocalFile": "Abrir no explorador de arquivos local",
+  "scripts.openLocalFailed": "Não foi possível abrir o explorador de arquivos local",
   "scripts.initialSyncBusy": "Aguarde o sync inicial terminar para abrir o gerenciador de scripts.",
   "scripts.noPermission": "Nenhuma resposta do servidor, sua conta provavelmente não possui permissão de leitura."
   ,"scripts.addWeapon": "Adicionar Weapon",

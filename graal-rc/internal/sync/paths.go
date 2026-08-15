@@ -86,6 +86,35 @@ func fullPath(outputDir, kind, fileName string) string {
 	return filepath.Join(outputDir, kindSubdir(kind), fileName+scriptExt)
 }
 
+// LocalScriptPath returns the managed local path for a script name. The name
+// is encoded using the same convention as the sync engine, so scripts whose
+// server names contain path separators still resolve to a single file inside
+// the configured output directory.
+func LocalScriptPath(outputDir, kind, name string) (string, error) {
+	outputDir = strings.TrimSpace(outputDir)
+	if outputDir == "" {
+		return "", fmt.Errorf("sync output directory is required")
+	}
+
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	switch kind {
+	case "weapon", "class", "npc":
+	default:
+		return "", fmt.Errorf("unsupported script kind %q", kind)
+	}
+
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("script name is required")
+	}
+
+	directory, err := filepath.Abs(outputDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve sync output directory: %w", err)
+	}
+	return fullPath(directory, kind, fileNameFor(kind, name, name)), nil
+}
+
 func entryKey(kind, key string) string { return kind + ":" + key }
 
 // writeFileAtomic writes data via a temp file + rename so a crash mid-write or
