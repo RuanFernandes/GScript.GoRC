@@ -11,11 +11,21 @@ export interface ChangelogEntry {
 // the visible history from nullborne.com when the release service is reachable.
 const CHANGELOG_PT_BR: ChangelogEntry[] = [
   {
+    version: "3.1.2",
+    date: "15/08/2026",
+    title: "Hotfix do relançamento do atualizador",
+    summary: "O RC agora volta a abrir depois que o instalador automático termina.",
+    current: true,
+    changes: [
+      "O helper do auto-update agora aguarda o instalador silencioso, registra falhas e relança o RC ao final para evitar que a atualização deixe o aplicativo fechado.",
+    ],
+  },
+  {
     version: "3.1.1",
     date: "15/08/2026",
     title: "Hotfix do atualizador Windows",
     summary: "Corrige a verificação de processo usada pelo instalador durante o auto-update.",
-    current: true,
+    current: false,
     changes: [
       "Corrigida a verificação do RC em instalações iniciadas pelo auto-update; o instalador agora executa o tasklist de forma compatível com o plugin Unicode do NSIS.",
     ],
@@ -132,8 +142,15 @@ const CHANGELOG_PT_BR: ChangelogEntry[] = [
 
 const CHANGELOG_EN: ChangelogEntry[] = [
   {
+    version: "3.1.2", date: "2026-08-15", title: "Updater relaunch hotfix",
+    summary: "The RC now opens again after the automatic installer finishes.", current: true,
+    changes: [
+      "The automatic-update helper now waits for the silent installer, records failures and relaunches the RC afterward so an update cannot leave the application closed.",
+    ],
+  },
+  {
     version: "3.1.1", date: "2026-08-15", title: "Windows updater hotfix",
-    summary: "Fixes the process check used by the installer during automatic updates.", current: true,
+    summary: "Fixes the process check used by the installer during automatic updates.", current: false,
     changes: [
       "Fixed RC detection for installers launched by automatic updates; the installer now runs tasklist through a Unicode NSIS-compatible invocation.",
     ],
@@ -218,8 +235,15 @@ const CHANGELOG_EN: ChangelogEntry[] = [
 
 const CHANGELOG_ES: ChangelogEntry[] = [
   {
+    version: "3.1.2", date: "2026-08-15", title: "Hotfix de relanzamiento del actualizador",
+    summary: "El RC vuelve a abrirse después de que termina el instalador automático.", current: true,
+    changes: [
+      "El helper de actualización automática ahora espera al instalador silencioso, registra fallos y relanza el RC al finalizar para evitar que quede cerrado.",
+    ],
+  },
+  {
     version: "3.1.1", date: "2026-08-15", title: "Hotfix del actualizador de Windows",
-    summary: "Corrige la verificación de procesos usada por el instalador durante las actualizaciones automáticas.", current: true,
+    summary: "Corrige la verificación de procesos usada por el instalador durante las actualizaciones automáticas.", current: false,
     changes: [
       "Corregida la detección del RC para instaladores iniciados por actualizaciones automáticas; el instalador ahora ejecuta tasklist con una invocación compatible con NSIS Unicode.",
     ],
