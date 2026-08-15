@@ -136,7 +136,7 @@ export class GraalScriptLspClient {
             signatureHelp: {signatureInformation: {documentationFormat: ["markdown", "plaintext"]}},
           },
         },
-        clientInfo: {name: "graal-rc", version: "3.1.0"},
+        clientInfo: {name: "graal-rc", version: "3.0.0"},
       })
       await this.notify("initialized", {})
       if (this.disposed) return result ?? {}
