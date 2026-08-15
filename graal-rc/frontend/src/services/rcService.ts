@@ -158,6 +158,7 @@ export interface RcService {
   getAppVersion(): Promise<string>
   checkForUpdates(): Promise<UpdateInfo>
   installUpdate(): Promise<void>
+  saveUpdate(): Promise<string>
   fetchRemoteChangelog(): Promise<RemoteChangelog>
   getRemoteTheme(): Promise<RemoteTheme | null>
   saveRemoteTheme(name: string, definition: string): Promise<void>
@@ -381,6 +382,7 @@ export const rcService: RcService = {
   getAppVersion: () => App.GetAppVersion(),
   checkForUpdates: () => App.CheckForUpdates(),
   installUpdate: () => App.InstallUpdate(),
+  saveUpdate: () => App.SaveUpdate(),
   fetchRemoteChangelog: () => App.FetchRemoteChangelog(),
   getRemoteTheme: () => App.GetRemoteTheme(),
   saveRemoteTheme: (name, definition) => App.SaveRemoteTheme(name, definition),

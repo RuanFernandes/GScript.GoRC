@@ -8,7 +8,7 @@ import (
 )
 
 func TestReleaseURLUsesOnlyTheTrustedPortal(t *testing.T) {
-	for _, route := range []string{"/update", "/changelog", "/windows"} {
+	for _, route := range []string{"/update", "/changelog", "/windows", "/linux", "/mac"} {
 		got, err := releaseURL(route)
 		if err != nil {
 			t.Fatalf("releaseURL(%q): %v", route, err)
@@ -39,8 +39,91 @@ func TestDownloadInstallerRejectsUntrustedRoutesBeforeNetworkAccess(t *testing.T
 }
 
 func TestAppVersionIsReleaseVersion(t *testing.T) {
-	if (&App{}).GetAppVersion() != "3.1.2" {
-		t.Fatalf("GetAppVersion() = %q, want 3.1.2", (&App{}).GetAppVersion())
+	if (&App{}).GetAppVersion() != "3.1.3" {
+		t.Fatalf("GetAppVersion() = %q, want 3.1.3", (&App{}).GetAppVersion())
+	}
+}
+
+func TestReleaseTargetMapsSupportedOperatingSystems(t *testing.T) {
+	tests := []struct {
+		goos         string
+		wantPlatform string
+	}{
+		{goos: "windows", wantPlatform: "windows"},
+		{goos: "linux", wantPlatform: "linux"},
+		{goos: "darwin", wantPlatform: "mac"},
+		{goos: "freebsd", wantPlatform: ""},
+	}
+	for _, test := range tests {
+		platform, architecture := releaseTarget(test.goos, "amd64")
+		if platform != test.wantPlatform {
+			t.Fatalf("releaseTarget(%q) platform = %q, want %q", test.goos, platform, test.wantPlatform)
+		}
+		if test.wantPlatform == "" && architecture != "" {
+			t.Fatalf("releaseTarget(%q) architecture = %q, want empty", test.goos, architecture)
+		}
+		if test.wantPlatform != "" && architecture != "amd64" {
+			t.Fatalf("releaseTarget(%q) architecture = %q, want amd64", test.goos, architecture)
+		}
+	}
+}
+
+func TestUpdateDownloadRoutesAndTemporaryNames(t *testing.T) {
+	tests := []struct {
+		platform string
+		path     string
+		pattern  string
+	}{
+		{platform: "windows", path: "/windows", pattern: "nullbornes-rc-update-*.exe"},
+		{platform: "linux", path: "/linux", pattern: "nullbornes-rc-update-*.AppImage"},
+		{platform: "mac", path: "/mac", pattern: "nullbornes-rc-update-*.dmg"},
+	}
+	for _, test := range tests {
+		if got := updateDownloadPath(test.platform); got != test.path {
+			t.Fatalf("updateDownloadPath(%q) = %q, want %q", test.platform, got, test.path)
+		}
+		if got := updateTemporaryPattern(test.platform); got != test.pattern {
+			t.Fatalf("updateTemporaryPattern(%q) = %q, want %q", test.platform, got, test.pattern)
+		}
+	}
+	if got := updateDownloadPath("other"); got != "" {
+		t.Fatalf("updateDownloadPath(other) = %q, want empty", got)
+	}
+}
+
+func TestUpdateFilenameUsesSafeArtifactBasename(t *testing.T) {
+	info := UpdateInfo{Installer: &UpdateInstaller{Name: "nested/path/nullbornes-rc-linux.AppImage"}}
+	if got := updateFilename(info, "linux"); got != "nullbornes-rc-linux.AppImage" {
+		t.Fatalf("updateFilename returned %q, want basename", got)
+	}
+	if got := updateFilename(UpdateInfo{}, "mac"); got != "nullbornes-rc-macos.dmg" {
+		t.Fatalf("updateFilename fallback = %q, want macOS filename", got)
+	}
+}
+
+func TestSaveDownloadedInstallerCopiesVerifiedArtifact(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "download.AppImage")
+	destinationPath := filepath.Join(t.TempDir(), "saved.AppImage")
+	content := []byte("verified release payload")
+	if err := os.WriteFile(sourcePath, content, 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	if err := saveDownloadedInstaller(sourcePath, destinationPath, "linux"); err != nil {
+		t.Fatalf("saveDownloadedInstaller: %v", err)
+	}
+	got, err := os.ReadFile(destinationPath)
+	if err != nil {
+		t.Fatalf("read destination: %v", err)
+	}
+	if string(got) != string(content) {
+		t.Fatalf("saved content = %q, want %q", got, content)
+	}
+	leftovers, err := filepath.Glob(filepath.Join(filepath.Dir(destinationPath), ".nullbornes-rc-update-*"))
+	if err != nil {
+		t.Fatalf("find temporary destination files: %v", err)
+	}
+	if len(leftovers) != 0 {
+		t.Fatalf("temporary destination files remain: %v", leftovers)
 	}
 }
 
@@ -76,7 +159,11 @@ func TestWindowsUpdateScriptRelaunchesTheApplication(t *testing.T) {
 	)
 
 	for _, fragment := range []string{
+		"$waitDeadline = (Get-Date).AddSeconds(30)",
+		"throw \"Timed out waiting for Nullborne RC (PID $parentPid) to exit.\"",
+		"$parentExited = $true",
 		"$installer = Start-Process -FilePath $installerPath -ArgumentList @('/S') -Wait -PassThru -WindowStyle Hidden",
+		"if (-not $parentExited)",
 		"Start-Process -FilePath $applicationPath -WorkingDirectory $workingDirectory -WindowStyle Normal",
 		"Set-Content -LiteralPath $logPath",
 		"Ruan''s",
