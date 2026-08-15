@@ -239,7 +239,7 @@ function WeaponClassTab({
     try {
       if (kind === "weapon") await rcService.addWeapon(n)
       else await rcService.addClass(n)
-      toast.success(`${kind === "weapon" ? "Weapon" : "Class"} "${n}" added`)
+      toast.success(t(kind === "weapon" ? "scripts.weaponAdded" : "scripts.classAdded", {name: n}))
       setName("")
       setAdding(false)
       await onRefresh()
@@ -265,7 +265,7 @@ function WeaponClassTab({
     try {
       if (kind === "weapon") await rcService.deleteWeapon(selected)
       else await rcService.deleteClass(selected)
-      toast.success(`Deleted "${selected}"`)
+      toast.success(t("scripts.deleted", {name: selected}))
       setSelected(null)
       await onRefresh()
     } catch (err) {
@@ -349,7 +349,7 @@ function WeaponClassTab({
                     <td key={i} className="px-3 py-1.5">
                       {i === 0 ? (
                         <span className={r.disabled ? "text-muted-foreground italic" : "inline-flex items-center gap-2"}>
-                          {opening && <Loader2 className="text-muted-foreground size-3.5 animate-spin" aria-label="Loading" />}
+                          {opening && <Loader2 className="text-muted-foreground size-3.5 animate-spin" aria-label={t("scripts.loading")} />}
                           {c}
                         </span>
                       ) : c}
@@ -367,7 +367,7 @@ function WeaponClassTab({
           <AlertDialogHeader>
             <AlertDialogTitle>{kind === "weapon" ? t("scripts.addWeapon") : t("scripts.addClass")}</AlertDialogTitle>
             <AlertDialogDescription>
-              Enter a name. The script can be edited after creation.
+              {t("scripts.addDescription")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="grid gap-2">
@@ -484,7 +484,7 @@ function NPCTab({
     if (selected == null || !selectedNPCUsable) return
     try {
       await rcService.deleteNPC(selected)
-      toast.success(`Deleted NPC ${selected}`)
+      toast.success(t("scripts.npcDeleted", {id: selected}))
       setSelected(null)
       await onRefresh()
     } catch (err) {
@@ -496,7 +496,7 @@ function NPCTab({
     if (npcID == null) return
     try {
       await rcService.resetNPC(npcID)
-      toast.success(`Reset NPC ${npcID}`)
+      toast.success(t("scripts.npcReset", {id: npcID}))
     } catch (err) {
       toast.error(t("scripts.resetFailed"), {description: String(err)})
     }
@@ -527,14 +527,14 @@ function NPCTab({
         <table className="w-full min-w-[30rem] text-sm">
           <thead className="bg-muted/50 sticky top-0">
             <tr>
-              {[["id", "ID"], ["name", "Name"], ["type", "Type"], ["level", "Level"]].map(([key, label]) => (
+              {[["id", "scripts.header.id"], ["name", "scripts.header.name"], ["type", "scripts.header.type"], ["level", "scripts.header.level"]].map(([key, labelKey]) => (
                 <th key={key} className="px-3 py-2 text-left font-medium">
                   <button
                     type="button"
                     className="inline-flex items-center gap-1 hover:text-foreground"
                     onClick={() => toggleSort(key as "id" | "name" | "type" | "level")}
                   >
-                    {label} {sortKey === key ? (sortDir === "asc" ? "▲" : "▼") : ""}
+                    {t(labelKey)} {sortKey === key ? (sortDir === "asc" ? "▲" : "▼") : ""}
                   </button>
                 </th>
               ))}
@@ -676,7 +676,7 @@ function WarpDialog({
     if (npcId == null) return
     try {
       await rcService.warpNPC(npcId, Number(x) || 0, Number(y) || 0, level)
-      toast.success(`Warped NPC ${npcId}`)
+      toast.success(t("scripts.npcWarped", {id: npcId}))
       onClose()
     } catch (err) {
       toast.error(t("scripts.warpFailed"), {description: String(err)})
@@ -702,12 +702,12 @@ function WarpDialog({
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>{t("scripts.warp")} NPC {npcId ?? ""}</AlertDialogTitle>
-          <AlertDialogDescription>Move the NPC to a level and position.</AlertDialogDescription>
+          <AlertDialogDescription>{t("scripts.moveDescription")}</AlertDialogDescription>
         </AlertDialogHeader>
         <div className="grid gap-2">
-          {field("Level:", level, setLevel, true)}
-          {field("X:", x, setX)}
-          {field("Y:", y, setY)}
+          {field(t("scripts.field.level"), level, setLevel, true)}
+          {field(t("scripts.field.x"), x, setX)}
+          {field(t("scripts.field.y"), y, setY)}
         </div>
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>
@@ -762,7 +762,7 @@ function AddNPCDialog({
     }
     try {
       await rcService.createNPC(name.trim(), Number(id) || firstFreeId, type, scripter, level, x, y)
-      toast.success(`NPC "${name.trim()}" created`)
+      toast.success(t("scripts.npcCreated", {name: name.trim()}))
       setName("")
       setType("")
       setScripter("")
@@ -797,16 +797,16 @@ function AddNPCDialog({
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>{t("scripts.addNpc")}</AlertDialogTitle>
-          <AlertDialogDescription>Create a new DB NPC on the server.</AlertDialogDescription>
+          <AlertDialogDescription>{t("scripts.createDescription")}</AlertDialogDescription>
         </AlertDialogHeader>
         <div className="grid gap-2">
-          {field("Name:", name, setName, {autoFocus: true})}
-          {field("ID:", id, setId)}
-          {field("Type:", type, setType)}
-          {field("Scripter:", scripter, setScripter)}
-          {field("Level:", level, setLevel)}
-          {field("X:", x, setX)}
-          {field("Y:", y, setY)}
+          {field(t("scripts.field.name"), name, setName, {autoFocus: true})}
+          {field(t("scripts.field.id"), id, setId)}
+          {field(t("scripts.field.type"), type, setType)}
+          {field(t("scripts.field.scripter"), scripter, setScripter)}
+          {field(t("scripts.field.level"), level, setLevel)}
+          {field(t("scripts.field.x"), x, setX)}
+          {field(t("scripts.field.y"), y, setY)}
         </div>
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>

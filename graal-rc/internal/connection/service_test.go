@@ -249,6 +249,55 @@ func TestStatusReportsScriptWriteAccessFromFolderRights(t *testing.T) {
 	}
 }
 
+func TestReplaceSelfFolderRightsOnlyReportsRealChanges(t *testing.T) {
+	readOnly, err := folderrights.Parse("r WEAPONS/*")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	s := NewService()
+	var events []struct {
+		name string
+		data []any
+	}
+	s.SetEmitter(func(name string, data ...any) {
+		events = append(events, struct {
+			name string
+			data []any
+		}{name: name, data: data})
+	})
+
+	if stateChanged, permissionChanged := s.replaceSelfFolderRights(readOnly, 0, "Graal123", "Testbed3d"); !stateChanged || permissionChanged {
+		t.Fatalf("initial rights load = stateChanged %v permissionChanged %v, want true false", stateChanged, permissionChanged)
+	}
+	if len(events) != 0 {
+		t.Fatalf("rights replacement helper must not emit by itself, got %d events", len(events))
+	}
+	if stateChanged, permissionChanged := s.replaceSelfFolderRights(readOnly, 0, "Graal123", "Testbed3d"); stateChanged || permissionChanged {
+		t.Fatalf("identical rights refresh = stateChanged %v permissionChanged %v, want false false", stateChanged, permissionChanged)
+	}
+
+	writeAccess, err := folderrights.Parse("rw WEAPONS/*")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if stateChanged, permissionChanged := s.replaceSelfFolderRights(writeAccess, 0, "Graal123", "Testbed3d"); !stateChanged || !permissionChanged {
+		t.Fatalf("changed folder rights = stateChanged %v permissionChanged %v, want true true", stateChanged, permissionChanged)
+	}
+	if stateChanged, permissionChanged := s.replaceSelfFolderRights(writeAccess, 0, "Graal123", "Testbed3d"); stateChanged || permissionChanged {
+		t.Fatalf("repeated changed rights refresh = stateChanged %v permissionChanged %v, want false false", stateChanged, permissionChanged)
+	}
+
+	// Disconnecting clears the active cache, but a reconnect to the same server
+	// must still compare against the last successful server snapshot.
+	s.clearSelfFolderRights()
+	if stateChanged, permissionChanged := s.replaceSelfFolderRights(writeAccess, 0, "Graal123", "Testbed3d"); !stateChanged || permissionChanged {
+		t.Fatalf("reconnect with unchanged rights = stateChanged %v permissionChanged %v, want true false", stateChanged, permissionChanged)
+	}
+	if stateChanged, permissionChanged := s.replaceSelfFolderRights(readOnly, 0, "Graal123", "Testbed3d"); !stateChanged || !permissionChanged {
+		t.Fatalf("reconnect with changed rights = stateChanged %v permissionChanged %v, want true true", stateChanged, permissionChanged)
+	}
+}
+
 func eq(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

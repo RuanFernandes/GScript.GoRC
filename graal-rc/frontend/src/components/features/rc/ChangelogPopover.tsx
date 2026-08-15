@@ -36,7 +36,7 @@ export function ChangelogPopover({open, onClose}: ChangelogPopoverProps) {
     <div
       ref={panelRef}
       role="dialog"
-      aria-label={language === "pt-BR" ? "Changelog do Graal Remote Control" : language === "es" ? "Changelog de Graal Remote Control" : "Graal Remote Control changelog"}
+      aria-label={t("rc.changelog")}
       className="bg-popover text-popover-foreground absolute right-0 top-[calc(100%+0.5rem)] z-50 flex max-h-[min(42rem,calc(100vh-5rem))] w-[min(25rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-xl border shadow-xl"
     >
       <div className="flex shrink-0 items-start gap-3 border-b px-4 py-3">
@@ -45,7 +45,7 @@ export function ChangelogPopover({open, onClose}: ChangelogPopoverProps) {
         </div>
         <div className="min-w-0 flex-1">
           <h2 className="text-sm font-semibold">{t("rc.changelog")}</h2>
-          <p className="text-muted-foreground mt-0.5 text-xs">{language === "pt-BR" ? "Histórico de versões do Graal Remote Control" : language === "es" ? "Historial de versiones de Graal Remote Control" : "Graal Remote Control version history"}</p>
+          <p className="text-muted-foreground mt-0.5 text-xs">{t("rc.changelogDescription")}</p>
         </div>
         <button
           type="button"

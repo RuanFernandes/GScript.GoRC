@@ -1,6 +1,7 @@
 import {useEffect, useState} from "react"
 import {Copy, Minus, Square, X} from "lucide-react"
 import {Window} from "@wailsio/runtime"
+import {useLanguage} from "@/hooks/useLanguage"
 
 interface AppWindowFrameProps {
   title: string
@@ -10,6 +11,7 @@ interface AppWindowFrameProps {
 const noDragStyle = {"--wails-draggable": "no-drag"} as React.CSSProperties
 
 export function AppWindowFrame({title, children}: AppWindowFrameProps) {
+  const {t} = useLanguage()
   const [maximised, setMaximised] = useState(false)
 
   useEffect(() => {
@@ -32,17 +34,17 @@ export function AppWindowFrame({title, children}: AppWindowFrameProps) {
           <h1 className="truncate text-sm font-semibold tracking-tight">{title}</h1>
         </div>
         <div className="ml-auto flex h-full items-stretch" style={noDragStyle}>
-          <WindowButton label="Minimize" style={noDragStyle} onClick={() => Window.Minimise()}>
+          <WindowButton label={t("window.minimize")} style={noDragStyle} onClick={() => Window.Minimise()}>
             <Minus className="size-4" />
           </WindowButton>
           <WindowButton
-            label={maximised ? "Restore" : "Maximize"}
+            label={maximised ? t("window.restore") : t("window.maximize")}
             style={noDragStyle}
             onClick={toggleMaximise}
           >
             {maximised ? <Copy className="size-3.5" /> : <Square className="size-3.5" />}
           </WindowButton>
-          <WindowButton label="Close" style={noDragStyle} onClick={() => Window.Close()} destructive>
+          <WindowButton label={t("window.close")} style={noDragStyle} onClick={() => Window.Close()} destructive>
             <X className="size-4" />
           </WindowButton>
         </div>
@@ -65,10 +67,12 @@ function WindowButton({
   destructive?: boolean
   children: React.ReactNode
 }) {
+  const {t} = useLanguage()
+
   return (
     <button
       type="button"
-      aria-label={`${label} window`}
+      aria-label={t("window.buttonLabel", {label})}
       title={label}
       style={style}
       onClick={onClick}

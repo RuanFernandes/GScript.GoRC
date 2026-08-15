@@ -78,14 +78,24 @@ type Service struct {
 	// the current server. It is deliberately fail-closed: until a fresh
 	// response is cached, script reads/writes and privileged player actions are
 	// rejected.
-	rightsMu          sync.RWMutex
-	rightsRefreshMu   sync.Mutex
-	rightsRequestSeq  uint64
-	selfRights        folderrights.Access
-	selfStaffRights   int
-	selfRightsLoaded  bool
-	selfRightsError   string
-	selfRightsAccount string
+	rightsMu         sync.RWMutex
+	rightsRefreshMu  sync.Mutex
+	rightsRequestSeq uint64
+	selfRights       folderrights.Access
+	selfStaffRights  int
+	selfRightsLoaded bool
+	selfRightsError  string
+	// selfRightsBaseline is the last successful server snapshot retained across
+	// disconnect/reconnect transitions. The active cache above is cleared while
+	// disconnected so callers remain fail-closed, but permission comparisons must
+	// still use the last server snapshot instead of treating every rejoin as a
+	// first load.
+	selfRightsBaseline        folderrights.Access
+	selfStaffRightsBaseline   int
+	selfRightsBaselineLoaded  bool
+	selfRightsBaselineAccount string
+	selfRightsBaselineServer  string
+	selfRightsAccount         string
 	// selfRightsCommunityName is the optional community name associated with
 	// selfRightsAccount. Both values come from the server's RC chat identity
 	// notification and are used to correlate later rights-change messages.
@@ -734,6 +744,10 @@ func (s *Service) captureSelfRightsIdentity(message loadedRightsMessage) {
 		log.Printf("[rights] self identity captured actor=%q community=%q account=%q", message.Actor, community, account)
 		s.emitEvent("rc:scriptIdentityChanged")
 	}
+}
+
+func (s *Service) emitScriptPermissionsEvent(permissionChanged bool) {
+	s.emitEvent("rc:scriptPermissionsChanged", permissionChanged)
 }
 
 // handleRCMessage watches the server chat for rights identity/change
@@ -1644,6 +1658,7 @@ func (s *Service) SelfAccount() string {
 // server.
 func (s *Service) clearSelfFolderRights() {
 	s.rightsMu.Lock()
+	stateChanged := s.selfRightsLoaded || s.selfRightsError != "" || s.selfRightsAccount != "" || s.selfRightsCommunityName != "" || s.selfRightsServer != ""
 	s.selfRights = folderrights.Access{}
 	s.selfStaffRights = 0
 	s.selfRightsLoaded = false
@@ -1653,7 +1668,9 @@ func (s *Service) clearSelfFolderRights() {
 	s.selfRightsServer = ""
 	s.selfRightsUpdated = time.Time{}
 	s.rightsMu.Unlock()
-	s.emitEvent("rc:scriptPermissionsChanged")
+	if stateChanged {
+		s.emitScriptPermissionsEvent(false)
+	}
 }
 
 // clearServerTextCache invalidates the options/flags snapshot when the active
@@ -1750,17 +1767,59 @@ func (s *Service) RefreshServerScriptContext() error {
 }
 
 func (s *Service) invalidateSelfFolderRights(err error) {
+	nextError := ""
+	if err != nil {
+		nextError = err.Error()
+	}
 	s.rightsMu.Lock()
+	previousError := s.selfRightsError
+	stateChanged := s.selfRightsLoaded || previousError != nextError
 	s.selfRights = folderrights.Access{}
 	s.selfStaffRights = 0
 	s.selfRightsLoaded = false
 	s.selfRightsError = ""
-	if err != nil {
-		s.selfRightsError = err.Error()
+	if nextError != "" {
+		s.selfRightsError = nextError
 	}
 	s.selfRightsUpdated = time.Time{}
 	s.rightsMu.Unlock()
-	s.emitEvent("rc:scriptPermissionsChanged")
+	if stateChanged {
+		s.emitScriptPermissionsEvent(false)
+	}
+}
+
+// replaceSelfFolderRights stores one server snapshot and reports whether the
+// observable rights state changed. The comparison uses the last successful
+// server snapshot, not the active cache: the latter is deliberately cleared on
+// disconnect/reconnect to keep access fail-closed. The boolean returned to the
+// frontend is intentionally narrower: a first load or a cache reset needs
+// subscribers to refresh, but it is not a server-side permission change worth
+// notifying the operator about.
+func (s *Service) replaceSelfFolderRights(access folderrights.Access, staffRights int, account, server string) (stateChanged, permissionChanged bool) {
+	s.rightsMu.Lock()
+	wasLoaded := s.selfRightsLoaded
+	sameBaseline := s.selfRightsBaselineLoaded &&
+		equalFoldAny(s.selfRightsBaselineAccount, account) &&
+		s.selfRightsBaselineServer == server
+	permissionChanged = sameBaseline && (!s.selfRightsBaseline.Equal(access) || s.selfStaffRightsBaseline != staffRights)
+	stateChanged = !wasLoaded || permissionChanged || s.selfRightsError != "" || !equalFoldAny(s.selfRightsAccount, account) || s.selfRightsServer != server
+	s.selfRights = access
+	s.selfStaffRights = staffRights
+	s.selfRightsLoaded = true
+	s.selfRightsError = ""
+	s.selfRightsAccount = account
+	s.selfRightsServer = server
+	s.selfRightsUpdated = time.Now()
+	// A successful snapshot becomes the new comparison point. If the server
+	// changed the rights, updating the baseline prevents the same poll result
+	// from generating the same warning repeatedly.
+	s.selfRightsBaseline = access
+	s.selfStaffRightsBaseline = staffRights
+	s.selfRightsBaselineLoaded = true
+	s.selfRightsBaselineAccount = account
+	s.selfRightsBaselineServer = server
+	s.rightsMu.Unlock()
+	return stateChanged, permissionChanged
 }
 
 // RefreshSelfFolderRights explicitly asks the current server for this
@@ -1809,17 +1868,11 @@ func (s *Service) RefreshSelfFolderRights() error {
 	s.mu.Lock()
 	server := s.serverName
 	s.mu.Unlock()
-	s.rightsMu.Lock()
-	s.selfRights = access
-	s.selfStaffRights = data.Rights
-	s.selfRightsLoaded = true
-	s.selfRightsError = ""
-	s.selfRightsAccount = returnedAccount
-	s.selfRightsServer = server
-	s.selfRightsUpdated = time.Now()
-	s.rightsMu.Unlock()
+	stateChanged, permissionChanged := s.replaceSelfFolderRights(access, data.Rights, returnedAccount, server)
 	log.Printf("[rights] refresh success localAccount=%q serverAccount=%q folderAccessLen=%d elapsed=%s", account, returnedAccount, len(data.FolderAccess), time.Since(started))
-	s.emitEvent("rc:scriptPermissionsChanged")
+	if stateChanged {
+		s.emitScriptPermissionsEvent(permissionChanged)
+	}
 	return nil
 }
 

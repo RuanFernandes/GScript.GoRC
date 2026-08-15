@@ -91,7 +91,12 @@ export function useOperationalNotifications(): OperationalNotificationsResult {
           push("error", t("notifications.connection"), reason || t("notifications.pumpError"))
           break
         case "rc:scriptPermissionsChanged":
-          push("warning", t("notifications.permissions"), t("notifications.permissionsChanged"))
+          // The backend sends false for cache warm-up/reset events. They still
+          // refresh permission-aware views, but are not operator-visible
+          // server-side changes.
+          if (values[0] !== false) {
+            push("warning", t("notifications.permissions"), t("notifications.permissionsChanged"))
+          }
           break
         case "rc:scriptIdentityChanged":
           push("info", t("notifications.identity"), t("notifications.identityChanged"))

@@ -137,3 +137,33 @@ func TestHasWriteAccessForScriptTypes(t *testing.T) {
 		})
 	}
 }
+
+func TestAccessEqualComparesParsedRules(t *testing.T) {
+	first, err := Parse("rw WEAPONS/*\n-rw WEAPONS/Legacy")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	same, err := Parse(`"rw WEAPONS/*","-rw WEAPONS/Legacy"`)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if !first.Equal(same) {
+		t.Fatal("equivalent parsed rules should compare equal")
+	}
+
+	differentOrder, err := Parse("-rw WEAPONS/Legacy\nrw WEAPONS/*")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if first.Equal(differentOrder) {
+		t.Fatal("rule order must remain significant")
+	}
+
+	differentRights, err := Parse("r WEAPONS/*\n-rw WEAPONS/Legacy")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if first.Equal(differentRights) {
+		t.Fatal("different rights should not compare equal")
+	}
+}

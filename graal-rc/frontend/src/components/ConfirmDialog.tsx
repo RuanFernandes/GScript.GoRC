@@ -11,6 +11,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import {Button} from "@/components/ui/button"
+import {useLanguage} from "@/hooks/useLanguage"
 
 interface ConfirmDialogProps {
   open: boolean
@@ -28,13 +29,14 @@ export function ConfirmDialog({
   open,
   title,
   description,
-  confirmLabel = "Confirm",
-  cancelLabel = "Cancel",
+  confirmLabel,
+  cancelLabel,
   destructive = false,
   busy = false,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
+  const {t} = useLanguage()
   return (
     <AlertDialog
       open={open}
@@ -49,11 +51,11 @@ export function ConfirmDialog({
         </AlertDialogHeader>
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
           <Button variant="outline" onClick={onCancel} disabled={busy}>
-            {cancelLabel}
+            {cancelLabel ?? t("common.cancel")}
           </Button>
           <Button variant={destructive ? "destructive" : "default"} onClick={onConfirm} disabled={busy}>
             {busy ? <Loader2 className="animate-spin" /> : null}
-            {confirmLabel}
+            {confirmLabel ?? t("common.confirm")}
           </Button>
         </div>
       </AlertDialogContent>

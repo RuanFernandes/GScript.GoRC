@@ -48,6 +48,22 @@ func Parse(raw string) (Access, error) {
 	return access, nil
 }
 
+// Equal reports whether two parsed snapshots have the same effective rules.
+// Entry order is part of the server semantics because later rules can revoke
+// or restore rights granted by earlier entries.
+func (a Access) Equal(other Access) bool {
+	if a.unrestricted != other.unrestricted || len(a.entries) != len(other.entries) {
+		return false
+	}
+	for i, entry := range a.entries {
+		otherEntry := other.entries[i]
+		if entry != otherEntry {
+			return false
+		}
+	}
+	return true
+}
+
 // CanRead reports whether the account can read the named script.
 func (a Access) CanRead(scriptType, name string) bool {
 	return a.has(scriptType, name, 'r')

@@ -7,6 +7,7 @@ import {type ReactNode, useEffect} from "react"
 
 import {Button} from "@/components/ui/button"
 import {cn} from "@/lib/utils"
+import {useLanguage} from "@/hooks/useLanguage"
 
 interface ModalProps {
   open: boolean
@@ -19,6 +20,7 @@ interface ModalProps {
 }
 
 export function Modal({open, title, description, onClose, children, footer, className}: ModalProps) {
+  const {t} = useLanguage()
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => {
@@ -46,7 +48,7 @@ export function Modal({open, title, description, onClose, children, footer, clas
             <h2 className="truncate text-sm font-semibold">{title}</h2>
             {description && <p className="text-muted-foreground mt-0.5 truncate text-xs">{description}</p>}
           </div>
-          <Button variant="ghost" size="icon" className="size-7" onClick={onClose} aria-label="Close">
+          <Button variant="ghost" size="icon" className="size-7" onClick={onClose} aria-label={t("common.close")}>
             <X className="size-4" />
           </Button>
         </header>

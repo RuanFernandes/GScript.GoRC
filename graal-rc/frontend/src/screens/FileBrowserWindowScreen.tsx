@@ -280,18 +280,18 @@ export function FileBrowserWindowScreen() {
   const contextItems = (entry: FileBrowserEntry) => {
     const items = []
     if (!entry.isDirectory) {
-      items.push({label: "Open", onSelect: () => openFile(entry)})
-      items.push({label: "Open as Text", onSelect: () => openAsText(entry)})
+      items.push({label: t("file.open"), onSelect: () => openFile(entry)})
+      items.push({label: t("file.openAsText"), onSelect: () => openAsText(entry)})
       items.push({separator: true, label: "", onSelect: () => {}})
-      items.push({label: "Download", disabled: !hasDownloadDir, onSelect: () => fb.download(entry)})
-      items.push({label: "Save As…", onSelect: () => fb.download(entry, true)})
-      items.push({label: "Move…", onSelect: () => openMove(entry)})
+      items.push({label: t("file.download"), disabled: !hasDownloadDir, onSelect: () => fb.download(entry)})
+      items.push({label: t("file.saveAs"), onSelect: () => fb.download(entry, true)})
+      items.push({label: t("file.move"), onSelect: () => openMove(entry)})
       items.push({separator: true, label: "", onSelect: () => {}})
     } else {
-      items.push({label: "Open", onSelect: () => fb.cd(entry.path)})
+      items.push({label: t("file.open"), onSelect: () => fb.cd(entry.path)})
     }
-    items.push({label: "Rename", onSelect: () => openRename(entry)})
-    items.push({label: "Delete", danger: true, onSelect: () => setDeleteTarget(entry)})
+    items.push({label: t("file.rename"), onSelect: () => openRename(entry)})
+    items.push({label: t("file.delete"), danger: true, onSelect: () => setDeleteTarget(entry)})
     return items
   }
 
@@ -314,16 +314,16 @@ export function FileBrowserWindowScreen() {
         <div className="ml-auto flex items-center gap-2">
           {fb.maxUpload > 0 && (
             <span className="text-muted-foreground hidden text-xs sm:inline">
-              Max upload {humanize(fb.maxUpload)}
+              {t("file.maxUpload", {size: humanize(fb.maxUpload)})}
             </span>
           )}
           <Button variant="outline" size="sm" onClick={fb.uploadViaDialog}>
             <Upload />
-            Upload
+            {t("file.upload")}
           </Button>
           <Button variant="outline" size="sm" onClick={fb.refresh} disabled={fb.loading}>
             <RefreshCw className={fb.loading ? "animate-spin" : undefined} />
-            Refresh
+            {t("file.refresh")}
           </Button>
         </div>
       </header>
@@ -333,7 +333,7 @@ export function FileBrowserWindowScreen() {
         <Input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder={`Search in ${fb.currentFolder || "root"}…`}
+          placeholder={t("file.searchIn", {folder: fb.currentFolder || t("file.root")})}
           className="h-8 text-sm"
         />
         {query && (
@@ -345,7 +345,7 @@ export function FileBrowserWindowScreen() {
 
       {!hasDownloadDir && (
         <div className="border-b bg-amber-500/10 px-3 py-1.5 text-xs text-amber-200">
-          No downloads folder set — downloads are disabled. Set one in Settings → Files.
+          {t("file.noDownloadsFolder")}
         </div>
       )}
 
@@ -405,7 +405,7 @@ export function FileBrowserWindowScreen() {
             <div className="bg-primary/10 pointer-events-none absolute inset-0 flex items-center justify-center border-2 border-dashed">
               <div className="text-primary flex flex-col items-center gap-1 text-sm font-medium">
                 <Upload />
-                Drop to upload to {fb.currentFolder || "root"}
+                {t("file.dropToUpload", {folder: fb.currentFolder || t("file.root")})}
               </div>
             </div>
           )}
@@ -433,11 +433,11 @@ export function FileBrowserWindowScreen() {
       <AlertDialog open={renameTarget !== null} onOpenChange={(v) => !v && setRenameTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Rename</AlertDialogTitle>
-            <AlertDialogDescription>Enter a new name for this file.</AlertDialogDescription>
+            <AlertDialogTitle>{t("file.rename")}</AlertDialogTitle>
+            <AlertDialogDescription>{t("file.renameDescription")}</AlertDialogDescription>
           </AlertDialogHeader>
           <div className="grid gap-2">
-            <Label htmlFor="rename-value">Name</Label>
+            <Label htmlFor="rename-value">{t("file.name")}</Label>
             <Input
               id="rename-value"
               value={renameValue}
@@ -449,9 +449,9 @@ export function FileBrowserWindowScreen() {
             />
           </div>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction onClick={doRename} disabled={!renameValue.trim()}>
-              Rename
+              {t("file.rename")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -461,17 +461,17 @@ export function FileBrowserWindowScreen() {
       <AlertDialog open={moveTarget !== null} onOpenChange={(v) => !v && setMoveTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Move “{moveTarget ? basename(moveTarget.path) : ""}”</AlertDialogTitle>
-            <AlertDialogDescription>Choose a destination folder.</AlertDialogDescription>
+            <AlertDialogTitle>{t("file.moveTitle", {name: moveTarget ? basename(moveTarget.path) : ""})}</AlertDialogTitle>
+            <AlertDialogDescription>{t("file.moveDescription")}</AlertDialogDescription>
           </AlertDialogHeader>
           <div className="grid gap-2">
-            <Label htmlFor="move-dest">Destination folder</Label>
+            <Label htmlFor="move-dest">{t("file.destination")}</Label>
             <FolderAutocomplete
               value={moveDest}
               options={destFolders.map((d) => d.path)}
               onChange={setMoveDest}
             />
-            <Label htmlFor="move-name">File name in destination</Label>
+            <Label htmlFor="move-name">{t("file.destinationName")}</Label>
             <Input
               id="move-name"
               value={moveName}
@@ -482,19 +482,19 @@ export function FileBrowserWindowScreen() {
             />
             {moveGlobs.length > 0 && (
               <p className="text-xs text-muted-foreground">
-                You have write rights to files in this folder matching: {moveGlobs.join(", ")}
+                {t("file.writeRights", {globs: moveGlobs.join(", ")})}
               </p>
             )}
             {!nameOk && moveName.trim().length > 0 && (
               <p className="text-xs text-destructive">
-                Please fix your new file name to match your rights.
+                {t("file.invalidName")}
               </p>
             )}
           </div>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction onClick={doMove} disabled={!moveValid}>
-              Move
+              {t("file.move")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -504,18 +504,18 @@ export function FileBrowserWindowScreen() {
       <AlertDialog open={deleteTarget !== null} onOpenChange={(v) => !v && setDeleteTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete “{deleteTarget ? basename(deleteTarget.path) : ""}”?</AlertDialogTitle>
+            <AlertDialogTitle>{t("file.deleteTitle", {name: deleteTarget ? basename(deleteTarget.path) : ""})}</AlertDialogTitle>
             <AlertDialogDescription>
-              This permanently removes it from the server. This cannot be undone.
+              {t("file.deleteDescription")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction
               onClick={doDelete}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              Delete
+              {t("file.delete")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -530,12 +530,13 @@ export function FileBrowserWindowScreen() {
 
 // Breadcrumb renders the current-folder path as clickable segments.
 function Breadcrumb({path, onNavigate}: {path: string; onNavigate: (folder: string) => void}) {
+  const {t} = useLanguage()
   const clean = trimFolder(path)
   const parts = clean.split("/").filter(Boolean)
   return (
     <nav className="text-muted-foreground flex min-w-0 items-center gap-0.5 text-sm">
       <span className="text-foreground/80">/</span>
-      {parts.length === 0 && <span className="text-muted-foreground">(root)</span>}
+      {parts.length === 0 && <span className="text-muted-foreground">{t("file.root")}</span>}
       {parts.map((part, i) => {
         const p = parts.slice(0, i + 1).join("/")
         const last = i === parts.length - 1
@@ -656,7 +657,7 @@ function FolderAutocomplete({
                   setOpen(false)
                 }}
               >
-                <span className="truncate">{o || "(root)"}</span>
+                <span className="truncate">{o || translate("file.root")}</span>
               </button>
             </li>
           ))}
@@ -682,6 +683,7 @@ function FolderNode({
   onToggle: (path: string) => void
   onOpen: (path: string) => void
 }) {
+  const {t} = useLanguage()
   const isOpen = expanded.has(node.path)
   const hasChildren = node.children.length > 0
   const active = current === node.path
@@ -699,7 +701,7 @@ function FolderNode({
             e.stopPropagation()
             if (hasChildren) onToggle(node.path)
           }}
-          title={hasChildren ? (isOpen ? "Collapse" : "Expand") : ""}
+          title={hasChildren ? (isOpen ? t("file.collapse") : t("file.expand")) : ""}
         >
           {hasChildren ? (
             isOpen ? (
@@ -781,6 +783,7 @@ function FileTable({
   onContextMenu: (entry: FileBrowserEntry, x: number, y: number) => void
   onOpen: (entry: FileBrowserEntry) => void
 }) {
+  const {t} = useLanguage()
   const [widths, setWidths] = useState({...DEFAULT_WIDTHS})
   const [sort, setSort] = useState<{key: SortKey; dir: SortDir}>({key: "name", dir: "asc"})
 
@@ -847,7 +850,7 @@ function FileTable({
     }
     return (
       <div className="text-muted-foreground flex h-full items-center justify-center text-sm">
-        Empty folder.
+        {t("file.emptyFolder")}
       </div>
     )
   }
@@ -873,10 +876,10 @@ function FileTable({
         </colgroup>
         <thead className="bg-muted/40 sticky top-0">
           <tr className="text-muted-foreground select-none text-xs">
-            <Th label="Name" active={sort.key === "name"} onClick={() => toggleSort("name")} icon={<SortIcon k="name" />} onResize={(e) => startResize("name", e)} />
-            <Th label="Size" align="right" active={sort.key === "size"} onClick={() => toggleSort("size")} icon={<SortIcon k="size" />} onResize={(e) => startResize("size", e)} />
-            <Th label="Modified" active={sort.key === "modified"} onClick={() => toggleSort("modified")} icon={<SortIcon k="modified" />} onResize={(e) => startResize("modified", e)} />
-            <Th label="Rights" align="right" active={sort.key === "rights"} onClick={() => toggleSort("rights")} icon={<SortIcon k="rights" />} onResize={(e) => startResize("rights", e)} />
+            <Th label={t("file.name")} active={sort.key === "name"} onClick={() => toggleSort("name")} icon={<SortIcon k="name" />} onResize={(e) => startResize("name", e)} />
+            <Th label={t("file.size")} align="right" active={sort.key === "size"} onClick={() => toggleSort("size")} icon={<SortIcon k="size" />} onResize={(e) => startResize("size", e)} />
+            <Th label={t("file.modified")} active={sort.key === "modified"} onClick={() => toggleSort("modified")} icon={<SortIcon k="modified" />} onResize={(e) => startResize("modified", e)} />
+            <Th label={t("file.rights")} align="right" active={sort.key === "rights"} onClick={() => toggleSort("rights")} icon={<SortIcon k="rights" />} onResize={(e) => startResize("rights", e)} />
           </tr>
         </thead>
         <tbody>

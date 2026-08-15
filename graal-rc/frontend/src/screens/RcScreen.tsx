@@ -3,7 +3,7 @@
 // command input, an NC (script socket) status badge, a toggleable player list
 // panel, and a chat-color settings dialog. Mirrors the reference client's
 // TRemoteFrame.
-import {useEffect, useRef, useState} from "react"
+import {useEffect, useMemo, useRef, useState} from "react"
 import {Events} from "@wailsio/runtime"
 import {Bell, BellRing, BookmarkPlus, Command, LogOut, Plus, Search, ScrollText, Send, Settings, Trash2, UserRound, X} from "lucide-react"
 import {toast} from "sonner"
@@ -25,6 +25,7 @@ import {useChatSettings} from "@/hooks/useChatSettings"
 import {usePlayers} from "@/hooks/usePlayers"
 import {serverDisplay} from "@/lib/server"
 import {formatLogLine} from "@/lib/chatLine"
+import {mergeRepeatedMessages} from "@/lib/chatMessages"
 import {rcService} from "@/services/rcService"
 import type {AccountSummary, ChatMessage, ChatSettings, CommandMacro, CommandMacroParameter, CommandMacroParameterType, NCStatus, Player} from "@/types"
 import {useLanguage} from "@/hooks/useLanguage"
@@ -125,6 +126,7 @@ function ChatPane({
   const scrollRef = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
   const lastLogged = useRef(0)
+  const displayMessages = useMemo(() => mergeRepeatedMessages(messages), [messages])
 
   useEffect(() => {
     const el = scrollRef.current
@@ -179,15 +181,19 @@ function ChatPane({
     <div className="flex h-full min-h-0 flex-col gap-2">
       <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto rounded-md border p-3">
         <div className="grid gap-1 font-mono text-sm">
-          {messages.length === 0 ? (
+          {displayMessages.length === 0 ? (
             <p className="text-muted-foreground">{t("rc.noMessages")}</p>
           ) : (
-            messages.map((m) => (
+            displayMessages.map((m) => (
               <div key={m.id}>
                 {m.scriptHelp ? (
                   <ScriptHelpResult query={m.text} entries={m.scriptHelp} />
                 ) : (
-                  <ChatLine message={m} settings={settings} />
+                  <ChatLine
+                    message={m}
+                    settings={settings}
+                    repeatLabel={m.repeatCount && m.repeatCount > 1 ? t("chat.repeatedCount", {count: m.repeatCount}) : undefined}
+                  />
                 )}
               </div>
             ))

@@ -15,6 +15,7 @@ import {ScrollArea} from "@/components/ui/scroll-area"
 import {Tabs, TabsContent, TabsList, TabsTrigger} from "@/components/ui/tabs"
 import {rcService} from "@/services/rcService"
 import type {AttrsData} from "@/types"
+import {useLanguage} from "@/hooks/useLanguage"
 
 const LOOK_FIELDS = [
   "Head Image", "Body Image", "Animation", "Skin Color", "Coat Color",
@@ -30,6 +31,32 @@ const NAMED_COLORS = [
   "darkgreen", "lightblue", "blue", "darkblue", "brown", "cyan", "purple", "tan",
   "grey", "black", "transparent",
 ]
+
+const ATTRIBUTE_LABEL_KEYS: Record<string, string> = {
+  "Head Image": "attrs.field.headImage",
+  "Body Image": "attrs.field.bodyImage",
+  Animation: "attrs.field.animation",
+  "Skin Color": "attrs.field.skinColor",
+  "Coat Color": "attrs.field.coatColor",
+  "Sleeves Color": "attrs.field.sleevesColor",
+  "Shoes Color": "attrs.field.shoesColor",
+  "Belt Color": "attrs.field.beltColor",
+  Level: "attrs.field.level",
+  X: "attrs.field.x",
+  Y: "attrs.field.y",
+  Hearts: "attrs.field.hearts",
+  "Full Hearts": "attrs.field.fullHearts",
+  AP: "attrs.field.ap",
+  MP: "attrs.field.mp",
+  Gralats: "attrs.field.gralats",
+  Glove: "attrs.field.glove",
+  Bombs: "attrs.field.bombs",
+  Arrows: "attrs.field.arrows",
+  "Sword Power": "attrs.field.swordPower",
+  "Sword Image": "attrs.field.swordImage",
+  "Shield Power": "attrs.field.shieldPower",
+  "Shield Image": "attrs.field.shieldImage",
+}
 
 interface Section {
   name: string
@@ -79,6 +106,7 @@ function readAccount(): string {
 }
 
 export function AttrsWindowScreen() {
+  const {t} = useLanguage()
   const account = readAccount()
   const [data, setData] = useState<AttrsData | null>(null)
   const [sections, setSections] = useState<Section[]>([])
@@ -156,9 +184,9 @@ export function AttrsWindowScreen() {
     try {
       const json = await rcService.parseAttrsText(rebuildIni())
       await rcService.setAttrs(data?.account ?? account, json)
-      toast.success(`Attributes saved for ${data?.account ?? account}`)
+      toast.success(t("attrs.saved", {account: data?.account ?? account}))
     } catch (e) {
-      toast.error("Save failed", {description: e instanceof Error ? e.message : String(e)})
+      toast.error(t("common.saveFailed"), {description: e instanceof Error ? e.message : String(e)})
     } finally {
       setSaving(false)
     }
@@ -169,31 +197,31 @@ export function AttrsWindowScreen() {
   return (
     <div className="bg-background flex h-svh flex-col">
       <header className="flex items-center gap-2 border-b px-4 py-2.5">
-        <h1 className="text-sm font-semibold">{target}&apos;s Attributes</h1>
+        <h1 className="text-sm font-semibold">{t("attrs.title", {account: target})}</h1>
         <Button className="ml-auto" size="sm" onClick={apply} disabled={loading || saving || !!error}>
-          {saving && <Loader2 className="size-4 animate-spin" />} Apply
+          {saving && <Loader2 className="size-4 animate-spin" />} {t("common.apply")}
         </Button>
       </header>
       <ScrollArea className="min-h-0 flex-1 p-4">
         {loading && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" /> Loading attributes…
+            <Loader2 className="size-4 animate-spin" /> {t("attrs.loading")}
           </div>
         )}
         {error && <div className="text-sm text-destructive">{error}</div>}
         {data && !loading && (
           <Tabs defaultValue="stats">
             <TabsList className="flex w-full flex-wrap">
-              <TabsTrigger value="stats">Stats</TabsTrigger>
-              <TabsTrigger value="look">Look</TabsTrigger>
-              <TabsTrigger value="basic">Basic</TabsTrigger>
-              <TabsTrigger value="chests">Chests</TabsTrigger>
-              <TabsTrigger value="weapons">Weapons</TabsTrigger>
-              <TabsTrigger value="flags">Flags</TabsTrigger>
+              <TabsTrigger value="stats">{t("attrs.stats")}</TabsTrigger>
+              <TabsTrigger value="look">{t("attrs.look")}</TabsTrigger>
+              <TabsTrigger value="basic">{t("attrs.basic")}</TabsTrigger>
+              <TabsTrigger value="chests">{t("attrs.chests")}</TabsTrigger>
+              <TabsTrigger value="weapons">{t("attrs.weapons")}</TabsTrigger>
+              <TabsTrigger value="flags">{t("attrs.flags")}</TabsTrigger>
             </TabsList>
 
             <TabsContent value="stats" className="space-y-1 pt-3">
-              {Object.keys(stats).length === 0 && <p className="text-xs text-muted-foreground">No stats.</p>}
+              {Object.keys(stats).length === 0 && <p className="text-xs text-muted-foreground">{t("attrs.noStats")}</p>}
               {Object.entries(stats).map(([k, v]) => (
                 <div key={k} className="flex justify-between gap-2 text-xs">
                   <span className="text-muted-foreground">{k}</span>
@@ -205,14 +233,14 @@ export function AttrsWindowScreen() {
             <TabsContent value="look" className="space-y-2 pt-3">
               {LOOK_FIELDS.map((k) => (
                 <div key={k} className="space-y-1">
-                  <span className="text-xs font-medium uppercase text-muted-foreground">{k}</span>
+                  <span className="text-xs font-medium uppercase text-muted-foreground">{t(ATTRIBUTE_LABEL_KEYS[k] ?? k)}</span>
                   {COLOR_KEYS.has(k) ? (
                     <select
                       className="bg-background h-8 w-full rounded-md border px-2 text-sm"
                       value={look[k] ?? ""}
                       onChange={(e) => setLookField(k, e.target.value)}
                     >
-                      <option value="">{look[k] ?? "(custom)"}</option>
+                      <option value="">{look[k] ?? t("attrs.custom")}</option>
                       {NAMED_COLORS.map((c) => <option key={c} value={c}>{c}</option>)}
                     </select>
                   ) : (
@@ -225,33 +253,33 @@ export function AttrsWindowScreen() {
             <TabsContent value="basic" className="space-y-2 pt-3">
               {BASIC_FIELDS.map((k) => (
                 <div key={k} className="space-y-1">
-                  <span className="text-xs font-medium uppercase text-muted-foreground">{k}</span>
+                  <span className="text-xs font-medium uppercase text-muted-foreground">{t(ATTRIBUTE_LABEL_KEYS[k] ?? k)}</span>
                   <Input value={basic[k] ?? ""} onChange={(e) => setBasicField(k, e.target.value)} className="h-8" />
                 </div>
               ))}
               <div className="flex flex-col gap-1.5 pt-1">
                 <label className="flex items-center gap-2 text-sm">
-                  <input type="checkbox" checked={male} onChange={(e) => setMale(e.target.checked)} /> Male
+                  <input type="checkbox" checked={male} onChange={(e) => setMale(e.target.checked)} /> {t("attrs.male")}
                 </label>
                 <label className="flex items-center gap-2 text-sm">
-                  <input type="checkbox" checked={weaponsOn} onChange={(e) => setWeaponsOn(e.target.checked)} /> Weapons Enabled
+                  <input type="checkbox" checked={weaponsOn} onChange={(e) => setWeaponsOn(e.target.checked)} /> {t("attrs.weaponsEnabled")}
                 </label>
                 <label className="flex items-center gap-2 text-sm">
-                  <input type="checkbox" checked={spin} onChange={(e) => setSpin(e.target.checked)} /> Spin Attack
+                  <input type="checkbox" checked={spin} onChange={(e) => setSpin(e.target.checked)} /> {t("attrs.spinAttack")}
                 </label>
               </div>
             </TabsContent>
 
             <TabsContent value="chests" className="space-y-1 pt-3">
-              <span className="text-xs font-medium uppercase text-muted-foreground">Chests (one per line)</span>
+              <span className="text-xs font-medium uppercase text-muted-foreground">{t("attrs.chestsPerLine")}</span>
               <MonacoText value={chests} onChange={setChests} />
             </TabsContent>
             <TabsContent value="weapons" className="space-y-1 pt-3">
-              <span className="text-xs font-medium uppercase text-muted-foreground">Weapons (one per line)</span>
+              <span className="text-xs font-medium uppercase text-muted-foreground">{t("attrs.weaponsPerLine")}</span>
               <MonacoText value={weapons} onChange={setWeapons} />
             </TabsContent>
             <TabsContent value="flags" className="space-y-1 pt-3">
-              <span className="text-xs font-medium uppercase text-muted-foreground">Script Flags</span>
+              <span className="text-xs font-medium uppercase text-muted-foreground">{t("attrs.scriptFlags")}</span>
               <MonacoText value={flags} onChange={setFlags} />
             </TabsContent>
           </Tabs>

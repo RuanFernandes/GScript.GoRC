@@ -9,6 +9,7 @@ import {toast} from "sonner"
 
 import {rcService} from "@/services/rcService"
 import type {SyncConfig, SyncStatus, SyncReviewItem} from "@/types"
+import {useLanguage} from "@/hooks/useLanguage"
 
 const EMPTY_STATUS: SyncStatus = {
   enabled: false,
@@ -54,6 +55,7 @@ export interface UseSyncResult {
 }
 
 export function useSync(): UseSyncResult {
+  const {t} = useLanguage()
   const [config, setConfig] = useState<SyncConfig>(DEFAULT_CONFIG)
   const [status, setStatus] = useState<SyncStatus>(EMPTY_STATUS)
   const [progress, setProgress] = useState<{done: number; total: number} | null>(null)
@@ -97,12 +99,12 @@ export function useSync(): UseSyncResult {
         // ignore
       }
       if (item) {
-        toast.info(`Sync conflict: ${item.name}`, {
+        toast.info(t("sync.conflictTitle", {name: item.name}), {
           description: item.actor
-            ? `${item.actor} changed this script while it was open here. Merge required.`
-            : `The server changed this script while it was open here. Merge required.`,
+            ? t("sync.conflictActorDescription", {actor: item.actor})
+            : t("sync.conflictServerDescription"),
           action: {
-            label: "Review",
+            label: t("sync.reviewAction"),
             onClick: () => rcService.openSyncReview(),
           },
         })
@@ -140,7 +142,7 @@ export function useSync(): UseSyncResult {
       offProgress()
       offPermissions()
     }
-  }, [])
+  }, [t])
 
   const saveConfig = useCallback(
     (patch: Partial<SyncConfig>) => {
@@ -156,50 +158,50 @@ export function useSync(): UseSyncResult {
           )
           .catch((err) => {
             if (String(err).toLowerCase().includes("script sync is required")) return
-            toast.error("Failed to save sync config: " + String(err))
+            toast.error(t("sync.saveConfigFailed"), {description: String(err)})
           })
         return next
       })
     },
-    [],
+    [t],
   )
 
   const syncNow = useCallback(async () => {
     try {
       await rcService.syncNow()
-      toast.success("Sync started")
+      toast.success(t("sync.started"))
     } catch (err) {
-      toast.error("Sync failed: " + String(err))
+      toast.error(t("sync.failed"), {description: String(err)})
     }
-  }, [])
+  }, [t])
 
   const resolveConflict = useCallback(
     async (kind: string, key: string, choice: "local" | "server" | "merge", mergeContent?: string) => {
       try {
         await rcService.resolveConflict(kind, key, choice, mergeContent)
-        toast.success("Resolved")
+        toast.success(t("sync.resolved"))
       } catch (err) {
-        toast.error("Resolve failed: " + String(err))
+        toast.error(t("sync.resolveFailed"), {description: String(err)})
       }
     },
-    [],
+    [t],
   )
 
   const pause = useCallback(async () => {
     try {
       await rcService.pauseSync()
     } catch (err) {
-      toast.error("Pause failed: " + String(err))
+      toast.error(t("sync.pauseFailed"), {description: String(err)})
     }
-  }, [])
+  }, [t])
 
   const resume = useCallback(async () => {
     try {
       await rcService.resumeSync()
     } catch (err) {
-      toast.error("Resume failed: " + String(err))
+      toast.error(t("sync.resumeFailed"), {description: String(err)})
     }
-  }, [])
+  }, [t])
 
   const normalizeSync = useCallback(() => rcService.normalizeSync(), [])
   const rebuildSync = useCallback(() => rcService.rebuildSync(), [])

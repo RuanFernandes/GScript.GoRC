@@ -88,11 +88,12 @@ export function ChatSettingsFields({settings, onChange, onBrowse, onBrowsePm}: C
 }
 
 function ColorControl({id, value, onChange}: {id: string; value: string; onChange: (value: string) => void}) {
+  const {t} = useLanguage()
   const normalized = /^#[0-9a-f]{6}$/i.test(value) ? value : "#ffffff"
   return (
     <div className="flex items-center gap-2 rounded-md border border-input bg-input/20 p-1">
-      <input id={id} type="color" value={normalized} onChange={(event) => onChange(event.target.value)} className="size-8 cursor-pointer rounded border-0 bg-transparent p-0" aria-label="Choose color" />
-      <input type="text" value={value} onChange={(event) => { if (/^#[0-9a-f]{0,6}$/i.test(event.target.value)) onChange(event.target.value) }} className="h-8 w-20 bg-transparent px-1 font-mono text-xs uppercase outline-none" aria-label={`${id} hex value`} />
+      <input id={id} type="color" value={normalized} onChange={(event) => onChange(event.target.value)} className="size-8 cursor-pointer rounded border-0 bg-transparent p-0" aria-label={t("common.selectColor")} />
+      <input type="text" value={value} onChange={(event) => { if (/^#[0-9a-f]{0,6}$/i.test(event.target.value)) onChange(event.target.value) }} className="h-8 w-20 bg-transparent px-1 font-mono text-xs uppercase outline-none" aria-label={t("common.hexColorValue", {name: id})} />
     </div>
   )
 }

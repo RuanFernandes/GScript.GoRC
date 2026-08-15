@@ -24,7 +24,7 @@ export function MessageComposeDialog({
   title,
   recipientLabel,
   placeholder,
-  sendLabel = "Send",
+  sendLabel,
   singleLine = false,
   onClose,
   onSend,
@@ -61,7 +61,7 @@ export function MessageComposeDialog({
     <Modal
       open={open}
       title={title}
-      description={`Para: ${recipientLabel}`}
+      description={t("player.toRecipient", {recipient: recipientLabel})}
       onClose={onClose}
       footer={
         <>
@@ -69,7 +69,7 @@ export function MessageComposeDialog({
             {t("common.cancel")}
           </Button>
           <Button type="submit" form="message-compose-form" disabled={sending || !text.trim()}>
-            {sending ? "…" : sendLabel}
+            {sending ? "…" : sendLabel ?? t("common.send")}
           </Button>
         </>
       }
@@ -95,7 +95,7 @@ export function MessageComposeDialog({
           />
         )}
         {!singleLine && (
-          <p className="text-muted-foreground text-xs">Ctrl+Enter para enviar</p>
+          <p className="text-muted-foreground text-xs">{t("player.composeShortcut")}</p>
         )}
       </form>
     </Modal>

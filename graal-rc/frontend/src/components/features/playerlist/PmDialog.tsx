@@ -78,7 +78,7 @@ export function PmDialog({target, lines, onClose, onSend}: PmDialogProps) {
         <form id="pm-reply-form" onSubmit={submit} className="flex w-full items-center gap-2">
           <input
             className="bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:ring-ring h-9 flex-1 rounded-md border px-3 text-sm outline-none focus-visible:ring-2"
-            placeholder="Responder…"
+            placeholder={t("player.replyPlaceholder")}
             value={text}
             onChange={(e) => setText(e.target.value)}
             autoFocus

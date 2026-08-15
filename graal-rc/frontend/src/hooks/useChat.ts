@@ -26,6 +26,7 @@ import type {RcService} from "@/services/rcService"
 import type {ChatMessage, ChatTab, GsFunction} from "@/types"
 import {loadGsFunctions, refreshGsFunctions, searchFunctions} from "@/lib/gscriptApi"
 import {pluginRuntime} from "@/plugins/runtime"
+import {useLanguage} from "@/hooks/useLanguage"
 
 const SERVER_CHANNEL = ""
 const MAX_LINES_PER_TAB = 1000
@@ -56,10 +57,11 @@ export interface UseChatResult {
 }
 
 export function useChat(service: RcService): UseChatResult {
+  const {t} = useLanguage()
   const idRef = useRef(0)
   const nextId = useCallback(() => ++idRef.current, [])
   const [tabs, setTabs] = useState<ChatTab[]>([
-    {channel: SERVER_CHANNEL, label: "RC Chat", messages: []},
+    {channel: SERVER_CHANNEL, label: t("rc.chat"), messages: []},
   ])
   const [activeChannel, setActiveChannel] = useState(SERVER_CHANNEL)
 
@@ -262,10 +264,10 @@ export function useChat(service: RcService): UseChatResult {
         const all = await loadGsFunctions()
         pushScriptHelp(channel, query, searchFunctions(all, query))
       } catch (err) {
-        push(channel, `scripthelp2 failed: ${err instanceof Error ? err.message : String(err)}`, "system")
+        push(channel, t("chat.scriptHelpFailed", {error: err instanceof Error ? err.message : String(err)}), "system")
       }
     },
-    [pushScriptHelp, push]
+    [pushScriptHelp, push, t]
   )
 
   const handleRefreshLsp = useCallback(
@@ -273,12 +275,12 @@ export function useChat(service: RcService): UseChatResult {
       try {
         await service.refreshGraalScriptDocApi()
         const entries = await refreshGsFunctions()
-        push(channel, `GraalScript doc API e contexto do servidor atualizados (${entries.length} definições).`, "system")
+        push(channel, t("chat.lspUpdated", {count: entries.length}), "system")
       } catch (err) {
-        push(channel, `refreshlsp falhou: ${err instanceof Error ? err.message : String(err)}`, "system")
+        push(channel, t("chat.lspRefreshFailed", {error: err instanceof Error ? err.message : String(err)}), "system")
       }
     },
-    [service, push]
+    [service, push, t]
   )
 
   const send = useCallback(
@@ -319,7 +321,7 @@ export function useChat(service: RcService): UseChatResult {
               break
           }
         } catch (err) {
-          toast.error("Open failed", {description: err instanceof Error ? err.message : String(err)})
+          toast.error(t("chat.openFailed"), {description: err instanceof Error ? err.message : String(err)})
         }
         return true
       }
@@ -329,7 +331,7 @@ export function useChat(service: RcService): UseChatResult {
       if (trimmed === "/scripthelp2" || trimmed.startsWith("/scripthelp2 ")) {
         const query = trimmed.slice("/scripthelp2".length).trim()
         if (!query) {
-          push(channel, "Usage: /scripthelp2 <name> — e.g. /scripthelp2 setani", "system")
+          push(channel, t("chat.scriptHelpUsage"), "system")
         } else {
           void handleScriptHelp(channel, query)
         }
@@ -352,11 +354,11 @@ export function useChat(service: RcService): UseChatResult {
         return true
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
-        toast.error("Send failed", {description: message})
+        toast.error(t("chat.sendFailed"), {description: message})
         return false
       }
     },
-    [service, clearChannel, handleScriptHelp, handleRefreshLsp]
+    [service, clearChannel, handleScriptHelp, handleRefreshLsp, push, t]
   )
 
   // reorderTabs moves a tab (drag-and-drop reorder). The server tab stays in
