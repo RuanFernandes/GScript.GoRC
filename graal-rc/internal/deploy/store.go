@@ -50,9 +50,9 @@ func (s *Store) Save(meta Backup, content []byte) (Backup, error) {
 }
 
 // SaveLimited saves a backup and keeps at most limit backups for the same
-// resource and target. The newest snapshots are retained and older snapshots
-// are removed while the store lock is held, so concurrent saves cannot exceed
-// the requested limit.
+// server, resource and target. The newest snapshots are retained and older
+// snapshots are removed while the store lock is held, so concurrent saves
+// cannot exceed the requested limit.
 func (s *Store) SaveLimited(meta Backup, content []byte, limit int) (Backup, error) {
 	if s == nil {
 		return Backup{}, errors.New("backup store is unavailable")
@@ -66,7 +66,7 @@ func (s *Store) SaveLimited(meta Backup, content []byte, limit int) (Backup, err
 	if err != nil {
 		return Backup{}, err
 	}
-	if err := s.pruneTargetLocked(backup.Resource, backup.Target, limit); err != nil {
+	if err := s.pruneTargetLocked(backup, limit); err != nil {
 		return backup, fmt.Errorf("prune backups for %s:%s: %w", backup.Resource, backup.Target, err)
 	}
 	return backup, nil
@@ -104,16 +104,99 @@ func (s *Store) saveLocked(meta Backup, content []byte) (Backup, error) {
 	return meta, nil
 }
 
-func (s *Store) pruneTargetLocked(resource, target string, limit int) error {
-	files, err := os.ReadDir(s.root)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
+func (s *Store) pruneTargetLocked(target Backup, limit int) error {
+	backups, err := s.listMetadataLocked()
 	if err != nil {
-		return fmt.Errorf("list backups: %w", err)
+		return err
 	}
 
 	matching := make([]Backup, 0, limit+1)
+	for _, backup := range backups {
+		if sameBackupTarget(backup, target) {
+			matching = append(matching, backup)
+		}
+	}
+	if len(matching) <= limit {
+		return nil
+	}
+	sortBackupsNewestFirst(matching)
+	var deleteErrs []error
+	for _, backup := range matching[limit:] {
+		if _, err := s.deleteLocked(backup.ID); err != nil {
+			deleteErrs = append(deleteErrs, err)
+		}
+	}
+	return errors.Join(deleteErrs...)
+}
+
+// PruneToLimit enforces a per-server, per-resource and per-target count across
+// all existing backups. It is used when a user lowers the configured limit.
+func (s *Store) PruneToLimit(limit int) (int, error) {
+	if s == nil {
+		return 0, errors.New("backup store is unavailable")
+	}
+	if limit < 1 {
+		return 0, errors.New("backup limit must be positive")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	backups, err := s.listMetadataLocked()
+	if err != nil {
+		return 0, err
+	}
+	groups := make(map[backupTarget][]Backup)
+	for _, backup := range backups {
+		scope := backupTarget{Server: backup.Server, Resource: backup.Resource, Target: backup.Target}
+		groups[scope] = append(groups[scope], backup)
+	}
+
+	removed := 0
+	var pruneErrs []error
+	for _, matching := range groups {
+		if len(matching) <= limit {
+			continue
+		}
+		sortBackupsNewestFirst(matching)
+		for _, backup := range matching[limit:] {
+			if _, err := s.deleteLocked(backup.ID); err != nil {
+				pruneErrs = append(pruneErrs, fmt.Errorf("delete backup %q: %w", backup.ID, err))
+				continue
+			}
+			removed++
+		}
+	}
+	return removed, errors.Join(pruneErrs...)
+}
+
+type backupTarget struct {
+	Server   string
+	Resource string
+	Target   string
+}
+
+func sameBackupTarget(left, right Backup) bool {
+	return left.Server == right.Server && left.Resource == right.Resource && left.Target == right.Target
+}
+
+func sortBackupsNewestFirst(backups []Backup) {
+	sort.Slice(backups, func(i, j int) bool {
+		if backups[i].Timestamp != backups[j].Timestamp {
+			return backups[i].Timestamp > backups[j].Timestamp
+		}
+		return backups[i].ID > backups[j].ID
+	})
+}
+
+func (s *Store) listMetadataLocked() ([]Backup, error) {
+	files, err := os.ReadDir(s.root)
+	if errors.Is(err, os.ErrNotExist) {
+		return []Backup{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list backups: %w", err)
+	}
+	backups := make([]Backup, 0, len(files))
 	for _, file := range files {
 		if file.IsDir() || !strings.HasSuffix(file.Name(), ".meta.json") {
 			continue
@@ -127,29 +210,13 @@ func (s *Store) pruneTargetLocked(resource, target string, limit int) error {
 			continue
 		}
 		var backup Backup
-		if json.Unmarshal(b, &backup) != nil || backup.ID != id || !validID(backup.ID) {
+		if json.Unmarshal(b, &backup) != nil || backup.ID != id || !validID(backup.ID) ||
+			strings.TrimSpace(backup.Resource) == "" || strings.TrimSpace(backup.Target) == "" {
 			continue
 		}
-		if backup.Resource == resource && backup.Target == target {
-			matching = append(matching, backup)
-		}
+		backups = append(backups, backup)
 	}
-	if len(matching) <= limit {
-		return nil
-	}
-	sort.Slice(matching, func(i, j int) bool {
-		if matching[i].Timestamp != matching[j].Timestamp {
-			return matching[i].Timestamp > matching[j].Timestamp
-		}
-		return matching[i].ID > matching[j].ID
-	})
-	var deleteErrs []error
-	for _, backup := range matching[limit:] {
-		if _, err := s.deleteLocked(backup.ID); err != nil {
-			deleteErrs = append(deleteErrs, err)
-		}
-	}
-	return errors.Join(deleteErrs...)
+	return backups, nil
 }
 
 func (s *Store) List(limit int) ([]Backup, error) {
@@ -161,29 +228,11 @@ func (s *Store) List(limit int) ([]Backup, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	files, err := os.ReadDir(s.root)
-	if errors.Is(err, os.ErrNotExist) {
-		return []Backup{}, nil
-	}
+	backups, err := s.listMetadataLocked()
 	if err != nil {
-		return nil, fmt.Errorf("list backups: %w", err)
+		return nil, err
 	}
-	backups := make([]Backup, 0, len(files))
-	for _, file := range files {
-		if file.IsDir() || !strings.HasSuffix(file.Name(), ".meta.json") {
-			continue
-		}
-		b, readErr := os.ReadFile(filepath.Join(s.root, file.Name()))
-		if readErr != nil {
-			continue
-		}
-		var backup Backup
-		if json.Unmarshal(b, &backup) != nil || !validID(backup.ID) {
-			continue
-		}
-		backups = append(backups, backup)
-	}
-	sort.Slice(backups, func(i, j int) bool { return backups[i].Timestamp > backups[j].Timestamp })
+	sortBackupsNewestFirst(backups)
 	if len(backups) > limit {
 		backups = backups[:limit]
 	}

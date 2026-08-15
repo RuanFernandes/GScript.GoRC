@@ -130,6 +130,7 @@ type App struct {
 	plugins        *pluginlib.Manager
 	audit          *auditlib.Store
 	backups        *deploylib.Store
+	backupPolicyMu sync.Mutex
 	retention      *changeRetentionStore
 
 	languageMu sync.Mutex
@@ -1376,8 +1377,8 @@ func (a *App) RequestStaffActivity(account string) (string, error) {
 	return a.sessions.RequestStaffActivity(a.resolveAccount(account))
 }
 
-// openPlayerWindow opens (or focuses) an external editor window for the given
-// kind ("rights"|"attrs"|"ban") and account. Empty account resolves to self.
+// openPlayerWindow opens (or focuses) an external editor/viewer window for the
+// given player-management kind and account. Empty account resolves to self.
 // Title is "<ACC>'s <Label> - <Server>". Several accounts may be open at once;
 // reopening the same kind+account focuses the existing window.
 func (a *App) openPlayerWindow(kind, label, account string, width, height int) error {
@@ -1395,10 +1396,7 @@ func (a *App) openPlayerWindow(kind, label, account string, width, height int) e
 	a.playerWindowMu.Unlock()
 
 	server := a.sessions.Status().ServerName
-	title := fmt.Sprintf("%s's %s", account, label)
-	if server != "" {
-		title = fmt.Sprintf("%s - %s", title, server)
-	}
+	title := serverWindowTitle(server, fmt.Sprintf("%s's %s", account, label))
 
 	w := a.newWebviewWindow(application.WebviewWindowOptions{
 		Name:             sanitizeWindowName(kind, account),
@@ -2384,11 +2382,11 @@ func (a *App) openSqliteWindow(remotePath string) error {
 func (a *App) Status() connection.Status { return a.sessions.Status() }
 
 // refreshServerChrome reconciles the main/players/scripts/settings window titles
-// and the tray tooltip with the current session state: branded with the server
-// name + live player count when connected to an authenticated server, default
-// labels otherwise. Called on connect/logout and by the tray refresh loop so a
-// server-side disconnect (Status flips to !Connected) resets the chrome without a
-// frontend round-trip.
+// and the tray tooltip with the current session state. Connected windows use
+// the shared "<resource> - <server>" title format; disconnected windows return
+// to their generic labels. Called on connect/logout and by the tray refresh
+// loop so a server-side disconnect (Status flips to !Connected) resets the
+// chrome without a frontend round-trip.
 func (a *App) refreshServerChrome() {
 	st := a.sessions.Status()
 	connected := st.Connected && st.Authenticated && st.ServerName != ""
@@ -2400,10 +2398,10 @@ func (a *App) refreshServerChrome() {
 	filesTitle := "File Browser"
 	tooltip := "Graal Remote Control"
 	if connected {
-		mainTitle = st.ServerName + " RC"
-		playersTitle = st.ServerName + " Players"
+		mainTitle = serverWindowTitle(st.ServerName, "RC")
+		playersTitle = serverWindowTitle(st.ServerName, "Players")
 		scriptsTitle = serverWindowTitle(st.ServerName, "Script Manager")
-		settingsTitle = st.ServerName + " Settings"
+		settingsTitle = serverWindowTitle(st.ServerName, "Settings")
 		filesTitle = serverWindowTitle(st.ServerName, "File Browser")
 		count := 0
 		if players, err := a.sessions.GetPlayers(); err == nil {
@@ -2427,8 +2425,8 @@ func (a *App) refreshServerChrome() {
 	}
 }
 
-// serverWindowTitle puts the active server before a secondary window title so
-// windows from separate RC instances remain distinguishable in the taskbar.
+// serverWindowTitle scopes a window to the active server while keeping the
+// resource name first, so taskbar entries read "<resource> - <server>".
 func serverWindowTitle(serverName, title string) string {
 	title = strings.TrimSpace(title)
 	serverName = strings.TrimSpace(serverName)
@@ -2438,7 +2436,7 @@ func serverWindowTitle(serverName, title string) string {
 	if title == "" {
 		return serverName
 	}
-	return serverName + " - " + title
+	return title + " - " + serverName
 }
 
 // setWindowTitleLocked snapshots a guarded window pointer under its mutex and
@@ -2549,7 +2547,7 @@ func (a *App) OpenPlayerList() {
 	}
 	w := a.newWebviewWindow(application.WebviewWindowOptions{
 		Name:             "players",
-		Title:            "Players",
+		Title:            serverWindowTitle(a.sessions.Status().ServerName, "Players"),
 		URL:              "/#players",
 		Width:            560,
 		Height:           520,
@@ -2633,7 +2631,7 @@ func (a *App) OpenSettings() {
 	}
 	w := a.newWebviewWindow(application.WebviewWindowOptions{
 		Name:             "settings",
-		Title:            "Settings",
+		Title:            serverWindowTitle(a.sessions.Status().ServerName, "Settings"),
 		URL:              "/#settings",
 		Width:            720,
 		Height:           720,
@@ -2665,7 +2663,7 @@ func (a *App) OpenPluginManager() {
 	}
 	w := a.newWebviewWindow(application.WebviewWindowOptions{
 		Name:             "plugins",
-		Title:            "Plugins",
+		Title:            serverWindowTitle(a.sessions.Status().ServerName, "Plugins"),
 		URL:              "/#plugins",
 		Width:            1280,
 		Height:           820,
@@ -2699,7 +2697,7 @@ func (a *App) OpenPluginDocumentation() {
 	}
 	w := a.newWebviewWindow(application.WebviewWindowOptions{
 		Name:             "plugin-documentation",
-		Title:            "Plugin Documentation",
+		Title:            serverWindowTitle(a.sessions.Status().ServerName, "Plugin Documentation"),
 		URL:              "/#plugin-docs",
 		Width:            1040,
 		Height:           820,
@@ -2786,11 +2784,11 @@ func editorTitle(serverName, scriptType, key string) string {
 	return title
 }
 
-// scriptEditorTitle keeps the resource label used by the editor while putting
-// the server first, which makes same-named editors from different RC instances
+// scriptEditorTitle keeps the resource label used by the editor and appends the
+// active server, which makes same-named editors from different RC instances
 // immediately identifiable in the taskbar.
 func scriptEditorTitle(serverName, scriptType, key string) string {
-	return serverWindowTitle(serverName, editorTitle("", scriptType, key))
+	return editorTitle(serverName, scriptType, key)
 }
 
 // sanitizeWindowName turns a script type+key into a valid Wails window name.

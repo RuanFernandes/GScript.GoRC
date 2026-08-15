@@ -14,13 +14,17 @@ import (
 const (
 	defaultChangeRetentionDays = 0
 	maxChangeRetentionDays     = 3650
+	defaultBackupCount         = 3
+	maxBackupCount             = 100
 )
 
 // ChangeRetentionSettings controls how long local change history remains on
-// this computer. A value of zero means that the category is kept indefinitely.
+// this computer and how many versions of each backup target are kept. A zero
+// day value keeps that history indefinitely; backupCount is always positive.
 type ChangeRetentionSettings struct {
-	AuditDays  int `json:"auditDays"`
-	BackupDays int `json:"backupDays"`
+	AuditDays   int `json:"auditDays"`
+	BackupDays  int `json:"backupDays"`
+	BackupCount int `json:"backupCount"`
 }
 
 type changeRetentionStore struct {
@@ -37,9 +41,20 @@ func newChangeRetentionStore(path string) (*changeRetentionStore, error) {
 
 func defaultChangeRetention() ChangeRetentionSettings {
 	return ChangeRetentionSettings{
-		AuditDays:  defaultChangeRetentionDays,
-		BackupDays: defaultChangeRetentionDays,
+		AuditDays:   defaultChangeRetentionDays,
+		BackupDays:  defaultChangeRetentionDays,
+		BackupCount: defaultBackupCount,
 	}
+}
+
+// normalizeChangeRetention migrates settings written before backupCount was
+// introduced. Zero is not a valid configured count, so it safely maps to the
+// default instead of silently disabling count-based pruning.
+func normalizeChangeRetention(settings ChangeRetentionSettings) ChangeRetentionSettings {
+	if settings.BackupCount == 0 {
+		settings.BackupCount = defaultBackupCount
+	}
+	return settings
 }
 
 func validateChangeRetention(settings ChangeRetentionSettings) error {
@@ -48,6 +63,9 @@ func validateChangeRetention(settings ChangeRetentionSettings) error {
 	}
 	if settings.BackupDays < 0 || settings.BackupDays > maxChangeRetentionDays {
 		return fmt.Errorf("backup retention must be between 0 and %d days", maxChangeRetentionDays)
+	}
+	if settings.BackupCount < 1 || settings.BackupCount > maxBackupCount {
+		return fmt.Errorf("backup count must be between 1 and %d", maxBackupCount)
 	}
 	return nil
 }
@@ -64,7 +82,7 @@ func (s *changeRetentionStore) Load() (ChangeRetentionSettings, error) {
 		if err := json.Unmarshal(data, &settings); err != nil {
 			return err
 		}
-		return validateChangeRetention(settings)
+		return validateChangeRetention(normalizeChangeRetention(settings))
 	})
 	if err != nil {
 		return defaultChangeRetention(), fmt.Errorf("read retention settings: %w", err)
@@ -76,6 +94,7 @@ func (s *changeRetentionStore) Load() (ChangeRetentionSettings, error) {
 	if err := json.Unmarshal(data, &settings); err != nil {
 		return defaultChangeRetention(), fmt.Errorf("decode retention settings: %w", err)
 	}
+	settings = normalizeChangeRetention(settings)
 	if err := validateChangeRetention(settings); err != nil {
 		return defaultChangeRetention(), err
 	}
@@ -86,6 +105,7 @@ func (s *changeRetentionStore) Save(settings ChangeRetentionSettings) error {
 	if s == nil {
 		return errors.New("retention settings are unavailable")
 	}
+	settings = normalizeChangeRetention(settings)
 	if err := validateChangeRetention(settings); err != nil {
 		return err
 	}
@@ -102,6 +122,7 @@ func (s *changeRetentionStore) Save(settings ChangeRetentionSettings) error {
 }
 
 func (a *App) cleanupExpiredChangeData(settings ChangeRetentionSettings) error {
+	settings = normalizeChangeRetention(settings)
 	if err := validateChangeRetention(settings); err != nil {
 		return err
 	}
@@ -113,10 +134,17 @@ func (a *App) cleanupExpiredChangeData(settings ChangeRetentionSettings) error {
 			cleanupErrs = append(cleanupErrs, fmt.Errorf("prune audit history: %w", err))
 		}
 	}
-	if settings.BackupDays > 0 && a != nil && a.backups != nil {
-		if _, err := a.backups.PruneOlderThan(cutoff.Add(-retentionDuration(settings.BackupDays))); err != nil {
-			cleanupErrs = append(cleanupErrs, fmt.Errorf("prune deployment backups: %w", err))
+	if a != nil && a.backups != nil {
+		a.backupPolicyMu.Lock()
+		if _, err := a.backups.PruneToLimit(settings.BackupCount); err != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("prune deployment backups by count: %w", err))
 		}
+		if settings.BackupDays > 0 {
+			if _, err := a.backups.PruneOlderThan(cutoff.Add(-retentionDuration(settings.BackupDays))); err != nil {
+				cleanupErrs = append(cleanupErrs, fmt.Errorf("prune deployment backups: %w", err))
+			}
+		}
+		a.backupPolicyMu.Unlock()
 	}
 	return errors.Join(cleanupErrs...)
 }
@@ -132,6 +160,7 @@ func (a *App) SetChangeRetention(settings ChangeRetentionSettings) error {
 	if a == nil || a.retention == nil {
 		return errors.New("retention settings are unavailable")
 	}
+	settings = normalizeChangeRetention(settings)
 	if err := validateChangeRetention(settings); err != nil {
 		return err
 	}

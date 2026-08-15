@@ -13,7 +13,10 @@ import {rcService} from "@/services/rcService"
 import type {AuditEntry, ChangeRetentionSettings, DeploymentBackup} from "@/types"
 import {useLanguage} from "@/hooks/useLanguage"
 
-const DEFAULT_RETENTION: ChangeRetentionSettings = {auditDays: 0, backupDays: 0}
+const DEFAULT_BACKUP_COUNT = 3
+const MIN_BACKUP_COUNT = 1
+const MAX_BACKUP_COUNT = 100
+const DEFAULT_RETENTION: ChangeRetentionSettings = {auditDays: 0, backupDays: 0, backupCount: DEFAULT_BACKUP_COUNT}
 
 function formatDate(timestamp: number): string {
   if (!timestamp) return "—"
@@ -74,7 +77,13 @@ export function DeploymentCenterWindowScreen() {
     setRetentionLoading(true)
     try {
       const settings = await rcService.getChangeRetention()
-      const next = settings ?? DEFAULT_RETENTION
+      const next: ChangeRetentionSettings = {
+        auditDays: settings?.auditDays ?? DEFAULT_RETENTION.auditDays,
+        backupDays: settings?.backupDays ?? DEFAULT_RETENTION.backupDays,
+        backupCount: settings?.backupCount && settings.backupCount >= MIN_BACKUP_COUNT
+          ? Math.min(settings.backupCount, MAX_BACKUP_COUNT)
+          : DEFAULT_BACKUP_COUNT,
+      }
       setRetention(next)
       setRetentionDraft(next)
     } catch (err) {
@@ -148,7 +157,9 @@ export function DeploymentCenterWindowScreen() {
     }
   }
 
-  const retentionChanged = retention.auditDays !== retentionDraft.auditDays || retention.backupDays !== retentionDraft.backupDays
+  const retentionChanged = retention.auditDays !== retentionDraft.auditDays
+    || retention.backupDays !== retentionDraft.backupDays
+    || retention.backupCount !== retentionDraft.backupCount
 
   return (
     <div className="bg-background flex h-svh flex-col">
@@ -276,6 +287,27 @@ export function DeploymentCenterWindowScreen() {
                     >
                       {retentionOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                     </select>
+                  </label>
+                  <label className="grid gap-1.5 text-sm">
+                    <span className="font-medium">{t("deploy.backupCount")}</span>
+                    <span className="text-muted-foreground text-xs">{t("deploy.backupCountDescription")}</span>
+                    <Input
+                      type="number"
+                      min={MIN_BACKUP_COUNT}
+                      max={MAX_BACKUP_COUNT}
+                      step={1}
+                      value={retentionDraft.backupCount}
+                      onChange={(event) => {
+                        const value = Number(event.target.value)
+                        setRetentionDraft((current) => ({
+                          ...current,
+                          backupCount: Number.isFinite(value)
+                            ? Math.min(MAX_BACKUP_COUNT, Math.max(MIN_BACKUP_COUNT, Math.trunc(value)))
+                            : DEFAULT_BACKUP_COUNT,
+                        }))
+                      }}
+                      disabled={retentionLoading || retentionSaving}
+                    />
                   </label>
                 </div>
 

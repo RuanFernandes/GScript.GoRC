@@ -740,7 +740,7 @@ func (a *App) OpenSyncReview() {
 	}
 	w := a.newWebviewWindow(application.WebviewWindowOptions{
 		Name:             "syncreview",
-		Title:            "Sync Review",
+		Title:            serverWindowTitle(a.sessions.Status().ServerName, "Sync Review"),
 		URL:              "/#sync",
 		Width:            960,
 		Height:           660,

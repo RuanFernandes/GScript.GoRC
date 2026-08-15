@@ -19,8 +19,6 @@ import (
 type AuditEntry = auditlib.Entry
 type DeploymentBackup = deploylib.Backup
 
-const syncScriptBackupLimit = 3
-
 func newLocalChangeStores() (*auditlib.Store, *deploylib.Store, *changeRetentionStore) {
 	configDir, err := os.UserConfigDir()
 	if err != nil {
@@ -73,6 +71,8 @@ func (a *App) saveDeploymentBackup(resource, target string, content []byte, hasP
 	if !hasPrevious || a == nil || a.backups == nil {
 		return DeploymentBackup{}, false, nil
 	}
+	a.backupPolicyMu.Lock()
+	defer a.backupPolicyMu.Unlock()
 	status := a.sessions.Status()
 	meta := DeploymentBackup{
 		Server:   status.ServerName,
@@ -80,13 +80,16 @@ func (a *App) saveDeploymentBackup(resource, target string, content []byte, hasP
 		Resource: resource,
 		Target:   target,
 	}
-	var backup DeploymentBackup
-	var err error
-	if resource == "script" {
-		backup, err = a.backups.SaveLimited(meta, content, syncScriptBackupLimit)
-	} else {
-		backup, err = a.backups.Save(meta, content)
+	backupLimit := defaultBackupCount
+	if a.retention != nil {
+		settings, err := a.retention.Load()
+		if err != nil {
+			log.Printf("backup count: %v; using default %d", err, defaultBackupCount)
+		} else {
+			backupLimit = settings.BackupCount
+		}
 	}
+	backup, err := a.backups.SaveLimited(meta, content, backupLimit)
 	if err != nil {
 		return DeploymentBackup{}, false, err
 	}
@@ -243,13 +246,9 @@ func (a *App) OpenDeploymentCenter() {
 		return
 	}
 	server := a.sessions.Status().ServerName
-	title := "Change history"
-	if server != "" {
-		title += " · " + server
-	}
 	w := a.newWebviewWindow(application.WebviewWindowOptions{
 		Name:             "deployment-center",
-		Title:            title,
+		Title:            serverWindowTitle(server, "Change history"),
 		URL:              "/#deployments",
 		Width:            1040,
 		Height:           720,

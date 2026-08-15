@@ -120,3 +120,65 @@ func TestStoreSaveLimitedKeepsThreeNewestBackupsPerTarget(t *testing.T) {
 		}
 	}
 }
+
+func TestStoreSaveLimitedKeepsServersIndependent(t *testing.T) {
+	store, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, server := range []string{"Zodiac", "Era"} {
+		for i := int64(1); i <= 2; i++ {
+			if _, err := store.SaveLimited(Backup{
+				ID:        fmt.Sprintf("%s-%d", server, i),
+				Timestamp: i,
+				Server:    server,
+				Resource:  "file",
+				Target:    "levels/main.nw",
+			}, []byte(server), 1); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	backups, err := store.List(100)
+	if err != nil || len(backups) != 2 {
+		t.Fatalf("backup count = %d, want 2 (one per server): %v", len(backups), err)
+	}
+	for _, id := range []string{"Zodiac-2", "Era-2"} {
+		if _, _, err := store.Read(id); err != nil {
+			t.Fatalf("new backup %q was pruned: %v", id, err)
+		}
+	}
+}
+
+func TestStorePruneToLimitKeepsNewestForEveryTarget(t *testing.T) {
+	store, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := int64(1); i <= 4; i++ {
+		if _, err := store.Save(Backup{
+			ID:        fmt.Sprintf("same-%d", i),
+			Timestamp: i,
+			Server:    "Zodiac",
+			Resource:  "script",
+			Target:    "weapon:Sword",
+		}, []byte("same")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.Save(Backup{ID: "other", Timestamp: 1, Server: "Zodiac", Resource: "script", Target: "class:Player"}, []byte("other")); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := store.PruneToLimit(2)
+	if err != nil || removed != 2 {
+		t.Fatalf("prune: %v removed=%d, want 2", err, removed)
+	}
+	for _, id := range []string{"same-1", "same-2"} {
+		if _, _, err := store.Read(id); err == nil {
+			t.Fatalf("old backup %q was not pruned", id)
+		}
+	}
+	if _, _, err := store.Read("other"); err != nil {
+		t.Fatalf("other target should remain: %v", err)
+	}
+}

@@ -1,8 +1,9 @@
 import {adaptMonacoTheme} from "@/lib/adaptTheme"
 
 // Monaco theme catalog for the Coding settings. Built-in themes (vs, vs-dark,
-// hc-black, hc-light) need no definition; custom themes (monokai, darcula) are
-// registered via monaco.editor.defineTheme on first editor mount. Types kept
+// hc-black, hc-light) need no definition; custom themes (monokai, darcula,
+// night-owl) are registered via monaco.editor.defineTheme on first editor
+// mount. Types kept
 // loose (the monaco-editor package is a transitive dep of @monaco-editor/react,
 // not a direct one) to avoid a direct type import.
 
@@ -42,8 +43,8 @@ const baseTheme = (base: StandaloneThemeData["base"]): StandaloneThemeData => ({
   colors: {},
 })
 
-// monokai/darcula/one-dark-pro evoked via base vs-dark + token rules covering
-// the common highlights.
+// monokai/darcula/one-dark-pro/night-owl evoked via base vs-dark + token rules
+// covering the common highlights.
 export const MONACO_THEME_OPTIONS: ThemeOption[] = [
   {key: "vs-dark", label: "Dark (VS)", define: baseTheme("vs-dark")},
   {key: "vs", label: "Light (VS)", define: baseTheme("vs")},
@@ -165,6 +166,69 @@ export const MONACO_THEME_OPTIONS: ThemeOption[] = [
         "editor.lineHighlightBackground": "#2c313c",
         "editorCursor.foreground": "#528bff",
         "editorWhitespace.foreground": "#3b4048",
+      },
+    },
+  },
+  {
+    key: "night-owl",
+    label: "NightOwl",
+    define: {
+      base: "vs-dark",
+      inherit: true,
+      rules: [
+        {token: "comment", foreground: "637777", fontStyle: "italic"},
+        {token: "keyword", foreground: "c792ea"},
+        {token: "keyword.control", foreground: "c792ea"},
+        {token: "keyword.other", foreground: "c792ea"},
+        {token: "storage", foreground: "c792ea"},
+        {token: "storage.type", foreground: "c792ea"},
+        {token: "storage.modifier", foreground: "c792ea"},
+        {token: "constant", foreground: "82aaff"},
+        {token: "constant.language", foreground: "82aaff"},
+        {token: "constant.numeric", foreground: "f78c6c"},
+        {token: "variable", foreground: "d6deeb"},
+        {token: "variable.language", foreground: "c792ea", fontStyle: "italic"},
+        {token: "variable.language.prefix", foreground: "7fdbca", fontStyle: "italic"},
+        {token: "variable.language.member", foreground: "addb67"},
+        {token: "variable.language.flag", foreground: "c792ea", fontStyle: "italic"},
+        {token: "keyword.operator", foreground: "7fdbca"},
+        {token: "keyword.operator.append", foreground: "7fdbca"},
+        {token: "string", foreground: "ecc48d"},
+        {token: "string.quoted.double.sql", foreground: "ecc48d"},
+        {token: "keyword.other.sql", foreground: "c792ea"},
+        {token: "constant.character.escape", foreground: "7fdbca"},
+        {token: "number", foreground: "f78c6c"},
+        {token: "function", foreground: "82aaff"},
+        {token: "entity.name.function", foreground: "82aaff"},
+        {token: "type.identifier", foreground: "addb67"},
+        {token: "punctuation", foreground: "d6deeb"},
+      ],
+      colors: {
+        "editor.background": "#011627",
+        "editor.foreground": "#d6deeb",
+        "editorLineNumber.foreground": "#4b6479",
+        "editorLineNumber.activeForeground": "#c5e4fd",
+        "editorCursor.foreground": "#80a4c2",
+        "editor.selectionBackground": "#1d3b53",
+        "editor.inactiveSelectionBackground": "#1d3b53",
+        "editor.lineHighlightBackground": "#0b2942",
+        "editorIndentGuide.background": "#122d42",
+        "editorIndentGuide.activeBackground": "#2c4b63",
+        "editorWhitespace.foreground": "#234d70",
+        "editorOverviewRuler.border": "#011627",
+        "editorBracketMatch.background": "#1d3b53",
+        "editorBracketMatch.border": "#5ca7d8",
+        "editor.findMatchBackground": "#5ca7d8",
+        "editor.findMatchHighlightBackground": "#1d3b53",
+        "editorWidget.background": "#0b2942",
+        "editorWidget.border": "#1d3b53",
+        "peekViewEditor.background": "#0b2942",
+        "peekViewResult.background": "#0b2942",
+        "peekViewTitle.background": "#0b2942",
+        "scrollbarSlider.background": "#1d3b53",
+        "scrollbarSlider.hoverBackground": "#2c4b63",
+        "scrollbarSlider.activeBackground": "#5ca7d8",
+        "minimap.background": "#011627",
       },
     },
   },

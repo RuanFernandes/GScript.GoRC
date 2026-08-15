@@ -100,6 +100,7 @@ func (a *App) PluginUIWindowOpen(pluginID string, options PluginUIWindowOptions)
 	options.Width = maxInt(520, minInt(options.Width, 2400))
 	options.Height = maxInt(400, minInt(options.Height, 1800))
 	info := PluginUIWindowInfo{ID: options.ID, PluginID: pluginID, Title: options.Title, Width: options.Width, Height: options.Height, View: options.View}
+	windowTitle := serverWindowTitle(a.sessions.Status().ServerName, options.Title)
 	key := pluginUIWindowKey(pluginID, options.ID)
 	a.pluginUIWindowMu.Lock()
 	if current := a.pluginUIWindows[key]; current != nil {
@@ -108,6 +109,7 @@ func (a *App) PluginUIWindowOpen(pluginID string, options PluginUIWindowOptions)
 		a.pluginUIWindowMu.Unlock()
 		a.emitPluginUIUpdate(info)
 		if window != nil {
+			window.SetTitle(windowTitle)
 			window.Show()
 			window.Focus()
 		}
@@ -121,7 +123,7 @@ func (a *App) PluginUIWindowOpen(pluginID string, options PluginUIWindowOptions)
 	}
 	w := a.newWebviewWindow(application.WebviewWindowOptions{
 		Name:             sanitizePluginUIWindowName(pluginID, options.ID),
-		Title:            options.Title,
+		Title:            windowTitle,
 		URL:              "/#plugin-ui?plugin=" + url.QueryEscape(pluginID) + "&window=" + url.QueryEscape(options.ID),
 		Width:            options.Width,
 		Height:           options.Height,

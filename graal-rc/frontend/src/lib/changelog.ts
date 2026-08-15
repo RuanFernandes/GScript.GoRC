@@ -11,15 +11,27 @@ export interface ChangelogEntry {
 // the visible history from nullborne.com when the release service is reachable.
 const CHANGELOG_PT_BR: ChangelogEntry[] = [
   {
+    version: "3.1.4",
+    date: "15/08/2026",
+    title: "Frame customizada e tema NightOwl",
+    summary: "Melhora a experiência das janelas de links e adiciona um tema dedicado para desenvolvimento GS2.",
+    current: true,
+    changes: [
+      "Links abertos pelo RC Chat agora usam a mesma frame customizada, controles de janela e WebView interno das demais janelas do RC.",
+      "Adicionado o tema NightOwl ao editor Monaco, com destaque alinhado aos tokens de sintaxe do GS2.",
+    ],
+  },
+  {
     version: "3.1.3",
     date: "15/08/2026",
     title: "Updater e downloads manuais multiplataforma",
     summary: "Corrige o encerramento do auto-update no Windows e permite salvar atualizações do macOS/Linux para instalação manual.",
-    current: true,
+    current: false,
     changes: [
       "O helper do auto-update Windows agora é iniciado desacoplado, tem limite de espera e força o encerramento do RC quando necessário para liberar o instalador.",
       "Atualizações para macOS e Linux agora mostram um diálogo nativo para escolher onde salvar o arquivo verificado, sem abrir o instalador automaticamente.",
       "A API de releases passou a reconhecer os destinos Windows, Linux e macOS e só anuncia o download quando o artefato correspondente está publicado.",
+      "Backups de arquivos, scripts, bancos e textos agora usam um limite configurável por alvo, com 3 versões por padrão e substituição automática da mais antiga.",
     ],
   },
   {
@@ -154,12 +166,21 @@ const CHANGELOG_PT_BR: ChangelogEntry[] = [
 
 const CHANGELOG_EN: ChangelogEntry[] = [
   {
+    version: "3.1.4", date: "2026-08-15", title: "Custom window frame and NightOwl theme",
+    summary: "Improves link windows and adds a dedicated theme for GS2 development.", current: true,
+    changes: [
+      "Links opened from RC Chat now use the same custom frame, window controls and internal WebView as the rest of the RC windows.",
+      "Added the NightOwl theme to Monaco with highlighting aligned to GS2 syntax tokens.",
+    ],
+  },
+  {
     version: "3.1.3", date: "2026-08-15", title: "Updater and cross-platform manual downloads",
-    summary: "Fixes Windows auto-update shutdown and lets macOS/Linux users save verified updates for manual installation.", current: true,
+    summary: "Fixes Windows auto-update shutdown and lets macOS/Linux users save verified updates for manual installation.", current: false,
     changes: [
       "The Windows automatic-update helper now starts detached, has a bounded wait and force-exits the RC when necessary to release the installer.",
       "macOS and Linux updates now show a native save dialog for the verified artifact instead of opening an installer automatically.",
       "The release API now recognizes Windows, Linux and macOS targets and advertises downloads only when the matching artifact is published.",
+      "Backups for files, scripts, databases and server text now use a per-target configurable limit, with 3 versions by default and automatic replacement of the oldest.",
     ],
   },
   {
@@ -256,12 +277,21 @@ const CHANGELOG_EN: ChangelogEntry[] = [
 
 const CHANGELOG_ES: ChangelogEntry[] = [
   {
+    version: "3.1.4", date: "2026-08-15", title: "Marco personalizada y tema NightOwl",
+    summary: "Mejora las ventanas de enlaces y añade un tema dedicado para el desarrollo GS2.", current: true,
+    changes: [
+      "Los enlaces abiertos desde RC Chat ahora usan el mismo marco personalizado, controles de ventana y WebView interno que el resto de las ventanas del RC.",
+      "Se añadió el tema NightOwl a Monaco, con resaltado alineado con los tokens de sintaxis de GS2.",
+    ],
+  },
+  {
     version: "3.1.3", date: "2026-08-15", title: "Actualizador y descargas manuales multiplataforma",
-    summary: "Corrige el cierre de la actualización automática en Windows y permite guardar actualizaciones de macOS/Linux para instalarlas manualmente.", current: true,
+    summary: "Corrige el cierre de la actualización automática en Windows y permite guardar actualizaciones de macOS/Linux para instalarlas manualmente.", current: false,
     changes: [
       "El helper de actualización automática de Windows ahora se inicia separado, tiene un tiempo de espera limitado y fuerza el cierre del RC cuando es necesario para liberar el instalador.",
       "Las actualizaciones de macOS y Linux ahora muestran un diálogo nativo para elegir dónde guardar el archivo validado, sin abrir el instalador automáticamente.",
       "La API de releases ahora reconoce los destinos Windows, Linux y macOS y solo anuncia la descarga cuando el artefacto correspondiente está publicado.",
+      "Los backups de archivos, scripts, bases de datos y textos del servidor ahora usan un límite configurable por objetivo, con 3 versiones por defecto y reemplazo automático de la más antigua.",
     ],
   },
   {

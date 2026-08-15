@@ -297,11 +297,11 @@ export function useChat(service: RcService): UseChatResult {
         void handleRefreshLsp(channel)
         return true
       }
-      // /openrights, /openaccess, /open {account} open a client-side editor
-      // window. An omitted account targets the account resolved by the latest
-      // openrights response for this RC session. Intercepted locally — never
-      // sent to the server.
-      const adminCmd = trimmed.match(/^\/(openrights|openaccess|opencomments|open)(?:\s+(.*))?$/i)
+      // /openrights, /openaccess, /open, /staffactivity {account} open a
+      // client-side editor/viewer window. An omitted account targets the
+      // account resolved by the latest openrights response for this RC
+      // session. Intercepted locally — never sent to the server.
+      const adminCmd = trimmed.match(/^\/(openrights|openaccess|opencomments|open|staffactivity)(?:\s+(.*))?$/i)
       if (adminCmd) {
         const arg = (adminCmd[2] ?? "").trim()
         const cmdName = adminCmd[1].toLowerCase()
@@ -318,6 +318,9 @@ export function useChat(service: RcService): UseChatResult {
               break
             case "open":
               await service.openAttrsWindow(arg)
+              break
+            case "staffactivity":
+              await service.openStaffActivityWindow(arg)
               break
           }
         } catch (err) {

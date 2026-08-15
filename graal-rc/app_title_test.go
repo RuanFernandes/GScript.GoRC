@@ -31,7 +31,7 @@ func TestEditorTitlePlacesResourceBeforeServer(t *testing.T) {
 	}
 }
 
-func TestScriptEditorTitlePlacesServerBeforeResource(t *testing.T) {
+func TestScriptEditorTitlePlacesResourceBeforeServer(t *testing.T) {
 	tests := []struct {
 		name       string
 		scriptType string
@@ -39,8 +39,8 @@ func TestScriptEditorTitlePlacesServerBeforeResource(t *testing.T) {
 		server     string
 		want       string
 	}{
-		{name: "weapon", scriptType: "weapon", key: "Sword", server: "Zodiac", want: "Zodiac - W: Sword"},
-		{name: "npc flags", scriptType: "npcflags", key: "Guard", server: "Zodiac", want: "Zodiac - F: Guard"},
+		{name: "weapon", scriptType: "weapon", key: "Sword", server: "Zodiac", want: "W: Sword - Zodiac"},
+		{name: "npc flags", scriptType: "npcflags", key: "Guard", server: "Zodiac", want: "F: Guard - Zodiac"},
 		{name: "without server", scriptType: "weapon", key: "Sword", want: "W: Sword"},
 	}
 
@@ -54,10 +54,22 @@ func TestScriptEditorTitlePlacesServerBeforeResource(t *testing.T) {
 }
 
 func TestServerWindowTitle(t *testing.T) {
-	if got := serverWindowTitle("Zodiac", "File Browser"); got != "Zodiac - File Browser" {
-		t.Fatalf("serverWindowTitle() = %q, want %q", got, "Zodiac - File Browser")
+	tests := []struct {
+		name   string
+		server string
+		title  string
+		want   string
+	}{
+		{name: "connected", server: "Zodiac", title: "File Browser", want: "File Browser - Zodiac"},
+		{name: "trims whitespace", server: " Zodiac ", title: " File Browser ", want: "File Browser - Zodiac"},
+		{name: "without server", title: "Script Manager", want: "Script Manager"},
+		{name: "without title", server: "Zodiac", want: "Zodiac"},
 	}
-	if got := serverWindowTitle("", "Script Manager"); got != "Script Manager" {
-		t.Fatalf("serverWindowTitle() without server = %q, want %q", got, "Script Manager")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := serverWindowTitle(tt.server, tt.title); got != tt.want {
+				t.Fatalf("serverWindowTitle() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

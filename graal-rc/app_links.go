@@ -39,8 +39,11 @@ func (a *App) OpenChatLink(rawURL string) error {
 	}
 	w := a.newWebviewWindow(application.WebviewWindowOptions{
 		Name:             windowName,
-		Title:            title,
-		URL:              link,
+		Title:            serverWindowTitle(a.sessions.Status().ServerName, title),
+		// Load the RC shell first so the WebView gets the same custom title bar
+		// as every other secondary window. The external page is rendered inside
+		// the chat-link route's embedded browser surface.
+		URL:              chatLinkRouteURL(link),
 		Width:            chatLinkWindowWidth,
 		Height:           chatLinkWindowHeight,
 		MinWidth:         640,
@@ -66,6 +69,10 @@ func (a *App) OpenChatLink(rawURL string) error {
 	w.Show()
 	w.Focus()
 	return nil
+}
+
+func chatLinkRouteURL(link string) string {
+	return "/#chat-link?u=" + url.QueryEscape(link)
 }
 
 func sanitizeChatLinkURL(rawURL string) (string, error) {

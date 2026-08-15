@@ -37,6 +37,7 @@ import {pluginRuntime} from "@/plugins/runtime"
 import {PluginManagerWindowScreen} from "@/screens/PluginManagerWindowScreen"
 import {PluginDocumentationWindowScreen} from "@/screens/PluginDocumentationWindowScreen"
 import {PluginUIWindowScreen} from "@/screens/PluginUIWindowScreen"
+import {ChatLinkWindowScreen} from "@/screens/ChatLinkWindowScreen"
 
 type PendingConfirm =
   | {kind: "login"; account: string}
@@ -347,6 +348,8 @@ function App() {
   const hash = window.location.hash
   const route = hash.startsWith("#players")
     ? {title: t("window.playerList"), content: <PlayerListWindowScreen />}
+    : hash.startsWith("#chat-link")
+      ? {title: t("window.chatLink"), content: <ChatLinkWindowScreen />}
     : hash.startsWith("#rights")
       ? {title: t("window.rights"), content: <RightsWindowScreen />}
       : hash.startsWith("#attrs")
