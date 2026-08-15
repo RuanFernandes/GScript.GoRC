@@ -1,9 +1,15 @@
 name: release
 
-# Manual release: build Windows x64, Linux x64 and macOS x64, then publish a
-# GitHub release. Triggered from the Actions tab via "Run workflow". Pick a
-# semver bump level (patch/minor/major) and the next tag is computed from the
-# latest existing tag automatically — no manual `git tag` needed.
+# Manual release: build the supported common desktop targets and publish a
+# GitHub release. The native grclib files currently shipped by the repository
+# are x86_64-only, so these are Windows 10/11 x64, Linux x86_64 and macOS
+# x86_64 (native Intel and Rosetta 2 on Apple Silicon). ARM64/386 artifacts
+# must wait for matching native libraries; publishing a Go binary without them
+# would produce an installer that cannot connect to Graal.
+#
+# Triggered from the Actions tab via "Run workflow". Pick a semver bump level
+# (patch/minor/major) and the next tag is computed from the latest existing tag
+# automatically — no manual `git tag` needed.
 on:
   workflow_dispatch:
     inputs:
@@ -40,11 +46,16 @@ on:
 
 permissions:
   contents: write # needed to push the computed tag and create the release
+  actions: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   windows:
     name: Windows (amd64)
-    runs-on: windows-latest
+    runs-on: windows-2022
     defaults:
       run:
         working-directory: graal-rc
@@ -90,10 +101,11 @@ jobs:
           name: windows
           path: graal-rc/bin/*-installer.exe
           if-no-files-found: error
+          retention-days: 1
 
   linux-amd64:
     name: Linux x64 (AppImage)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     defaults:
       run:
         working-directory: graal-rc
@@ -156,6 +168,7 @@ jobs:
           name: linux-amd64
           path: graal-rc/bin/graal-rc-amd64.AppImage
           if-no-files-found: error
+          retention-days: 1
 
   macos-amd64:
     name: macOS x64 (tarball)
@@ -211,11 +224,12 @@ jobs:
           name: macos-amd64
           path: graal-rc/bin/graal-rc-darwin-amd64.tar.gz
           if-no-files-found: error
+          retention-days: 1
 
   release:
     name: Publish release
     needs: [windows, linux-amd64, macos-amd64]
-    if: always() && (needs.windows.result == 'success' || needs.linux-amd64.result == 'success' || needs.macos-amd64.result == 'success')
+    if: ${{ always() && needs.windows.result == 'success' && needs['linux-amd64'].result == 'success' && needs['macos-amd64'].result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -260,12 +274,37 @@ jobs:
             Built from commit ${{ github.sha }} on `${{ github.ref_name }}` via manual dispatch.
 
             Targets:
-            - Windows x64 (NSIS installer)
-            - Linux x64 (AppImage; choose language in Settings on first launch)
-            - macOS x64 (tarball: binary + grclib.dylib; choose language in Settings on first launch)
+            - Windows 10/11 x64 (NSIS installer)
+            - Linux x86_64 (AppImage; choose language in Settings on first launch)
+            - macOS x86_64 (tarball; native Intel and Rosetta 2 on Apple Silicon)
 
             GoRC stores the selected language in the platform user config directory,
             so the preference survives updates and is shared by all app windows.
 
             Native grclib libs are bundled per platform.
           files: release/*
+
+  cleanup:
+    name: Remove intermediate artifacts
+    if: ${{ always() }}
+    needs: [release]
+    runs-on: ubuntu-22.04
+    permissions:
+      actions: write
+    steps:
+      - name: Delete artifacts from this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t artifact_ids < <(
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" \
+              --jq ".artifacts[] | select(.workflow_run.id == ${GITHUB_RUN_ID}) | .id"
+          )
+
+          for artifact_id in "${artifact_ids[@]}"; do
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}" >/dev/null
+          done
+
+          echo "Deleted ${#artifact_ids[@]} intermediate artifact(s) from run ${GITHUB_RUN_ID}."
