@@ -92,3 +92,27 @@ func TestDiagnosticsAllowOptionalCaseBlockSemicolon(t *testing.T) {
 		t.Fatalf("case block with semicolon produced diagnostics: %#v", diagnostics)
 	}
 }
+
+func TestDiagnosticsAllowEnumDeclarationWithoutSemicolon(t *testing.T) {
+	empty := `enum A { }`
+	if diagnostics := parseDocument("memory://empty-enum-without-semicolon", empty, 1).diagnostics(); len(diagnostics) != 0 {
+		t.Fatalf("empty enum declaration without semicolon produced diagnostics: %#v", diagnostics)
+	}
+
+	withoutSemicolon := `enum A {
+  First,
+  Second = 2
+}
+temp.value = 1;`
+	if diagnostics := parseDocument("memory://enum-without-semicolon", withoutSemicolon, 1).diagnostics(); len(diagnostics) != 0 {
+		t.Fatalf("enum declaration without semicolon produced diagnostics: %#v", diagnostics)
+	}
+
+	withSemicolon := `enum A {
+  First,
+  Second = 2
+};`
+	if diagnostics := parseDocument("memory://enum-with-semicolon", withSemicolon, 1).diagnostics(); len(diagnostics) != 0 {
+		t.Fatalf("enum declaration with semicolon produced diagnostics: %#v", diagnostics)
+	}
+}

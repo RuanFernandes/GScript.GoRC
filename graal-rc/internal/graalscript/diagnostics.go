@@ -193,6 +193,9 @@ func (p *semicolonParser) parseStatement(start, end int) int {
 	if p.isFunctionDeclarationStart(start) {
 		return p.parseFunctionDeclaration(start, end)
 	}
+	if p.isEnumDeclarationStart(start) {
+		return p.parseEnumDeclaration(start, end)
+	}
 	if p.isGUIDeclarationStart(start) {
 		return p.parseGUIDeclaration(start, end)
 	}
@@ -263,6 +266,27 @@ func (p *semicolonParser) parseFunctionDeclaration(start, end int) int {
 		return p.parseBlock(bodyOpen, end)
 	}
 	return bodyOpen
+}
+
+func (p *semicolonParser) isEnumDeclarationStart(index int) bool {
+	if index < 0 || index+2 >= len(p.tokens) || !isIdentifierText(p.tokens[index], "enum") {
+		return false
+	}
+	return p.tokens[index+1].kind == tokenIdentifier && p.tokens[index+2].text == "{"
+}
+
+func (p *semicolonParser) parseEnumDeclaration(start, end int) int {
+	open := start + 2
+	close, ok := p.pairs[open]
+	if !ok || close <= open {
+		return end
+	}
+
+	next := close + 1
+	if next < end && p.tokens[next].text == ";" {
+		return next + 1
+	}
+	return next
 }
 
 func (p *semicolonParser) isGUIDeclarationStart(index int) bool {
