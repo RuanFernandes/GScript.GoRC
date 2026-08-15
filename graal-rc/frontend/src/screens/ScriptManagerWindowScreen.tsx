@@ -32,6 +32,12 @@ import {useLanguage} from "@/hooks/useLanguage"
 import {useSync} from "@/hooks/useSync"
 import {ScriptSyncRequiredDialog} from "@/components/ScriptSyncRequiredDialog"
 
+const WEAPON_MUTATION_SETTLE_MS = 1000
+
+function waitForWeaponMutation(): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, WEAPON_MUTATION_SETTLE_MS))
+}
+
 // openScriptEditorOrFail opens the editor; OpenScriptEditor fetches the script
 // server-side first and only opens a window on success. A failure (e.g. the
 // account lacks read permission and the server never replies → timeout) cancels
@@ -240,6 +246,7 @@ function WeaponClassTab({
   const [adding, setAdding] = useState(false)
   const [creating, setCreating] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
+  const [deleting, setDeleting] = useState(false)
   const [name, setName] = useState("")
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc")
   const openingKeysRef = useRef<Set<string>>(new Set())
@@ -265,7 +272,7 @@ function WeaponClassTab({
         // The server acknowledges the request before the weapon is available
         // to the subsequent list request. Keep the add flow visibly pending
         // long enough for the server-side cache to settle.
-        await new Promise<void>((resolve) => window.setTimeout(resolve, 1000))
+        await waitForWeaponMutation()
       }
       await onRefresh()
       toast.success(t(kind === "weapon" ? "scripts.weaponAdded" : "scripts.classAdded", {name: n}))
@@ -291,15 +298,19 @@ function WeaponClassTab({
   }
 
   const doDelete = async () => {
-    if (!selected) return
+    if (!selected || deleting) return
+    setDeleting(true)
     try {
       if (kind === "weapon") await rcService.deleteWeapon(selected)
       else await rcService.deleteClass(selected)
+      if (kind === "weapon") await waitForWeaponMutation()
       toast.success(t("scripts.deleted", {name: selected}))
       setSelected(null)
       await onRefresh()
     } catch (err) {
       toast.error(t("scripts.deleteFailed"), {description: String(err)})
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -433,7 +444,7 @@ function WeaponClassTab({
           </AlertDialogHeader>
           <div className="flex justify-end gap-2">
             <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
-            <Button variant="destructive" onClick={() => { setDeleteOpen(false); void doDelete() }}>{t("scripts.delete")}</Button>
+            <Button variant="destructive" disabled={deleting} onClick={() => { setDeleteOpen(false); void doDelete() }}>{deleting ? t("scripts.loading") : t("scripts.delete")}</Button>
           </div>
         </AlertDialogContent>
       </AlertDialog>
