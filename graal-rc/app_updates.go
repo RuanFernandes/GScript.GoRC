@@ -20,10 +20,12 @@ import (
 )
 
 const (
-	RCVersion          = "3.1.2"
+	RCVersion          = "3.1.3"
 	releaseAPIBaseURL  = "https://nullborne.com"
 	updateRequestLimit = 512 * 1024
 	maxInstallerBytes  = 512 * 1024 * 1024
+	updateParentWait   = 30 * time.Second
+	updateQuitWait     = 2 * time.Second
 )
 
 // UpdateInstaller describes the artifact advertised by the release service.
@@ -77,8 +79,8 @@ func (a *App) GetAppVersion() string {
 }
 
 // CheckForUpdates asks the release service whether a newer supported build is
-// available. Non-Windows builds return a stable no-op until their installers
-// are published by the portal.
+// available. Windows keeps the automatic installer flow; macOS and Linux use
+// the same metadata but save the verified artifact for manual installation.
 func (a *App) CheckForUpdates() (UpdateInfo, error) {
 	if err := ensureAppRunning(a); err != nil {
 		return UpdateInfo{CurrentVersion: RCVersion}, err
@@ -114,13 +116,14 @@ func (a *App) FetchRemoteChangelog() (RemoteChangelog, error) {
 	return changelog, nil
 }
 
-// InstallUpdate performs the requested automatic update flow. It checks the
-// release metadata again immediately before downloading, verifies the exact
-// size and SHA-256 advertised by the server, starts a hidden helper that waits
-// for this process to exit, then closes the RC so NSIS can install over it.
+// InstallUpdate performs the requested automatic Windows update flow. It
+// checks the release metadata again immediately before downloading, verifies
+// the exact size and SHA-256 advertised by the server, starts a detached
+// helper that waits for this process to exit, then closes the RC so NSIS can
+// install over it.
 func (a *App) InstallUpdate() error {
 	if runtime.GOOS != "windows" {
-		return nil
+		return errors.New("automatic updates are only supported on Windows; use SaveUpdate on macOS or Linux")
 	}
 	if err := ensureAppRunning(a); err != nil {
 		return err
@@ -136,7 +139,7 @@ func (a *App) InstallUpdate() error {
 		return nil
 	}
 	if !info.DownloadAvailable || info.Installer == nil || info.DownloadURL == "" {
-		err := fmt.Errorf("update %s is advertised without an available Windows installer", info.LatestVersion)
+		err := fmt.Errorf("update %s is advertised without an available %s installer", info.LatestVersion, platform)
 		log.Printf("automatic update skipped: %v", err)
 		return err
 	}
@@ -157,18 +160,42 @@ func (a *App) InstallUpdate() error {
 	a.quitting.Store(true)
 	go func() {
 		time.Sleep(350 * time.Millisecond)
-		if a.app != nil {
-			a.app.Quit()
+		quitDone := make(chan struct{})
+		go func() {
+			if a.app != nil {
+				a.app.Quit()
+			}
+			close(quitDone)
+		}()
+		select {
+		case <-quitDone:
+			// Give Wails a brief chance to release the WebView and file handles.
+			time.Sleep(500 * time.Millisecond)
+		case <-time.After(updateQuitWait):
+			log.Printf("automatic update: Wails quit did not complete within %s; forcing process exit", updateQuitWait)
 		}
+		// The installer cannot replace a running executable. This is the final
+		// fallback when the native Wails shutdown does not terminate the process.
+		os.Exit(0)
 	}()
 	return nil
 }
 
 func localReleaseTarget() (string, string) {
-	if runtime.GOOS != "windows" {
+	return releaseTarget(runtime.GOOS, runtime.GOARCH)
+}
+
+func releaseTarget(goos, architecture string) (string, string) {
+	switch goos {
+	case "windows":
+		return "windows", architecture
+	case "linux":
+		return "linux", architecture
+	case "darwin":
+		return "mac", architecture
+	default:
 		return "", ""
 	}
-	return "windows", runtime.GOARCH
 }
 
 func fetchUpdateInfo(platform, architecture string) (UpdateInfo, error) {
@@ -237,12 +264,19 @@ func requestJSON(endpoint *url.URL, target any) error {
 }
 
 func downloadInstaller(info UpdateInfo) (string, error) {
+	if info.Installer == nil {
+		return "", errors.New("update metadata does not include an installer")
+	}
+	expectedPath := updateDownloadPath(info.Platform)
+	if expectedPath == "" {
+		return "", fmt.Errorf("unsupported update platform %q", info.Platform)
+	}
 	endpoint, err := url.Parse(info.DownloadURL)
 	if err != nil {
 		return "", err
 	}
-	if endpoint.Scheme != "https" || strings.ToLower(endpoint.Hostname()) != "nullborne.com" || endpoint.Path != "/windows" {
-		return "", errors.New("update download URL is not the trusted Windows release route")
+	if endpoint.Scheme != "https" || strings.ToLower(endpoint.Hostname()) != "nullborne.com" || endpoint.Path != expectedPath || endpoint.RawQuery != "" || endpoint.Fragment != "" || endpoint.User != nil {
+		return "", fmt.Errorf("update download URL is not the trusted %s release route", info.Platform)
 	}
 
 	client := &http.Client{Timeout: 20 * time.Minute}
@@ -262,7 +296,7 @@ func downloadInstaller(info UpdateInfo) (string, error) {
 		return "", fmt.Errorf("installer is larger than the %d MB safety limit", maxInstallerBytes/(1024*1024))
 	}
 
-	temporaryFile, err := os.CreateTemp("", "nullbornes-rc-update-*.exe")
+	temporaryFile, err := os.CreateTemp("", updateTemporaryPattern(info.Platform))
 	if err != nil {
 		return "", err
 	}
@@ -298,6 +332,168 @@ func downloadInstaller(info UpdateInfo) (string, error) {
 	return installerPath, nil
 }
 
+func updateDownloadPath(platform string) string {
+	switch platform {
+	case "windows", "linux", "mac":
+		return "/" + platform
+	default:
+		return ""
+	}
+}
+
+func updateTemporaryPattern(platform string) string {
+	switch platform {
+	case "windows":
+		return "nullbornes-rc-update-*.exe"
+	case "linux":
+		return "nullbornes-rc-update-*.AppImage"
+	case "mac":
+		return "nullbornes-rc-update-*.dmg"
+	default:
+		return "nullbornes-rc-update-*"
+	}
+}
+
+func updateFilename(info UpdateInfo, platform string) string {
+	if info.Installer != nil {
+		name := filepath.Base(strings.TrimSpace(info.Installer.Name))
+		if name != "." && name != string(filepath.Separator) && name != "" {
+			return name
+		}
+	}
+	switch platform {
+	case "linux":
+		return "nullbornes-rc-linux.AppImage"
+	case "mac":
+		return "nullbornes-rc-macos.dmg"
+	default:
+		return "nullbornes-rc-update"
+	}
+}
+
+// saveDownloadedInstaller writes through a temporary file in the destination
+// directory and renames it into place. A cancelled or interrupted copy can
+// therefore never leave a partial release artifact at the user-selected path.
+func saveDownloadedInstaller(sourcePath, destinationPath, platform string) error {
+	destinationPath = filepath.Clean(strings.TrimSpace(destinationPath))
+	if destinationPath == "" || destinationPath == "." {
+		return errors.New("update destination is empty")
+	}
+	if existing, err := os.Stat(destinationPath); err == nil && existing.IsDir() {
+		return errors.New("update destination is a directory")
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect update destination: %w", err)
+	}
+
+	temporaryFile, err := os.CreateTemp(filepath.Dir(destinationPath), ".nullbornes-rc-update-*")
+	if err != nil {
+		return fmt.Errorf("create update destination: %w", err)
+	}
+	temporaryPath := temporaryFile.Name()
+	removeTemporary := true
+	defer func() {
+		if removeTemporary {
+			_ = os.Remove(temporaryPath)
+		}
+	}()
+
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		_ = temporaryFile.Close()
+		return fmt.Errorf("open downloaded update: %w", err)
+	}
+	_, copyErr := io.Copy(temporaryFile, source)
+	closeSourceErr := source.Close()
+	if copyErr != nil {
+		_ = temporaryFile.Close()
+		return fmt.Errorf("save downloaded update: %w", copyErr)
+	}
+	if closeSourceErr != nil {
+		_ = temporaryFile.Close()
+		return fmt.Errorf("close downloaded update: %w", closeSourceErr)
+	}
+	if err := temporaryFile.Sync(); err != nil {
+		_ = temporaryFile.Close()
+		return fmt.Errorf("flush downloaded update: %w", err)
+	}
+	if err := temporaryFile.Close(); err != nil {
+		return fmt.Errorf("close saved update: %w", err)
+	}
+
+	mode := os.FileMode(0o644)
+	if platform == "linux" {
+		mode = 0o755
+	}
+	if err := os.Chmod(temporaryPath, mode); err != nil {
+		return fmt.Errorf("set update permissions: %w", err)
+	}
+	if err := os.Rename(temporaryPath, destinationPath); err != nil {
+		return fmt.Errorf("finalize saved update: %w", err)
+	}
+	removeTemporary = false
+	return nil
+}
+
+// SaveUpdate downloads and verifies a macOS/Linux artifact, then asks the user
+// where to save it. Installation remains a deliberate manual action on those
+// platforms because the downloaded formats have platform-specific signing and
+// package-installation requirements.
+func (a *App) SaveUpdate() (string, error) {
+	if runtime.GOOS == "windows" {
+		return "", errors.New("Windows updates use InstallUpdate")
+	}
+	if err := ensureAppRunning(a); err != nil {
+		return "", err
+	}
+
+	platform, architecture := localReleaseTarget()
+	if platform == "" {
+		return "", errors.New("manual updates are not supported on this platform")
+	}
+	info, err := fetchUpdateInfo(platform, architecture)
+	if err != nil {
+		log.Printf("manual update check failed: %v", err)
+		return "", err
+	}
+	if !info.UpdateAvailable {
+		return "", nil
+	}
+	if !info.DownloadAvailable || info.Installer == nil || info.DownloadURL == "" {
+		return "", fmt.Errorf("update %s is advertised without an available %s installer", info.LatestVersion, platform)
+	}
+
+	filename := updateFilename(info, platform)
+	dialog := a.app.Dialog.SaveFile().
+		AttachToWindow(a.dialogParentWindow()).
+		SetMessage("Save Graal Remote Control update").
+		SetFilename(filename)
+	switch platform {
+	case "linux":
+		dialog.AddFilter("Linux AppImage", "*.AppImage")
+	case "mac":
+		dialog.AddFilter("macOS disk image", "*.dmg")
+	}
+	chosenPath, err := dialog.PromptForSingleSelection()
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(chosenPath) == "" {
+		return "", nil
+	}
+
+	temporaryPath, err := downloadInstaller(info)
+	if err != nil {
+		log.Printf("manual update download failed: %v", err)
+		return "", err
+	}
+	defer os.Remove(temporaryPath)
+	if err := saveDownloadedInstaller(temporaryPath, chosenPath, platform); err != nil {
+		log.Printf("manual update save failed: %v", err)
+		return "", err
+	}
+	return chosenPath, nil
+}
+
 func launchWindowsInstallerAfterExit(installerPath string) error {
 	parentPID := strconv.Itoa(os.Getpid())
 	applicationPath, err := os.Executable()
@@ -324,11 +520,16 @@ func launchWindowsInstallerAfterExit(installerPath string) error {
 		"-File",
 		scriptPath,
 	)
-	command.Stdout = io.Discard
-	command.Stderr = io.Discard
+	command.Stdin = nil
+	command.Stdout = nil
+	command.Stderr = nil
+	configureDetachedUpdateCommand(command)
 	if err := command.Start(); err != nil {
 		_ = os.Remove(scriptPath)
 		return err
+	}
+	if err := command.Process.Release(); err != nil {
+		log.Printf("automatic update helper process release failed: %v", err)
 	}
 	return nil
 }
@@ -344,10 +545,16 @@ func buildWindowsUpdateScript(parentPID, installerPath, applicationPath, logPath
 		fmt.Sprintf("$applicationPath = %s", quotePowerShellLiteral(applicationPath)),
 		fmt.Sprintf("$workingDirectory = %s", quotePowerShellLiteral(filepath.Dir(applicationPath))),
 		fmt.Sprintf("$logPath = %s", quotePowerShellLiteral(logPath)),
-		"while (Get-Process -Id $parentPid -ErrorAction SilentlyContinue) {",
-		"  Start-Sleep -Milliseconds 250",
-		"}",
+		"$parentExited = $false",
 		"try {",
+		fmt.Sprintf("  $waitDeadline = (Get-Date).AddSeconds(%d)", int(updateParentWait.Seconds())),
+		"  while (Get-Process -Id ([int]$parentPid) -ErrorAction SilentlyContinue) {",
+		"    if ((Get-Date) -ge $waitDeadline) {",
+		"      throw \"Timed out waiting for Nullborne RC (PID $parentPid) to exit.\"",
+		"    }",
+		"    Start-Sleep -Milliseconds 250",
+		"  }",
+		"  $parentExited = $true",
 		"  if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {",
 		"    throw \"The downloaded installer was not found.\"",
 		"  }",
@@ -363,6 +570,10 @@ func buildWindowsUpdateScript(parentPID, installerPath, applicationPath, logPath
 		"  }",
 		"} finally {",
 		"  Remove-Item -LiteralPath $installerPath -Force -ErrorAction SilentlyContinue",
+		"}",
+		"if (-not $parentExited) {",
+		"  Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue",
+		"  exit 1",
 		"}",
 		"try {",
 		"  if (Test-Path -LiteralPath $applicationPath -PathType Leaf) {",

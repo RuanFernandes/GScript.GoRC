@@ -11,11 +11,23 @@ export interface ChangelogEntry {
 // the visible history from nullborne.com when the release service is reachable.
 const CHANGELOG_PT_BR: ChangelogEntry[] = [
   {
+    version: "3.1.3",
+    date: "15/08/2026",
+    title: "Updater e downloads manuais multiplataforma",
+    summary: "Corrige o encerramento do auto-update no Windows e permite salvar atualizações do macOS/Linux para instalação manual.",
+    current: true,
+    changes: [
+      "O helper do auto-update Windows agora é iniciado desacoplado, tem limite de espera e força o encerramento do RC quando necessário para liberar o instalador.",
+      "Atualizações para macOS e Linux agora mostram um diálogo nativo para escolher onde salvar o arquivo verificado, sem abrir o instalador automaticamente.",
+      "A API de releases passou a reconhecer os destinos Windows, Linux e macOS e só anuncia o download quando o artefato correspondente está publicado.",
+    ],
+  },
+  {
     version: "3.1.2",
     date: "15/08/2026",
     title: "Hotfix do relançamento do atualizador",
     summary: "O RC agora volta a abrir depois que o instalador automático termina.",
-    current: true,
+    current: false,
     changes: [
       "O helper do auto-update agora aguarda o instalador silencioso, registra falhas e relança o RC ao final para evitar que a atualização deixe o aplicativo fechado.",
     ],
@@ -142,8 +154,17 @@ const CHANGELOG_PT_BR: ChangelogEntry[] = [
 
 const CHANGELOG_EN: ChangelogEntry[] = [
   {
+    version: "3.1.3", date: "2026-08-15", title: "Updater and cross-platform manual downloads",
+    summary: "Fixes Windows auto-update shutdown and lets macOS/Linux users save verified updates for manual installation.", current: true,
+    changes: [
+      "The Windows automatic-update helper now starts detached, has a bounded wait and force-exits the RC when necessary to release the installer.",
+      "macOS and Linux updates now show a native save dialog for the verified artifact instead of opening an installer automatically.",
+      "The release API now recognizes Windows, Linux and macOS targets and advertises downloads only when the matching artifact is published.",
+    ],
+  },
+  {
     version: "3.1.2", date: "2026-08-15", title: "Updater relaunch hotfix",
-    summary: "The RC now opens again after the automatic installer finishes.", current: true,
+    summary: "The RC now opens again after the automatic installer finishes.", current: false,
     changes: [
       "The automatic-update helper now waits for the silent installer, records failures and relaunches the RC afterward so an update cannot leave the application closed.",
     ],
@@ -235,8 +256,17 @@ const CHANGELOG_EN: ChangelogEntry[] = [
 
 const CHANGELOG_ES: ChangelogEntry[] = [
   {
+    version: "3.1.3", date: "2026-08-15", title: "Actualizador y descargas manuales multiplataforma",
+    summary: "Corrige el cierre de la actualización automática en Windows y permite guardar actualizaciones de macOS/Linux para instalarlas manualmente.", current: true,
+    changes: [
+      "El helper de actualización automática de Windows ahora se inicia separado, tiene un tiempo de espera limitado y fuerza el cierre del RC cuando es necesario para liberar el instalador.",
+      "Las actualizaciones de macOS y Linux ahora muestran un diálogo nativo para elegir dónde guardar el archivo validado, sin abrir el instalador automáticamente.",
+      "La API de releases ahora reconoce los destinos Windows, Linux y macOS y solo anuncia la descarga cuando el artefacto correspondiente está publicado.",
+    ],
+  },
+  {
     version: "3.1.2", date: "2026-08-15", title: "Hotfix de relanzamiento del actualizador",
-    summary: "El RC vuelve a abrirse después de que termina el instalador automático.", current: true,
+    summary: "El RC vuelve a abrirse después de que termina el instalador automático.", current: false,
     changes: [
       "El helper de actualización automática ahora espera al instalador silencioso, registra fallos y relanza el RC al finalizar para evitar que quede cerrado.",
     ],

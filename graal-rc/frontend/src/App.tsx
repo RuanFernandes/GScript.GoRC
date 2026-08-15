@@ -67,17 +67,30 @@ function Shell() {
     let cancelled = false
     void rcService.checkForUpdates().then((info) => {
       if (cancelled || !info.updateAvailable || !info.downloadAvailable) return
+      const automaticWindowsUpdate = info.platform === "windows"
       toast.info(language.t("update.availableTitle", {version: info.latestVersion}), {
-        description: language.t("update.availableDescription", {current: info.currentVersion}),
+        description: language.t(automaticWindowsUpdate ? "update.availableDescription" : "update.manualDescription", {current: info.currentVersion}),
         duration: Infinity,
         action: {
-          label: language.t("update.downloadAction"),
+          label: language.t(automaticWindowsUpdate ? "update.downloadAction" : "update.saveAction"),
           onClick: () => {
-            toast.info(language.t("update.downloadingTitle", {version: info.latestVersion}), {
-              description: language.t("update.downloadingDescription"),
+            toast.info(language.t(automaticWindowsUpdate ? "update.downloadingTitle" : "update.savingTitle", {version: info.latestVersion}), {
+              description: language.t(automaticWindowsUpdate ? "update.downloadingDescription" : "update.savingDescription"),
               duration: Infinity,
             })
-            void rcService.installUpdate().catch((error) => {
+            if (automaticWindowsUpdate) {
+              void rcService.installUpdate().catch((error) => {
+                const message = error instanceof Error ? error.message : String(error)
+                toast.error(language.t("update.failedTitle"), {description: message})
+              })
+              return
+            }
+            void rcService.saveUpdate().then((savedPath) => {
+              if (!savedPath) return
+              toast.success(language.t("update.savedTitle"), {
+                description: language.t("update.savedDescription", {path: savedPath}),
+              })
+            }).catch((error) => {
               const message = error instanceof Error ? error.message : String(error)
               toast.error(language.t("update.failedTitle"), {description: message})
             })
