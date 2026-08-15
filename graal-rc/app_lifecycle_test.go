@@ -52,11 +52,8 @@ func TestApplicationOptionsConfigureWailsLifecycle(t *testing.T) {
 	if options.PostShutdown == nil {
 		t.Fatal("PostShutdown was not configured")
 	}
-	if options.SingleInstance == nil || options.SingleInstance.UniqueID == "" {
-		t.Fatal("single-instance options were not configured")
-	}
-	if options.SingleInstance.OnSecondInstanceLaunch == nil {
-		t.Fatal("second-instance callback was not configured")
+	if options.SingleInstance != nil {
+		t.Fatal("single-instance options must be disabled so multiple RC connections can run")
 	}
 
 	options.OnShutdown()

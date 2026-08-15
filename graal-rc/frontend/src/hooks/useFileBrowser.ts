@@ -14,6 +14,7 @@ import {toast} from "sonner"
 import type {RcService} from "@/services/rcService"
 import type {FileBrowserConfig, FileBrowserEntry, FileBrowserFolder} from "@/types"
 import {useLanguage} from "@/hooks/useLanguage"
+import {mergeFileBrowserMessage} from "@/lib/fileBrowserMessages"
 
 type Evt = {seq: number; name: string; data: unknown[]}
 
@@ -92,7 +93,7 @@ export function useFileBrowser(service: RcService): UseFileBrowserResult {
   currentFolderRef.current = currentFolder
 
   const pushMessage = useCallback((msg: string) => {
-    setMessages((prev) => [...prev.slice(-199), msg])
+    setMessages((prev) => mergeFileBrowserMessage(prev, msg))
   }, [])
 
   const snapshotFolders = useCallback(async () => {
@@ -184,6 +185,7 @@ export function useFileBrowser(service: RcService): UseFileBrowserResult {
 
   const rename = useCallback(
     async (entry: FileBrowserEntry, newName: string) => {
+      if (entry.isDirectory) return
       const dir = entry.path.includes("/")
         ? entry.path.slice(0, entry.path.lastIndexOf("/") + 1)
         : ""
@@ -249,6 +251,20 @@ export function useFileBrowser(service: RcService): UseFileBrowserResult {
         else if (m.name === "rc:fbFiles") {
           const folder = typeof m.data?.[0] === "string" ? (m.data[0] as string) : ""
           snapshotFiles(folder)
+        } else if (m.name === "rc:fbReset") {
+          foldersRef.current = []
+          currentFolderRef.current = ""
+          setFolders([])
+          setFiles([])
+          setCurrentFolder("")
+          setMessages([])
+          setMaxUpload(0)
+          setLoaded(false)
+          setLoading(true)
+        } else if (m.name === "rc:connected") {
+          // If a disconnect/reconnect happened while this WebView was still
+          // tearing down, request a fresh root snapshot for the new server.
+          void refresh()
         } else if (m.name === "rc:fbMessage") {
           pushMessage(typeof m.data?.[0] === "string" ? (m.data[0] as string) : "")
         } else if (m.name === "rc:fbMaxUpload") {

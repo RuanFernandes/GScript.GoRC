@@ -3,26 +3,26 @@
 #
 # The lines below are called `modelines`. See `:help modeline`
 
-name: "v3ref.exe"
+name: "graal-rc"
 arch: ${GOARCH}
 platform: "linux"
-version: "3.0.0"
+version: "3.1.0"
 section: "default"
 priority: "extra"
 maintainer: ${GIT_COMMITTER_NAME} <${GIT_COMMITTER_EMAIL}>
-description: "A v3ref application"
-vendor: "My Company"
+description: "Graal Remote Control client"
+vendor: "RuanFernandes"
 homepage: "https://wails.io"
 license: "MIT"
 release: "1"
 
 contents:
-  - src: "./bin/v3ref.exe"
-    dst: "/usr/local/bin/v3ref.exe"
+  - src: "./bin/graal-rc"
+    dst: "/usr/local/bin/graal-rc"
   - src: "./build/appicon.png"
-    dst: "/usr/share/icons/hicolor/128x128/apps/v3ref.exe.png"
-  - src: "./build/linux/v3ref.exe.desktop"
-    dst: "/usr/share/applications/v3ref.exe.desktop"
+    dst: "/usr/share/icons/hicolor/128x128/apps/graal-rc.png"
+  - src: "./build/linux/graal-rc.desktop"
+    dst: "/usr/share/applications/graal-rc.desktop"
 
 # Default dependencies for the GTK4 + WebKitGTK 6.0 stack (Ubuntu 24.04+ / Debian 13+)
 depends:

@@ -70,8 +70,21 @@ export function useScriptLists(service: RcService, onlyReadable: boolean): UseSc
         // ignore malformed events
       }
     })
+    let lastSyncGeneration = 0
+    const offSync = Events.On("rc:syncStatus", (e: {data: string}) => {
+      try {
+        const status = JSON.parse(e.data) as {syncGeneration?: number; initialSync?: boolean}
+        const generation = status.syncGeneration ?? 0
+        if (status.initialSync || generation <= lastSyncGeneration || generation <= 0) return
+        lastSyncGeneration = generation
+        void refresh()
+      } catch {
+        // ignore malformed events
+      }
+    })
     return () => {
       off()
+      offSync()
     }
   }, [refresh])
 

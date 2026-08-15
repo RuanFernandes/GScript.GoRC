@@ -1,4 +1,5 @@
 import {rcService} from "@/services/rcService"
+import {APP_VERSION} from "@/lib/appVersion"
 
 interface Disposable {
   dispose(): void
@@ -22,6 +23,9 @@ interface MonacoModel {
 }
 
 interface MonacoLanguageAPI {
+  editor?: {
+    registerLinkOpener?(opener: {open(resource: {toString(): string}): boolean | Promise<boolean>}): Disposable
+  }
   languages: {
     registerCompletionItemProvider(languageId: string, provider: unknown): Disposable
     registerHoverProvider(languageId: string, provider: unknown): Disposable
@@ -109,6 +113,13 @@ export interface GraalScriptLspRegistration {
   dispose(): void
 }
 
+interface MonacoMarkdownDocumentation {
+  value: string
+  supportThemeIcons?: boolean
+}
+
+const GRAALSCRIPT_WIKI_SEARCH_URL = "https://wiki.gscript.dev/index.php"
+
 // GraalScriptLspClient keeps the official LSP message shape while using the
 // Wails service as the desktop transport. The semantic server remains unaware
 // of Monaco and can later be exposed over stdio for VS Code.
@@ -136,7 +147,7 @@ export class GraalScriptLspClient {
             signatureHelp: {signatureInformation: {documentationFormat: ["markdown", "plaintext"]}},
           },
         },
-        clientInfo: {name: "graal-rc", version: "3.0.0"},
+        clientInfo: {name: "graal-rc", version: APP_VERSION},
       })
       await this.notify("initialized", {})
       if (this.disposed) return result ?? {}
@@ -256,6 +267,16 @@ export function registerGraalScriptLsp(monaco: unknown, client: GraalScriptLspCl
   const m = monaco as MonacoLanguageAPI
   const disposables: Disposable[] = []
 
+  const wikiLinkOpener = m.editor?.registerLinkOpener?.({
+    open: (resource) => {
+      const url = resource.toString()
+      if (!url.startsWith(`${GRAALSCRIPT_WIKI_SEARCH_URL}?`)) return false
+      void rcService.openChatLink(url).catch(() => undefined)
+      return true
+    },
+  })
+  if (wikiLinkOpener) disposables.push(wikiLinkOpener)
+
   disposables.push(m.languages.registerCompletionItemProvider("graalscript", {
     triggerCharacters: [".", "(", ",", "@"],
     provideCompletionItems: async (model: MonacoModel, position: MonacoPosition) => {
@@ -268,7 +289,7 @@ export function registerGraalScriptLsp(monaco: unknown, client: GraalScriptLspCl
             label: item.label,
             kind: completionKind(item.kind),
             detail: item.detail,
-            documentation: documentationMarkdown(item.documentation),
+            documentation: completionDocumentation(item),
             filterText: item.label,
             sortText: item.sortText,
             insertText: item.textEdit?.newText ?? item.insertText ?? item.label,
@@ -352,8 +373,30 @@ function documentationValue(value: string | {kind: string; value: string} | unde
   return typeof value === "string" ? value : value?.value ?? ""
 }
 
-function documentationMarkdown(value: string | {kind: string; value: string} | undefined): {value: string} {
+function documentationMarkdown(value: string | {kind: string; value: string} | undefined): MonacoMarkdownDocumentation {
   return {value: documentationValue(value).replace(/```gs2\b/gi, "```graalscript")}
+}
+
+function completionDocumentation(item: LspCompletionItem): MonacoMarkdownDocumentation {
+  const documentation = documentationMarkdown(item.documentation)
+  if (item.kind !== 2 && item.kind !== 3) return documentation
+
+  const wikiURL = wikiSearchURL(item.label)
+  if (!wikiURL) return documentation
+
+  const link = `[$(book) Abrir na Wiki](${wikiURL})`
+  return {
+    value: documentation.value ? `${documentation.value}\n\n---\n\n${link}` : link,
+    supportThemeIcons: true,
+  }
+}
+
+function wikiSearchURL(name: string): string | null {
+  const sanitized = name.replace(/[^\p{L}\p{N}_]/gu, "")
+  if (!sanitized || sanitized.length > 100) return null
+
+  const params = new URLSearchParams({title: "Special:Search", search: sanitized, go: "Go"})
+  return `${GRAALSCRIPT_WIKI_SEARCH_URL}?${params.toString()}`
 }
 
 function completionKind(kind: number | undefined): number {

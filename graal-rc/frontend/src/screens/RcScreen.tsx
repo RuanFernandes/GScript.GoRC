@@ -3,7 +3,7 @@
 // command input, an NC (script socket) status badge, a toggleable player list
 // panel, and a chat-color settings dialog. Mirrors the reference client's
 // TRemoteFrame.
-import {useEffect, useMemo, useRef, useState} from "react"
+import {useCallback, useEffect, useMemo, useRef, useState} from "react"
 import {Events} from "@wailsio/runtime"
 import {Bell, BellRing, BookmarkPlus, Command, LogOut, Plus, Search, ScrollText, Send, Settings, Trash2, UserRound, X} from "lucide-react"
 import {toast} from "sonner"
@@ -23,6 +23,8 @@ import {useChatAutocomplete} from "@/hooks/useChatAutocomplete"
 import {useChatInputHistory} from "@/hooks/useChatInputHistory"
 import {useChatSettings} from "@/hooks/useChatSettings"
 import {usePlayers} from "@/hooks/usePlayers"
+import {useScriptLists} from "@/hooks/useScriptLists"
+import {useSync} from "@/hooks/useSync"
 import {serverDisplay} from "@/lib/server"
 import {formatLogLine} from "@/lib/chatLine"
 import {mergeRepeatedMessages} from "@/lib/chatMessages"
@@ -128,6 +130,10 @@ function ChatPane({
   const lastLogged = useRef(0)
   const displayMessages = useMemo(() => mergeRepeatedMessages(messages), [messages])
 
+  const openChatLink = useCallback((url: string) => {
+    void rcService.openChatLink(url).catch(() => toast.error(t("chat.linkOpenFailed")))
+  }, [t])
+
   useEffect(() => {
     const el = scrollRef.current
     if (el && stick.current) el.scrollTop = el.scrollHeight
@@ -193,6 +199,7 @@ function ChatPane({
                     message={m}
                     settings={settings}
                     repeatLabel={m.repeatCount && m.repeatCount > 1 ? t("chat.repeatedCount", {count: m.repeatCount}) : undefined}
+                    onOpenLink={openChatLink}
                   />
                 )}
               </div>
@@ -247,8 +254,8 @@ function ChatPane({
                     size="icon"
                     className="size-8 shrink-0"
                     disabled={!canSaveMacro}
-                    onClick={() => {
-                      if (!commandMacros.save(macroName, macroCommand, macroParameters.map(({name, type}) => ({name, type})))) return
+                    onClick={async () => {
+                      if (!await commandMacros.save(macroName, macroCommand, macroParameters.map(({name, type}) => ({name, type})))) return
                       setMacroName("")
                       setMacroParameters([])
                     }}
@@ -336,8 +343,8 @@ function ChatPane({
                     <button
                       type="button"
                       className="text-muted-foreground hover:text-destructive shrink-0 rounded p-1 opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100"
-                      onClick={() => {
-                        commandMacros.remove(macro.id)
+                      onClick={async () => {
+                        if (!await commandMacros.remove(macro.id)) return
                         if (selectedMacro?.id === macro.id) {
                           setSelectedMacro(null)
                           setMacroValues({})
@@ -554,6 +561,8 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
   const [profile, setProfile] = useState<AccountSummary | null>(null)
   const [rightsIdentity, setRightsIdentity] = useState<RightsIdentityStatus>({})
   const {players} = usePlayers(rcService, true)
+  const {weapons, classes, npcs} = useScriptLists(rcService, true)
+  const {status: syncStatus, loaded: syncLoaded} = useSync()
   const {state: pmState} = usePrivateMessages()
   const dragIndex = useRef<number>(-1)
   const [changelogOpen, setChangelogOpen] = useState(false)
@@ -564,6 +573,12 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
   const openScriptManager = () => {
     void rcService.openScriptManager().catch(() => {
       toast.error(t("scripts.initialSyncBusy"))
+    })
+  }
+
+  const openScriptShortcut = (scriptType: "weapon" | "class" | "npc", key: string) => {
+    void rcService.openScriptEditor(scriptType, key).catch((err: unknown) => {
+      toast.error(`${t("common.openFailed")}: ${key}`, {description: String(err)})
     })
   }
 
@@ -641,6 +656,7 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
 
   const {label: displayServer} = serverDisplay(serverName)
   const commandMacros = useCommandMacros(displayServer || serverName)
+  const scriptShortcutsEnabled = syncLoaded && !syncStatus.initialSync
   const realAccount = rightsIdentity.realAccount || ""
   const communityName = rightsIdentity.communityName || ""
   const rightsLabel = realAccount ? (communityName ? `${communityName} (${realAccount})` : realAccount) : ""
@@ -830,10 +846,15 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
       <GlobalSearchPalette
         open={searchOpen}
         players={players}
+        weapons={weapons}
+        classes={classes}
+        npcs={npcs}
+        scriptShortcutsEnabled={scriptShortcutsEnabled}
         onOpen={() => setSearchOpen(true)}
         onClose={() => setSearchOpen(false)}
         onOpenPlayers={() => rcService.openPlayerList()}
         onOpenScripts={openScriptManager}
+        onOpenScript={openScriptShortcut}
         onOpenFiles={() => rcService.openFileBrowser()}
         onOpenSync={() => rcService.openSyncReview()}
         onOpenDeployments={() => rcService.openDeploymentCenter()}

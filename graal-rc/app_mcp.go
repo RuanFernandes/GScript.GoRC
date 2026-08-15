@@ -185,6 +185,8 @@ func (a *App) OpenMCPAgentFile(name string) error {
 type appMCPBackend struct{ app *App }
 
 func (b appMCPBackend) GetRCChat(limit int) []mcp.ChatLine {
+	// MCP exposes the raw captured history. The repeated-text aggregation is
+	// intentionally a frontend-only presentation concern.
 	lines := b.app.sessions.ChatHistory(limit)
 	result := make([]mcp.ChatLine, 0, len(lines))
 	for _, line := range lines {

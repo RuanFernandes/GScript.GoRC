@@ -1,12 +1,12 @@
-import {BookOpen, FolderOpen, Puzzle, Wrench} from "lucide-react"
+import {BookOpen, ExternalLink, FolderOpen, Puzzle, Wrench} from "lucide-react"
 
 import {Button} from "@/components/ui/button"
-import {PluginDocumentation} from "@/screens/SettingsWindowScreen"
 import {useLanguage} from "@/hooks/useLanguage"
+import {OFFICIAL_PLUGIN_DOCUMENTATION_URL, openOfficialPluginDocumentation} from "@/lib/pluginDocumentation"
 import {rcService} from "@/services/rcService"
 
 export function PluginDocumentationWindowScreen() {
-  const {language, t} = useLanguage()
+  const {t} = useLanguage()
 
   return (
     <div className="bg-background flex h-full min-h-0 flex-col">
@@ -30,15 +30,27 @@ export function PluginDocumentationWindowScreen() {
         </div>
       </header>
       <main data-plugin-doc-scroll className="min-h-0 flex-1 overflow-y-auto px-5 py-6 sm:px-8 sm:py-8">
-        <div className="mx-auto max-w-5xl">
-          <div className="mb-6 flex items-start gap-3 border-b pb-5">
-            <Puzzle className="mt-0.5 size-5 shrink-0 text-primary" />
-            <div>
-              <h2 className="text-base font-semibold">{t("settings.pluginDocsTitle")}</h2>
-              <p className="text-muted-foreground mt-1 max-w-3xl text-sm leading-6">{t("settings.pluginDocsDescription")}</p>
+        <div className="mx-auto max-w-3xl">
+          <div className="rounded-lg border bg-card/40 p-6 sm:p-8">
+            <div className="flex items-start gap-3">
+              <Puzzle className="mt-0.5 size-5 shrink-0 text-primary" />
+              <div>
+                <h2 className="text-base font-semibold">{t("settings.pluginDocsTitle")}</h2>
+                <p className="text-muted-foreground mt-1 max-w-3xl text-sm leading-6">{t("settings.pluginDocsDescription")}</p>
+              </div>
             </div>
+            <Button className="mt-6" onClick={() => void openOfficialPluginDocumentation()}>
+              <ExternalLink />{t("settings.pluginDocumentation")}
+            </Button>
+            <a
+              className="text-primary mt-3 block break-all text-sm underline-offset-4 hover:underline"
+              href={OFFICIAL_PLUGIN_DOCUMENTATION_URL}
+              target="_blank"
+              rel="noreferrer"
+            >
+              {OFFICIAL_PLUGIN_DOCUMENTATION_URL}
+            </a>
           </div>
-          <PluginDocumentation language={language} />
         </div>
       </main>
     </div>

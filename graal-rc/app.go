@@ -61,6 +61,10 @@ type App struct {
 	pmMu            sync.RWMutex
 	pmConversations map[int]PMConversation
 
+	// sessionWindowsMu serializes teardown triggered by an explicit logout and
+	// by an asynchronous server-disconnect callback.
+	sessionWindowsMu sync.Mutex
+
 	logMu      sync.Mutex
 	logEnabled bool
 	logDir     string
@@ -84,6 +88,10 @@ type App struct {
 
 	pluginDocsWindowMu sync.Mutex
 	pluginDocsWindow   *application.WebviewWindow
+
+	chatLinkMu      sync.Mutex
+	chatLinkWindows map[string]*application.WebviewWindow
+	chatLinkSeq     uint64
 
 	pluginFileOpenMu      sync.Mutex
 	pluginFileOpenWaiters map[string]pluginFileOpenRequest
@@ -129,6 +137,8 @@ type App struct {
 
 	fileBrowserCfgMu sync.Mutex
 	fileBrowserCfg   FileBrowserConfig
+
+	commandMacrosMu sync.Mutex
 
 	// Local Sync engine + its persisted config. Config is PER-SERVER (keyed by
 	// server name) so each server keeps its own output folder + settings. The
@@ -218,6 +228,26 @@ func NewApp() *App {
 	return app
 }
 
+// newWebviewWindow keeps secondary RC windows on the monitor that currently
+// contains the main window. If the monitor cannot be resolved, Wails keeps its
+// default placement behavior.
+func (a *App) newWebviewWindow(options application.WebviewWindowOptions) *application.WebviewWindow {
+	if a.mainWindow != nil {
+		if screen, err := a.mainWindow.GetScreen(); err == nil && screen != nil {
+			options.Screen = screen
+			options.InitialPosition = application.WindowCentered
+		}
+	}
+	return a.app.Window.NewWithOptions(options)
+}
+
+func (a *App) dialogParentWindow() application.Window {
+	if a.mainWindow == nil {
+		return nil
+	}
+	return a.mainWindow
+}
+
 // attach wires the v3 application handle and the event emitter (grclib
 // callbacks → app.Event.Emit) once application.New has returned. Unexported so
 // it is not exposed to the frontend as a binding.
@@ -242,6 +272,12 @@ func (a *App) attach(app *application.App) {
 	}
 	var seq uint64
 	a.sessions.SetEmitter(func(name string, data ...any) {
+		// A disconnect can arrive without a user clicking the logout button. Tear
+		// down every server-scoped window before forwarding the event so the login
+		// screen can never coexist with stale editor/file-browser context.
+		if name == "rc:disconnected" {
+			a.closeSessionWindows()
+		}
 		if name == "rc:pm" && len(data) >= 4 {
 			id, idOK := data[0].(int)
 			account, accountOK := data[1].(string)
@@ -305,6 +341,7 @@ func normalizePluginEvent(name string) string {
 		"playerTextData": "player.text",
 		"serverdata":     "nc.serverdata", "ncConnected": "nc.connected", "ncDisconnected": "nc.disconnected",
 		"fbChanged": "filebrowser.changed", "fbStart": "filebrowser.started", "fbCd": "filebrowser.directory.changed",
+		"fbReset":      "filebrowser.reset",
 		"syncConflict": "script.conflict", "syncProgress": "sync.progress", "syncStatus": "sync.status",
 		"channels": "irc.channels", "scriptIdentityChanged": "script.identity.changed", "scriptPermissionsChanged": "script.permissions.changed",
 		"fbMaxUpload": "filebrowser.maxUpload",
@@ -594,7 +631,7 @@ func (a *App) ExportPlugin(id string) (string, error) {
 	if !ok {
 		return "", pluginlib.ErrPluginNotFound
 	}
-	path, err := a.app.Dialog.SaveFile().SetMessage("Export " + info.Manifest.Name).SetFilename(info.Manifest.ID + ".zip").PromptForSingleSelection()
+	path, err := a.app.Dialog.SaveFile().AttachToWindow(a.dialogParentWindow()).SetMessage("Export " + info.Manifest.Name).SetFilename(info.Manifest.ID + ".zip").PromptForSingleSelection()
 	if err != nil || path == "" {
 		return path, err
 	}
@@ -1203,6 +1240,7 @@ func (a *App) ConnectToServer(index int) error {
 	// from the previous server can continue after the handle starts serving the
 	// newly selected server.
 	a.stopSyncEngine()
+	a.closeSessionWindows()
 	err := a.sessions.ConnectToServer(index)
 	a.refreshServerChrome()
 	if err == nil {
@@ -1217,6 +1255,7 @@ func (a *App) SetNewProtocol(enable bool) error { return a.sessions.SetNewProtoc
 // Logout drops the active session and restores default window/tray titles.
 func (a *App) Logout() {
 	a.stopSyncEngine()
+	a.closeSessionWindows()
 	a.sessions.Logout()
 	a.clearPMState()
 	a.refreshServerChrome()
@@ -1361,7 +1400,7 @@ func (a *App) openPlayerWindow(kind, label, account string, width, height int) e
 		title = fmt.Sprintf("%s - %s", title, server)
 	}
 
-	w := a.app.Window.NewWithOptions(application.WebviewWindowOptions{
+	w := a.newWebviewWindow(application.WebviewWindowOptions{
 		Name:             sanitizeWindowName(kind, account),
 		Title:            title,
 		URL:              "/#" + kind + "?a=" + url.QueryEscape(account),
@@ -1377,7 +1416,9 @@ func (a *App) openPlayerWindow(kind, label, account string, width, height int) e
 	w.Focus()
 	w.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
 		a.playerWindowMu.Lock()
-		delete(a.playerWindows, mapKey)
+		if a.playerWindows[mapKey] == w {
+			delete(a.playerWindows, mapKey)
+		}
 		a.playerWindowMu.Unlock()
 	})
 	return nil
@@ -1681,12 +1722,40 @@ func (a *App) FileBrowserDelete(path string) error {
 
 // FileBrowserRename renames a remote file.
 func (a *App) FileBrowserRename(oldPath, newPath string) error {
+	if isFileBrowserDirectoryPath(oldPath) {
+		return errors.New("renaming file-browser folders is not supported")
+	}
+	normalizedOldPath := normalizeFileBrowserPath(oldPath)
+	if entries, err := a.sessions.GetFileBrowserFiles(); err == nil {
+		if fileBrowserEntryIsDirectory(entries, normalizedOldPath) {
+			return errors.New("renaming file-browser folders is not supported")
+		}
+	}
 	if err := a.sessions.FileBrowserRename(oldPath, newPath); err != nil {
 		a.recordAudit("rename", "file", oldPath+" -> "+newPath, "failed", err.Error())
 		return err
 	}
 	a.recordAudit("rename", "file", oldPath+" -> "+newPath, "success", "")
 	return nil
+}
+
+func normalizeFileBrowserPath(path string) string {
+	path = strings.ReplaceAll(strings.TrimSpace(path), "\\", "/")
+	return strings.TrimRight(path, "/")
+}
+
+func isFileBrowserDirectoryPath(path string) bool {
+	return strings.HasSuffix(strings.ReplaceAll(strings.TrimSpace(path), "\\", "/"), "/")
+}
+
+func fileBrowserEntryIsDirectory(entries []rclib.FileBrowserEntry, path string) bool {
+	path = normalizeFileBrowserPath(path)
+	for _, entry := range entries {
+		if normalizeFileBrowserPath(entry.Path) == path && entry.IsDirectory {
+			return true
+		}
+	}
+	return false
 }
 
 // FileBrowserMove moves a file into a destination folder.
@@ -1727,6 +1796,7 @@ func (a *App) DownloadFile(remotePath string, saveAs bool) (string, error) {
 	var dest string
 	if saveAs {
 		chosen, err := a.app.Dialog.SaveFile().
+			AttachToWindow(a.dialogParentWindow()).
 			SetMessage("Save " + name).
 			SetFilename(name).
 			PromptForSingleSelection()
@@ -1754,6 +1824,7 @@ func (a *App) DownloadFile(remotePath string, saveAs bool) (string, error) {
 // uploads it to the current browser folder.
 func (a *App) UploadFileViaDialog() error {
 	chosen, err := a.app.Dialog.OpenFile().
+		AttachToWindow(a.dialogParentWindow()).
 		SetTitle("Select a file to upload").
 		CanChooseFiles(true).
 		CanChooseDirectories(false).
@@ -2024,7 +2095,7 @@ func (a *App) openTextWindow(remotePath string) error {
 		return nil
 	}
 	a.editorMu.Unlock()
-	w := a.app.Window.NewWithOptions(application.WebviewWindowOptions{
+	w := a.newWebviewWindow(application.WebviewWindowOptions{
 		Name:             sanitizeWindowName("textfile", remotePath),
 		Title:            editorTitle(a.sessions.Status().ServerName, "textfile", filepath.Base(remotePath)),
 		URL:              "/#textfile?p=" + url.QueryEscape(remotePath),
@@ -2047,8 +2118,14 @@ func (a *App) openTextWindow(remotePath string) error {
 	})
 	w.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
 		a.editorMu.Lock()
-		delete(a.editorWindows, mapKey)
+		isCurrent := a.editorWindows[mapKey] == w
+		if isCurrent {
+			delete(a.editorWindows, mapKey)
+		}
 		a.editorMu.Unlock()
+		if !isCurrent {
+			return
+		}
 		a.editorCacheMu.Lock()
 		delete(a.editorDirty, mapKey)
 		a.editorCacheMu.Unlock()
@@ -2255,7 +2332,7 @@ func (a *App) openSqliteWindow(remotePath string) error {
 		return nil
 	}
 	a.openMu.Unlock()
-	w := a.app.Window.NewWithOptions(application.WebviewWindowOptions{
+	w := a.newWebviewWindow(application.WebviewWindowOptions{
 		Name:             sanitizeWindowName("sqlite", remotePath),
 		Title:            editorTitle(a.sessions.Status().ServerName, "sqlite", filepath.Base(remotePath)),
 		URL:              "/#sqlite?p=" + url.QueryEscape(remotePath),
@@ -2284,6 +2361,10 @@ func (a *App) openSqliteWindow(remotePath string) error {
 	})
 	w.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
 		a.openMu.Lock()
+		if a.sqliteWindows[remotePath] != w {
+			a.openMu.Unlock()
+			return
+		}
 		local := a.dbFiles[remotePath]
 		delete(a.sqliteWindows, remotePath)
 		delete(a.dbFiles, remotePath)
@@ -2321,9 +2402,9 @@ func (a *App) refreshServerChrome() {
 	if connected {
 		mainTitle = st.ServerName + " RC"
 		playersTitle = st.ServerName + " Players"
-		scriptsTitle = st.ServerName + " Script Manager"
+		scriptsTitle = serverWindowTitle(st.ServerName, "Script Manager")
 		settingsTitle = st.ServerName + " Settings"
-		filesTitle = st.ServerName + " File Browser"
+		filesTitle = serverWindowTitle(st.ServerName, "File Browser")
 		count := 0
 		if players, err := a.sessions.GetPlayers(); err == nil {
 			count = len(players)
@@ -2344,6 +2425,20 @@ func (a *App) refreshServerChrome() {
 		}
 		a.tray.SetTooltip(tooltip)
 	}
+}
+
+// serverWindowTitle puts the active server before a secondary window title so
+// windows from separate RC instances remain distinguishable in the taskbar.
+func serverWindowTitle(serverName, title string) string {
+	title = strings.TrimSpace(title)
+	serverName = strings.TrimSpace(serverName)
+	if serverName == "" {
+		return title
+	}
+	if title == "" {
+		return serverName
+	}
+	return serverName + " - " + title
 }
 
 // setWindowTitleLocked snapshots a guarded window pointer under its mutex and
@@ -2434,6 +2529,7 @@ func (a *App) AppendPmLog(otherAccount, line string) error {
 // (empty if the user cancels).
 func (a *App) ChooseDirectory() (string, error) {
 	return a.app.Dialog.OpenFile().
+		AttachToWindow(a.dialogParentWindow()).
 		SetTitle("Select chat log folder").
 		CanChooseDirectories(true).
 		CanChooseFiles(false).
@@ -2451,7 +2547,7 @@ func (a *App) OpenPlayerList() {
 		a.playerListWindow.Focus()
 		return
 	}
-	w := a.app.Window.NewWithOptions(application.WebviewWindowOptions{
+	w := a.newWebviewWindow(application.WebviewWindowOptions{
 		Name:             "players",
 		Title:            "Players",
 		URL:              "/#players",
@@ -2465,7 +2561,9 @@ func (a *App) OpenPlayerList() {
 	w.Focus()
 	w.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
 		a.playerListMu.Lock()
-		a.playerListWindow = nil
+		if a.playerListWindow == w {
+			a.playerListWindow = nil
+		}
 		a.playerListMu.Unlock()
 	})
 }
@@ -2500,9 +2598,9 @@ func (a *App) OpenScriptManager() error {
 		a.scriptMgrWindow.Focus()
 		return nil
 	}
-	w := a.app.Window.NewWithOptions(application.WebviewWindowOptions{
+	w := a.newWebviewWindow(application.WebviewWindowOptions{
 		Name:             "scripts",
-		Title:            "Script Manager",
+		Title:            serverWindowTitle(a.sessions.Status().ServerName, "Script Manager"),
 		URL:              "/#scripts",
 		Width:            720,
 		Height:           560,
@@ -2516,7 +2614,9 @@ func (a *App) OpenScriptManager() error {
 	w.Focus()
 	w.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
 		a.scriptMgrMu.Lock()
-		a.scriptMgrWindow = nil
+		if a.scriptMgrWindow == w {
+			a.scriptMgrWindow = nil
+		}
 		a.scriptMgrMu.Unlock()
 	})
 	return nil
@@ -2531,7 +2631,7 @@ func (a *App) OpenSettings() {
 		a.settingsWindow.Focus()
 		return
 	}
-	w := a.app.Window.NewWithOptions(application.WebviewWindowOptions{
+	w := a.newWebviewWindow(application.WebviewWindowOptions{
 		Name:             "settings",
 		Title:            "Settings",
 		URL:              "/#settings",
@@ -2547,7 +2647,9 @@ func (a *App) OpenSettings() {
 	w.Focus()
 	w.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
 		a.settingsMu.Lock()
-		a.settingsWindow = nil
+		if a.settingsWindow == w {
+			a.settingsWindow = nil
+		}
 		a.settingsMu.Unlock()
 	})
 }
@@ -2561,7 +2663,7 @@ func (a *App) OpenPluginManager() {
 		a.pluginWindow.Focus()
 		return
 	}
-	w := a.app.Window.NewWithOptions(application.WebviewWindowOptions{
+	w := a.newWebviewWindow(application.WebviewWindowOptions{
 		Name:             "plugins",
 		Title:            "Plugins",
 		URL:              "/#plugins",
@@ -2577,7 +2679,9 @@ func (a *App) OpenPluginManager() {
 	w.Focus()
 	w.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
 		a.pluginWindowMu.Lock()
-		a.pluginWindow = nil
+		if a.pluginWindow == w {
+			a.pluginWindow = nil
+		}
 		a.pluginWindowMu.Unlock()
 	})
 }
@@ -2593,7 +2697,7 @@ func (a *App) OpenPluginDocumentation() {
 		a.pluginDocsWindow.Focus()
 		return
 	}
-	w := a.app.Window.NewWithOptions(application.WebviewWindowOptions{
+	w := a.newWebviewWindow(application.WebviewWindowOptions{
 		Name:             "plugin-documentation",
 		Title:            "Plugin Documentation",
 		URL:              "/#plugin-docs",
@@ -2609,7 +2713,9 @@ func (a *App) OpenPluginDocumentation() {
 	w.Focus()
 	w.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
 		a.pluginDocsWindowMu.Lock()
-		a.pluginDocsWindow = nil
+		if a.pluginDocsWindow == w {
+			a.pluginDocsWindow = nil
+		}
 		a.pluginDocsWindowMu.Unlock()
 	})
 }
@@ -2623,9 +2729,9 @@ func (a *App) OpenFileBrowser() {
 		a.fileBrowserWindow.Focus()
 		return
 	}
-	w := a.app.Window.NewWithOptions(application.WebviewWindowOptions{
+	w := a.newWebviewWindow(application.WebviewWindowOptions{
 		Name:             "files",
-		Title:            "File Browser",
+		Title:            serverWindowTitle(a.sessions.Status().ServerName, "File Browser"),
 		URL:              "/#files",
 		Width:            920,
 		Height:           600,
@@ -2637,7 +2743,9 @@ func (a *App) OpenFileBrowser() {
 	w.Focus()
 	w.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
 		a.fileBrowserMu.Lock()
-		a.fileBrowserWindow = nil
+		if a.fileBrowserWindow == w {
+			a.fileBrowserWindow = nil
+		}
 		a.fileBrowserMu.Unlock()
 	})
 }
@@ -2658,18 +2766,31 @@ func scriptTypeInitial(scriptType string) string {
 	case "npcattr":
 		return "A"
 	default:
-		return "?"
+		return ""
 	}
 }
 
-// editorTitle builds an editor window title as "{server} {TYPE}:key" when a
-// server is connected, else "{TYPE}:key" (e.g. "Zodiac W:sword", "N:42").
+// editorTitle builds an editor window title with the resource first and the
+// server second (e.g. "W: sword - Zodiac" or "Server Options - Zodiac").
 func editorTitle(serverName, scriptType, key string) string {
-	title := scriptTypeInitial(scriptType) + ":" + key
-	if serverName != "" {
-		return serverName + " " + title
+	title := strings.TrimSpace(key)
+	if initial := scriptTypeInitial(scriptType); initial != "" {
+		title = initial + ": " + title
+	}
+	if title == "" {
+		title = strings.TrimSpace(scriptType)
+	}
+	if server := strings.TrimSpace(serverName); server != "" {
+		return title + " - " + server
 	}
 	return title
+}
+
+// scriptEditorTitle keeps the resource label used by the editor while putting
+// the server first, which makes same-named editors from different RC instances
+// immediately identifiable in the taskbar.
+func scriptEditorTitle(serverName, scriptType, key string) string {
+	return serverWindowTitle(serverName, editorTitle("", scriptType, key))
 }
 
 // sanitizeWindowName turns a script type+key into a valid Wails window name.
@@ -2782,9 +2903,9 @@ func (a *App) OpenScriptEditor(scriptType, key string) error {
 	a.editorCache[mapKey] = reply
 	a.editorCacheMu.Unlock()
 
-	w := a.app.Window.NewWithOptions(application.WebviewWindowOptions{
+	w := a.newWebviewWindow(application.WebviewWindowOptions{
 		Name:             sanitizeWindowName(scriptType, key),
-		Title:            editorTitle(a.sessions.Status().ServerName, scriptType, displayScriptKey(scriptType, key, reply.Name)),
+		Title:            scriptEditorTitle(a.sessions.Status().ServerName, scriptType, displayScriptKey(scriptType, key, reply.Name)),
 		URL:              "/#editor?t=" + scriptType + "&k=" + url.QueryEscape(key),
 		Width:            820,
 		Height:           620,
@@ -2810,8 +2931,14 @@ func (a *App) OpenScriptEditor(scriptType, key string) error {
 	})
 	w.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
 		a.editorMu.Lock()
-		delete(a.editorWindows, mapKey)
+		isCurrent := a.editorWindows[mapKey] == w
+		if isCurrent {
+			delete(a.editorWindows, mapKey)
+		}
 		a.editorMu.Unlock()
+		if !isCurrent {
+			return
+		}
 		a.editorCacheMu.Lock()
 		delete(a.editorCache, mapKey)
 		delete(a.editorDirty, mapKey)
@@ -2977,13 +3104,14 @@ func (a *App) RefreshGraalScriptDocAPI() error {
 	return a.graalScriptLSP.RefreshDefinitions()
 }
 
-// CodingSettings are the Monaco editor appearance prefs, persisted to a file so
-// every editor window (its own webview) reads the same values — localStorage is
-// not reliably shared across Wails v3 windows.
+// CodingSettings are the Monaco editor appearance and indentation prefs,
+// persisted to a file so every editor window (its own webview) reads the same
+// values — localStorage is not reliably shared across Wails v3 windows.
 type CodingSettings struct {
 	Theme      string `json:"theme"`
 	FontFamily string `json:"fontFamily"`
 	FontSize   int    `json:"fontSize"`
+	TabSize    int    `json:"tabSize"`
 }
 
 // GetLanguage returns the UI language persisted for this Windows user.
@@ -3058,6 +3186,7 @@ var DefaultCodingSettings = CodingSettings{
 	Theme:      "vs-dark",
 	FontFamily: "Consolas, 'Courier New', monospace",
 	FontSize:   14,
+	TabSize:    2,
 }
 
 // codingPath returns the coding-settings file location.
@@ -3092,8 +3221,15 @@ func (a *App) loadCodingSettingsLocked() CodingSettings {
 		if cs.FontSize > 0 {
 			a.codingSettings.FontSize = cs.FontSize
 		}
+		if isSupportedTabSize(cs.TabSize) {
+			a.codingSettings.TabSize = cs.TabSize
+		}
 	}
 	return a.codingSettings
+}
+
+func isSupportedTabSize(size int) bool {
+	return size == 1 || size == 2 || size == 4
 }
 
 // GetCodingSettings returns the cached coding settings (loading once).
@@ -3107,10 +3243,13 @@ func (a *App) GetCodingSettings() CodingSettings {
 }
 
 // SetCodingSettings persists the coding settings and broadcasts them so every
-// open editor window updates its theme/font live.
-func (a *App) SetCodingSettings(theme, fontFamily string, fontSize int) error {
+// open editor window updates its theme, font, and indentation live.
+func (a *App) SetCodingSettings(theme, fontFamily string, fontSize, tabSize int) error {
+	if !isSupportedTabSize(tabSize) {
+		return fmt.Errorf("unsupported tab size: %d", tabSize)
+	}
 	a.codingMu.Lock()
-	a.codingSettings = CodingSettings{Theme: theme, FontFamily: fontFamily, FontSize: fontSize}
+	a.codingSettings = CodingSettings{Theme: theme, FontFamily: fontFamily, FontSize: fontSize, TabSize: tabSize}
 	cs := a.codingSettings
 	a.codingMu.Unlock()
 

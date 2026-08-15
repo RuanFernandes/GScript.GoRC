@@ -53,7 +53,7 @@ interface MonacoMarker {
 }
 interface EditorInstance {
   addCommand(keybinding: number, handler: () => void): void
-  updateOptions(opts: {fontFamily?: string; fontSize?: number; readOnly?: boolean}): void
+  updateOptions(opts: {fontFamily?: string; fontSize?: number; tabSize?: number; readOnly?: boolean}): void
 	getValue(): string
 	setValue(value: string): void
   getModel(): {uri: {toString(): string}; getValue(): string} | null
@@ -407,10 +407,10 @@ export function ScriptEditorWindowScreen() {
     }
   }, [])
 
-  // Keep font options in sync as coding settings change.
+  // Keep editor options in sync as coding settings change.
   useEffect(() => {
-    editorRef.current?.updateOptions({fontFamily: settings.fontFamily, fontSize: settings.fontSize})
-  }, [settings.fontFamily, settings.fontSize])
+    editorRef.current?.updateOptions({fontFamily: settings.fontFamily, fontSize: settings.fontSize, tabSize: settings.tabSize})
+  }, [settings.fontFamily, settings.fontSize, settings.tabSize])
 
   useEffect(() => {
     if (!editorReady || !monacoRef.current) return
@@ -658,6 +658,7 @@ export function ScriptEditorWindowScreen() {
             options={{
               fontFamily: settings.fontFamily,
               fontSize: settings.fontSize,
+              tabSize: settings.tabSize,
               fontLigatures: true,
               readOnly,
               minimap: {enabled: false},

@@ -18,6 +18,7 @@ type Workspace struct {
 	classes map[string]ScriptSummary
 	npcs    map[string]ScriptSummary
 	weapons map[string]ScriptSummary
+	enums   map[string]EnumSymbol
 }
 
 type ScriptSummary struct {
@@ -25,6 +26,7 @@ type ScriptSummary struct {
 	Kind      string
 	URI       string
 	Functions []FunctionSymbol
+	Enums     []EnumSymbol
 	Imports   []string
 	Joins     []string
 }
@@ -42,6 +44,7 @@ func newWorkspace() *Workspace {
 		classes: map[string]ScriptSummary{},
 		npcs:    map[string]ScriptSummary{},
 		weapons: map[string]ScriptSummary{},
+		enums:   map[string]EnumSymbol{},
 	}
 }
 
@@ -54,6 +57,7 @@ func (w *Workspace) setRoot(root string) error {
 		w.classes = map[string]ScriptSummary{}
 		w.npcs = map[string]ScriptSummary{}
 		w.weapons = map[string]ScriptSummary{}
+		w.enums = map[string]EnumSymbol{}
 		w.mu.Unlock()
 		return nil
 	}
@@ -71,6 +75,7 @@ func (w *Workspace) setRoot(root string) error {
 	classes := map[string]ScriptSummary{}
 	npcs := map[string]ScriptSummary{}
 	weapons := map[string]ScriptSummary{}
+	enums := map[string]EnumSymbol{}
 	paths := []string{}
 	err = filepath.WalkDir(abs, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -121,9 +126,6 @@ func (w *Workspace) setRoot(root string) error {
 					continue
 				}
 				kind, keys := workspaceSymbolKeys(abs, path)
-				if kind == "" || len(keys) == 0 {
-					continue
-				}
 				uri := pathToURI(path)
 				doc := parseDocument(uri, string(text), 0)
 				results <- scanResult{
@@ -135,6 +137,7 @@ func (w *Workspace) setRoot(root string) error {
 						Kind:      kind,
 						URI:       uri,
 						Functions: append([]FunctionSymbol(nil), doc.Functions...),
+						Enums:     append([]EnumSymbol(nil), doc.Enums...),
 						Imports:   append([]string(nil), doc.Imports...),
 						Joins:     classLevelJoins(doc),
 					},
@@ -156,6 +159,17 @@ func (w *Workspace) setRoot(root string) error {
 	}
 	sort.SliceStable(scanned, func(i, j int) bool { return scanned[i].path < scanned[j].path })
 	for _, result := range scanned {
+		for _, enum := range result.summary.Enums {
+			key := normalizeName(enum.Name)
+			if key != "" {
+				if _, exists := enums[key]; !exists {
+					enums[key] = enum
+				}
+			}
+		}
+		if result.kind == "" || len(result.keys) == 0 {
+			continue
+		}
 		for _, key := range result.keys {
 			switch result.kind {
 			case "class":
@@ -173,6 +187,7 @@ func (w *Workspace) setRoot(root string) error {
 	w.classes = classes
 	w.npcs = npcs
 	w.weapons = weapons
+	w.enums = enums
 	w.mu.Unlock()
 	return nil
 }
@@ -212,6 +227,26 @@ func (w *Workspace) document(uri string) *Document {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	return w.files[uri]
+}
+
+func (w *Workspace) enumSymbol(name string) (EnumSymbol, bool) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	enum, ok := w.enums[normalizeName(name)]
+	return enum, ok
+}
+
+func (w *Workspace) enumSymbols() []EnumSymbol {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	result := make([]EnumSymbol, 0, len(w.enums))
+	for _, enum := range w.enums {
+		result = append(result, enum)
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		return strings.ToLower(result[i].Name) < strings.ToLower(result[j].Name)
+	})
+	return result
 }
 
 func (w *Workspace) classSymbols(names []string, side string) []FunctionSymbol {
