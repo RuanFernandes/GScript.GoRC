@@ -3,7 +3,7 @@
 // Weapons, Classes, NPCs — each a searchable list with Refresh / Add / Delete
 // (and for NPCs: Reset / Edit Flags / View Attributes). Double-clicking a row
 // opens that script in its own editor window.
-import {useEffect, useMemo, useRef, useState} from "react"
+import {useEffect, useMemo, useRef, useState, type RefObject} from "react"
 import {toast} from "sonner"
 import {Events} from "@wailsio/runtime"
 import {CircleAlert, CircleCheck, CircleOff, Flag, LocateFixed, Loader2, RotateCcw, UserRound} from "lucide-react"
@@ -116,6 +116,9 @@ export function ScriptManagerWindowScreen() {
   const [syncPromptOpen, setSyncPromptOpen] = useState(false)
   const lists = useScriptLists(rcService, onlyReadable)
   const [tab, setTab] = useState<"weapons" | "classes" | "npcs">("weapons")
+  const weaponFilterRef = useRef<HTMLInputElement>(null)
+  const classFilterRef = useRef<HTMLInputElement>(null)
+  const npcFilterRef = useRef<HTMLInputElement>(null)
   const weaponRows = useMemo(() => lists.weapons.map((weapon, index) => {
     const name = weapon.name?.trim() ?? ""
     return isUsableScriptName(name)
@@ -134,6 +137,19 @@ export function ScriptManagerWindowScreen() {
       toast.error(t("scripts.refreshFailed"), {description: lists.error})
     }
   }, [lists.error, t])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((!event.ctrlKey && !event.metaKey) || event.key.toLowerCase() !== "f") return
+      event.preventDefault()
+      event.stopPropagation()
+      const filterRef = tab === "npcs" ? npcFilterRef : tab === "classes" ? classFilterRef : weaponFilterRef
+      filterRef.current?.focus()
+      filterRef.current?.select()
+    }
+    window.addEventListener("keydown", onKeyDown, true)
+    return () => window.removeEventListener("keydown", onKeyDown, true)
+  }, [tab])
 
   return (
     <div className="bg-background flex h-svh flex-col">
@@ -162,6 +178,7 @@ export function ScriptManagerWindowScreen() {
           <WeaponClassTab
             kind="weapon"
             rows={weaponRows}
+            filterRef={weaponFilterRef}
             loading={lists.loading}
             onSyncRequired={() => setSyncPromptOpen(true)}
             onRefresh={async () => {
@@ -179,13 +196,14 @@ export function ScriptManagerWindowScreen() {
           <WeaponClassTab
             kind="class"
             rows={classRows}
+            filterRef={classFilterRef}
             loading={lists.loading}
             onSyncRequired={() => setSyncPromptOpen(true)}
             onRefresh={lists.refresh}
           />
         </TabsContent>
         <TabsContent value="npcs" className="mt-3 min-h-0 flex-1">
-          <NPCTab npcs={lists.npcs} loading={lists.loading} onSyncRequired={() => setSyncPromptOpen(true)} onRefresh={lists.refresh} />
+          <NPCTab npcs={lists.npcs} filterRef={npcFilterRef} loading={lists.loading} onSyncRequired={() => setSyncPromptOpen(true)} onRefresh={lists.refresh} />
         </TabsContent>
       </Tabs>
       <ScriptSyncRequiredDialog open={syncPromptOpen} onClose={() => setSyncPromptOpen(false)} />
@@ -204,12 +222,14 @@ interface Row {
 function WeaponClassTab({
   kind,
   rows,
+  filterRef,
   loading,
   onSyncRequired,
   onRefresh,
 }: {
   kind: "weapon" | "class"
   rows: Row[]
+  filterRef: RefObject<HTMLInputElement | null>
   loading: boolean
   onSyncRequired: () => void
   onRefresh: () => Promise<void> | void
@@ -218,6 +238,7 @@ function WeaponClassTab({
   const [selected, setSelected] = useState<string | null>(null)
   const [filter, setFilter] = useState("")
   const [adding, setAdding] = useState(false)
+  const [creating, setCreating] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [name, setName] = useState("")
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc")
@@ -235,16 +256,25 @@ function WeaponClassTab({
 
   const doAdd = async () => {
     const n = name.trim()
-    if (!n) return
+    if (!n || creating) return
+    setCreating(true)
     try {
       if (kind === "weapon") await rcService.addWeapon(n)
       else await rcService.addClass(n)
+      if (kind === "weapon") {
+        // The server acknowledges the request before the weapon is available
+        // to the subsequent list request. Keep the add flow visibly pending
+        // long enough for the server-side cache to settle.
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 1000))
+      }
+      await onRefresh()
       toast.success(t(kind === "weapon" ? "scripts.weaponAdded" : "scripts.classAdded", {name: n}))
       setName("")
       setAdding(false)
-      await onRefresh()
     } catch (err) {
       toast.error(t("scripts.addFailed"), {description: String(err)})
+    } finally {
+      setCreating(false)
     }
   }
 
@@ -277,6 +307,7 @@ function WeaponClassTab({
     <div className="flex h-full min-h-0 flex-col gap-2">
       <div className="flex flex-wrap items-center gap-2">
         <Input
+          ref={filterRef}
           placeholder={t("scripts.filter")}
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
@@ -362,8 +393,8 @@ function WeaponClassTab({
         </table>
       </ScrollArea>
 
-      <AlertDialog open={adding} onOpenChange={(v) => setAdding(v)}>
-        <AlertDialogContent>
+      <AlertDialog open={adding} onOpenChange={(v) => { if (!creating) setAdding(v) }}>
+        <AlertDialogContent aria-busy={creating}>
           <AlertDialogHeader>
             <AlertDialogTitle>{kind === "weapon" ? t("scripts.addWeapon") : t("scripts.addClass")}</AlertDialogTitle>
             <AlertDialogDescription>
@@ -376,18 +407,20 @@ function WeaponClassTab({
               id="add-name"
               value={name}
               autoFocus
+              disabled={creating}
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter") doAdd()
+                if (e.key === "Enter") void doAdd()
               }}
             />
           </div>
           <div className="flex justify-end gap-2">
-            <Button variant="ghost" onClick={() => setAdding(false)}>
+            <Button variant="ghost" disabled={creating} onClick={() => setAdding(false)}>
               {t("common.cancel")}
             </Button>
-            <Button onClick={doAdd} disabled={!name.trim()}>
-              {t("scripts.add")}
+            <Button onClick={() => { void doAdd() }} disabled={!name.trim() || creating}>
+              {creating && <Loader2 className="size-4 animate-spin" aria-hidden="true" />}
+              {creating ? t("scripts.loading") : t("scripts.add")}
             </Button>
           </div>
         </AlertDialogContent>
@@ -413,11 +446,13 @@ function WeaponClassTab({
 // (mirrors the reference client's TNPCList::onAdd).
 function NPCTab({
   npcs,
+  filterRef,
   loading,
   onSyncRequired,
   onRefresh,
 }: {
   npcs: NPC[]
+  filterRef: RefObject<HTMLInputElement | null>
   loading: boolean
   onSyncRequired: () => void
   onRefresh: () => Promise<void> | void
@@ -506,6 +541,7 @@ function NPCTab({
     <div className="flex h-full min-h-0 flex-col gap-2">
       <div className="flex flex-wrap items-center gap-2">
         <Input
+          ref={filterRef}
           placeholder={t("scripts.filter")}
           value={filter}
           onChange={(e) => setFilter(e.target.value)}

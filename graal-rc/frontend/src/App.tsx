@@ -58,6 +58,37 @@ function Shell() {
     if (typeof window === "undefined") return ""
     return window.localStorage.getItem(NICKNAME_STORAGE_KEY) ?? ""
   })
+  const updateCheckStarted = useRef(false)
+
+  useEffect(() => {
+    if (!language.configured) return
+    if (updateCheckStarted.current) return
+    updateCheckStarted.current = true
+    let cancelled = false
+    void rcService.checkForUpdates().then((info) => {
+      if (cancelled || !info.updateAvailable || !info.downloadAvailable) return
+      toast.info(language.t("update.availableTitle", {version: info.latestVersion}), {
+        description: language.t("update.availableDescription", {current: info.currentVersion}),
+        duration: Infinity,
+        action: {
+          label: language.t("update.downloadAction"),
+          onClick: () => {
+            toast.info(language.t("update.downloadingTitle", {version: info.latestVersion}), {
+              description: language.t("update.downloadingDescription"),
+              duration: Infinity,
+            })
+            void rcService.installUpdate().catch((error) => {
+              const message = error instanceof Error ? error.message : String(error)
+              toast.error(language.t("update.failedTitle"), {description: message})
+            })
+          },
+        },
+      })
+    }).catch(() => {
+      // Release checks are best effort. The current RC remains usable offline.
+    })
+    return () => { cancelled = true }
+  }, [language.configured, language.t])
 
   useEffect(() => {
     void pluginRuntime.start()

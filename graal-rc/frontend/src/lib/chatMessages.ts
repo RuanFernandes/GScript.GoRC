@@ -8,6 +8,8 @@ interface MessageGroup {
   lastIndex: number
 }
 
+const REPEAT_LOOKBACK = 3
+
 function messageKey(message: ChatMessage): string | null {
   // Script-help rows are interactive results, not plain chat text. Keeping
   // them separate avoids hiding a different result behind the same query.
@@ -24,35 +26,35 @@ function messageKey(message: ChatMessage): string | null {
 }
 
 /**
- * Collapses equal chat text within one tab and places each collapsed row at
- * the last occurrence. This keeps the newest context visible while counting
- * duplicates that were separated by other lines, like a console counter.
+ * Collapses equal chat text only when the previous occurrence is in the last
+ * three chat rows. Each stale occurrence starts a new group, so a message
+ * from much farther back can never be merged into the current row.
  */
 export function mergeRepeatedMessages(messages: ChatMessage[]): DisplayChatMessage[] {
-  const groups = new Map<string, MessageGroup>()
-  const unique: MessageGroup[] = []
+  const activeGroups = new Map<string, MessageGroup>()
+  const groups: MessageGroup[] = []
 
   messages.forEach((message, index) => {
     const key = messageKey(message)
     if (!key) {
-      unique.push({message, count: 1, lastIndex: index})
+      groups.push({message, count: 1, lastIndex: index})
       return
     }
 
-    const existing = groups.get(key)
-    if (existing) {
-      existing.message = message
-      existing.count += 1
-      existing.lastIndex = index
+    const activeGroup = activeGroups.get(key)
+    if (activeGroup && index - activeGroup.lastIndex <= REPEAT_LOOKBACK) {
+      activeGroup.message = message
+      activeGroup.count += 1
+      activeGroup.lastIndex = index
       return
     }
 
     const group = {message, count: 1, lastIndex: index}
-    groups.set(key, group)
-    unique.push(group)
+    activeGroups.set(key, group)
+    groups.push(group)
   })
 
-  return unique
+  return groups
     .sort((left, right) => left.lastIndex - right.lastIndex)
     .map(({message, count}) => count > 1 ? {...message, repeatCount: count} : message)
 }

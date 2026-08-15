@@ -11,7 +11,7 @@
 // client-side by splitting on "/" and stripping the "*" wildcard. Navigating a
 // folder calls rc_filebrowser_cd with the cleaned path + trailing slash
 // ("levels/"); passing the raw pattern does nothing (the bug in v1).
-import {useEffect, useMemo, useRef, useState} from "react"
+import {useCallback, useEffect, useMemo, useRef, useState} from "react"
 import {
   ChevronDown,
   ChevronRight,
@@ -21,6 +21,7 @@ import {
   HardDriveDownload,
   Home,
   RefreshCw,
+  Search,
   Upload,
 } from "lucide-react"
 import {toast} from "sonner"
@@ -153,6 +154,7 @@ export function FileBrowserWindowScreen() {
   const fb = useFileBrowser(rcService)
   const [dragging, setDragging] = useState(false)
   const [query, setQuery] = useState("")
+  const [folderQuery, setFolderQuery] = useState("")
 
   // Expanded node paths (by cleaned path). Start collapsed so opening the
   // Files window does not expand the entire folder tree.
@@ -171,6 +173,10 @@ export function FileBrowserWindowScreen() {
   const [ctx, setCtx] = useState<{x: number; y: number; entry: FileBrowserEntry} | null>(null)
 
   const tree = useMemo(() => buildTree(fb.folders), [fb.folders])
+  const selectedEntry = useMemo(
+    () => (selected ? fb.files.find((entry) => entry.path === selected) ?? null : null),
+    [fb.files, selected],
+  )
 
   // Flatten the folder tree into move destinations: cleaned paths + their file
   // globs (for rights validation). Uses the TREE (glob-stripped) paths, so the
@@ -186,6 +192,29 @@ export function FileBrowserWindowScreen() {
     walk(tree)
     return out
   }, [tree])
+
+  // Flatten the server-provided tree so folder search can find any accessible
+  // folder, including collapsed descendants, without issuing one request per
+  // directory.
+  const allFolders = useMemo(() => {
+    const out: TreeNode[] = []
+    const walk = (nodes: TreeNode[]) => {
+      for (const node of nodes) {
+        out.push(node)
+        walk(node.children)
+      }
+    }
+    walk(tree)
+    return out
+  }, [tree])
+
+  const folderSearchResults = useMemo(() => {
+    const q = folderQuery.trim().toLocaleLowerCase()
+    if (!q) return []
+    return allFolders
+      .filter((folder) => folder.path.toLocaleLowerCase().includes(q))
+      .slice(0, 100)
+  }, [allFolders, folderQuery])
 
   // Live file filter for the current folder (case-insensitive name match).
   const filteredFiles = useMemo(() => {
@@ -208,15 +237,41 @@ export function FileBrowserWindowScreen() {
   // reference onFolderSelected, which appends "/" before rc_filebrowser_cd).
   const cdPath = (path: string) => fb.cd(path ? path + "/" : "")
 
-  const openRename = (entry: FileBrowserEntry) => {
+  const openSearchedFolder = (path: string) => {
+    const parts = path.split("/").filter(Boolean)
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      for (let i = 1; i < parts.length; i++) next.add(parts.slice(0, i).join("/"))
+      return next
+    })
+    setFolderQuery("")
+    cdPath(path)
+  }
+
+  const openRename = useCallback((entry: FileBrowserEntry) => {
+    if (entry.isDirectory) return
     setRenameTarget(entry)
     setRenameValue(basename(entry.path))
-  }
+  }, [])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "F2" || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
+      if (renameTarget !== null) return
+      const activeElement = document.activeElement
+      if (activeElement instanceof HTMLInputElement || activeElement instanceof HTMLTextAreaElement || activeElement?.hasAttribute("contenteditable")) return
+      if (!selectedEntry || selectedEntry.isDirectory) return
+      event.preventDefault()
+      openRename(selectedEntry)
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [openRename, renameTarget, selectedEntry])
 
   const doRename = async () => {
     const target = renameTarget
     const value = renameValue.trim()
-    if (!target || !value) return
+    if (!target || target.isDirectory || !value) return
     setRenameTarget(null)
     await fb.rename(target, value)
   }
@@ -290,7 +345,9 @@ export function FileBrowserWindowScreen() {
     } else {
       items.push({label: t("file.open"), onSelect: () => fb.cd(entry.path)})
     }
-    items.push({label: t("file.rename"), onSelect: () => openRename(entry)})
+    if (!entry.isDirectory) {
+      items.push({label: t("file.rename"), onSelect: () => openRename(entry)})
+    }
     items.push({label: t("file.delete"), danger: true, onSelect: () => setDeleteTarget(entry)})
     return items
   }
@@ -351,10 +408,46 @@ export function FileBrowserWindowScreen() {
 
       {/* Main: folder tree | files */}
       <div className="flex min-h-0 flex-1">
-        <aside className="w-60 shrink-0 border-r">
-          <ScrollArea className="h-full">
+        <aside className="flex w-60 min-h-0 shrink-0 flex-col border-r">
+          <div className="border-b p-1.5">
+            <div className="relative">
+              <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2" />
+              <Input
+                value={folderQuery}
+                onChange={(e) => setFolderQuery(e.target.value)}
+                placeholder={t("file.searchFolders")}
+                className="h-8 pl-7 text-xs"
+                aria-label={t("file.searchFolders")}
+              />
+            </div>
+            {folderQuery && (
+              <p className="text-muted-foreground px-1 pt-1 text-[10px]">
+                {folderSearchResults.length > 0
+                  ? `${folderSearchResults.length}${folderSearchResults.length === 100 ? "+" : ""}`
+                  : t("file.noMatchingFolders")}
+              </p>
+            )}
+          </div>
+          <ScrollArea className="min-h-0 flex-1">
             <div className="p-1.5">
-              {!fb.loaded ? (
+              {folderQuery ? (
+                folderSearchResults.length === 0 ? (
+                  <p className="text-muted-foreground p-2 text-xs">{t("file.noMatchingFolders")}</p>
+                ) : (
+                  folderSearchResults.map((folder) => (
+                    <button
+                      key={folder.path}
+                      type="button"
+                      className="hover:bg-accent flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-xs"
+                      onClick={() => openSearchedFolder(folder.path)}
+                      title={`${folder.path}/`}
+                    >
+                      <Folder className="text-muted-foreground size-4 shrink-0" />
+                      <span className="truncate">{folder.path}/</span>
+                    </button>
+                  ))
+                )
+              ) : !fb.loaded ? (
                 <div className="flex flex-col gap-1.5 p-1">
                   {Array.from({length: 8}).map((_, i) => (
                     <div key={i} className="flex items-center gap-1.5" style={{paddingLeft: `${(i % 3) * 12}px`}}>
@@ -364,7 +457,7 @@ export function FileBrowserWindowScreen() {
                   ))}
                 </div>
               ) : tree.length === 0 ? (
-              <p className="text-muted-foreground p-2 text-xs">{t("file.noFolders")}</p>
+                <p className="text-muted-foreground p-2 text-xs">{t("file.noFolders")}</p>
               ) : (
                 tree.map((node) => (
                   <FolderNode

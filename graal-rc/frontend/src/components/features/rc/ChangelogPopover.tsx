@@ -1,8 +1,10 @@
-import {useEffect, useRef} from "react"
+import {useEffect, useRef, useState} from "react"
 import {ScrollText, X} from "lucide-react"
 
 import {getChangelog} from "@/lib/changelog"
 import {useLanguage} from "@/hooks/useLanguage"
+import {rcService} from "@/services/rcService"
+import type {ChangelogEntry} from "@/lib/changelog"
 
 interface ChangelogPopoverProps {
   open: boolean
@@ -11,8 +13,31 @@ interface ChangelogPopoverProps {
 
 export function ChangelogPopover({open, onClose}: ChangelogPopoverProps) {
   const {language, t} = useLanguage()
-  const changelog = getChangelog(language)
+  const [changelog, setChangelog] = useState<ChangelogEntry[]>(() => getChangelog(language))
   const panelRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    setChangelog(getChangelog(language))
+  }, [language])
+
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    void rcService.fetchRemoteChangelog().then((remote) => {
+      if (cancelled || !remote.releases?.length) return
+      setChangelog(remote.releases.map((release) => ({
+        version: release.version,
+        date: release.date,
+        title: release.title,
+        summary: release.summary,
+        changes: release.changes ?? [],
+        current: release.current,
+      })))
+    }).catch(() => {
+      // The bundled changelog is kept when the release service is offline.
+    })
+    return () => { cancelled = true }
+  }, [language, open])
 
   useEffect(() => {
     if (!open) return

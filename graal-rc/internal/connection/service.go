@@ -1196,6 +1196,9 @@ func (s *Service) connectToServer(ctx context.Context, index int) error {
 	s.maxUpload = 0
 	s.channels = nil
 	s.mu.Unlock()
+	// The native handle is reused when switching servers, so invalidate the
+	// frontend's file-browser context before any new server data can arrive.
+	s.emitEvent("rc:fbReset")
 	// ConnectToServer reuses the same grclib handle. The NC socket belongs to
 	// the previously selected server, so it must be closed before switching the
 	// main connection; otherwise the next sync can observe the old NC lists and
@@ -1241,6 +1244,7 @@ func (s *Service) connectToServer(ctx context.Context, index int) error {
 			s.clearChatHistory()
 			s.clearServerTextCacheIfCurrent(epoch)
 			s.emitEvent("rc:disconnected", reason)
+			s.emitEvent("rc:fbReset")
 			s.emitEvent("rc:channels", s.resetChannels())
 		},
 		Message: func(text string) {
@@ -3079,6 +3083,7 @@ func (s *Service) logout() {
 	s.mu.Unlock()
 	s.cancelWaiters(errConnectionSessionChanged)
 	s.clearPumpError()
+	s.emitEvent("rc:fbReset")
 	if h != 0 {
 		unregisterCallbacks(h)
 		rclib.Disconnect(h)

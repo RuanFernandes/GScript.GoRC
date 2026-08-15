@@ -2,9 +2,14 @@
 // service. All backend calls go through here, so feature components never import
 // the generated bindings directly (Dependency Inversion + single change point).
 import {App} from "../../bindings/graal-rc"
+import type {CommandMacro as BoundCommandMacro} from "../../bindings/graal-rc/models"
+import {openOfficialPluginDocumentation} from "@/lib/pluginDocumentation"
 import type {
   AccountSummary,
   Class,
+  CommandMacro,
+  CommandMacroParameter,
+  CommandMacroStore,
   CodingSettings,
   FileBrowserConfig,
   FileBrowserEntry,
@@ -31,6 +36,8 @@ import type {
   SyncScriptPair,
   PMState,
   CustomTheme,
+  RemoteChangelog,
+  UpdateInfo,
   MCPAgentStatus,
   MCPSetupResult,
   AuditEntry,
@@ -38,6 +45,17 @@ import type {
   ChangeRetentionSettings,
 } from "@/types"
 import type {PluginBuildResult, PluginFile, PluginInfo, PluginLogEntry, PluginMonacoLanguage, PluginUIWindowInfo} from "@/plugins/types"
+
+function toCommandMacro(macro: BoundCommandMacro): CommandMacro {
+  return {
+    id: macro.id,
+    name: macro.name,
+    command: macro.command,
+    parameters: (macro.parameters ?? []).map((parameter) => ({name: parameter.name, type: parameter.type as CommandMacroParameter["type"]})),
+    createdAt: macro.createdAt,
+    updatedAt: macro.updatedAt,
+  }
+}
 
 // The v3 bindings resolve to null on the "no result" path and reject on error;
 // callers treat null as "empty/none" and rely on try/catch for real errors.
@@ -127,12 +145,20 @@ export interface RcService {
   refreshGraalScriptDocApi(): Promise<void>
   listFonts(): Promise<string[] | null>
   getCodingSettings(): Promise<CodingSettings>
-  setCodingSettings(theme: string, fontFamily: string, fontSize: number): Promise<void>
+  setCodingSettings(theme: string, fontFamily: string, fontSize: number, tabSize: number): Promise<void>
+  getCommandMacros(serverName: string): Promise<CommandMacroStore>
+  setCommandMacros(serverName: string, macros: CommandMacro[]): Promise<void>
+  saveCommandMacro(serverName: string, name: string, command: string, parameters: CommandMacroParameter[]): Promise<CommandMacro>
+  deleteCommandMacro(serverName: string, id: string): Promise<void>
   getCustomThemes(): Promise<CustomTheme[] | null>
   saveCustomTheme(theme: CustomTheme): Promise<void>
   deleteCustomTheme(key: string): Promise<void>
   getLanguage(): Promise<string>
   setLanguage(language: string): Promise<void>
+  getAppVersion(): Promise<string>
+  checkForUpdates(): Promise<UpdateInfo>
+  installUpdate(): Promise<void>
+  fetchRemoteChangelog(): Promise<RemoteChangelog>
   getRemoteTheme(): Promise<RemoteTheme | null>
   saveRemoteTheme(name: string, definition: string): Promise<void>
   getMCPAgentStatuses(): Promise<MCPAgentStatus[] | null>
@@ -142,6 +168,7 @@ export interface RcService {
   openPluginManager(): Promise<void>
   openPluginDocumentation(): Promise<void>
   openPluginsFolder(): Promise<void>
+  openChatLink(url: string): Promise<void>
   createPluginTemplate(name: string): Promise<PluginInfo | null>
   getPluginFiles(id: string): Promise<string[] | null>
   readPluginFile(id: string, path: string): Promise<PluginFile | null>
@@ -332,12 +359,29 @@ export const rcService: RcService = {
   refreshGraalScriptDocApi: () => App.RefreshGraalScriptDocAPI(),
   listFonts: () => App.ListFonts(),
   getCodingSettings: () => App.GetCodingSettings(),
-  setCodingSettings: (theme, fontFamily, fontSize) => App.SetCodingSettings(theme, fontFamily, fontSize),
+  setCodingSettings: (theme, fontFamily, fontSize, tabSize) => App.SetCodingSettings(theme, fontFamily, fontSize, tabSize),
+  getCommandMacros: async (serverName) => {
+    const store = await App.GetCommandMacros(serverName)
+    return {
+      macros: (store?.macros ?? []).map(toCommandMacro),
+      exists: Boolean(store?.exists),
+    }
+  },
+  setCommandMacros: (serverName, macros) => App.SetCommandMacros(serverName, macros),
+  saveCommandMacro: async (serverName, name, command, parameters) => {
+    const macro = await App.SaveCommandMacro(serverName, name, command, parameters)
+    return toCommandMacro(macro)
+  },
+  deleteCommandMacro: (serverName, id) => App.DeleteCommandMacro(serverName, id),
   getCustomThemes: () => App.GetCustomThemes(),
   saveCustomTheme: (theme) => App.SaveCustomTheme(theme),
   deleteCustomTheme: (key) => App.DeleteCustomTheme(key),
   getLanguage: () => App.GetLanguage(),
   setLanguage: (language) => App.SetLanguage(language),
+  getAppVersion: () => App.GetAppVersion(),
+  checkForUpdates: () => App.CheckForUpdates(),
+  installUpdate: () => App.InstallUpdate(),
+  fetchRemoteChangelog: () => App.FetchRemoteChangelog(),
   getRemoteTheme: () => App.GetRemoteTheme(),
   saveRemoteTheme: (name, definition) => App.SaveRemoteTheme(name, definition),
   getMCPAgentStatuses: () => App.GetMCPAgentStatuses(),
@@ -345,8 +389,9 @@ export const rcService: RcService = {
   openMCPAgentFile: (name) => App.OpenMCPAgentFile(name),
   openSettings: () => App.OpenSettings(),
   openPluginManager: () => App.OpenPluginManager(),
-  openPluginDocumentation: () => App.OpenPluginDocumentation(),
+  openPluginDocumentation: openOfficialPluginDocumentation,
   openPluginsFolder: () => App.OpenPluginsFolder(),
+  openChatLink: (url) => App.OpenChatLink(url),
   createPluginTemplate: async (name) => {
     const info = await App.CreatePluginTemplate(name)
     if (!info) return null

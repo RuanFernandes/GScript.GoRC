@@ -23,7 +23,7 @@ interface MonacoInstance {
 }
 interface EditorInstance {
   addCommand(keybinding: number, handler: () => void): void
-  updateOptions(opts: {fontFamily?: string; fontSize?: number}): void
+  updateOptions(opts: {fontFamily?: string; fontSize?: number; tabSize?: number}): void
   getValue(): string
 }
 
@@ -126,8 +126,8 @@ export function TextEditorWindowScreen() {
   )
 
   useEffect(() => {
-    editorRef.current?.updateOptions({fontFamily: settings.fontFamily, fontSize: settings.fontSize})
-  }, [settings.fontFamily, settings.fontSize])
+    editorRef.current?.updateOptions({fontFamily: settings.fontFamily, fontSize: settings.fontSize, tabSize: settings.tabSize})
+  }, [settings.fontFamily, settings.fontSize, settings.tabSize])
 
   useEffect(() => {
     const m = monacoRef.current
@@ -208,6 +208,7 @@ export function TextEditorWindowScreen() {
             options={{
               fontFamily: settings.fontFamily,
               fontSize: settings.fontSize,
+              tabSize: settings.tabSize,
               fontLigatures: true,
               minimap: {enabled: false},
               scrollBeyondLastLine: false,

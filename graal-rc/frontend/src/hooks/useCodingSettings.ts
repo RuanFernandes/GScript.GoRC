@@ -1,5 +1,5 @@
-// useCodingSettings owns the Monaco editor appearance (theme, font family, font
-// size). Persisted in the Go backend (coding.json) — NOT localStorage — because
+// useCodingSettings owns the Monaco editor appearance and indentation (theme,
+// font family, font size, tab width). Persisted in the Go backend (coding.json) — NOT localStorage — because
 // each Wails v3 window is its own webview and does not reliably share
 // localStorage. The backend broadcasts an rc:codingSettings event on change so
 // every open editor window updates live.
@@ -13,6 +13,7 @@ export const DEFAULT_CODING_SETTINGS: CodingSettings = {
   theme: "vs-dark",
   fontFamily: "Consolas, 'Courier New', monospace",
   fontSize: 14,
+  tabSize: 2,
 }
 
 export interface UseCodingSettingsResult {
@@ -56,7 +57,7 @@ export function useCodingSettings(): UseCodingSettingsResult {
   const update = useCallback((patch: Partial<CodingSettings>) => {
     setSettings((prev) => {
       const next = {...prev, ...patch}
-      rcService.setCodingSettings(next.theme, next.fontFamily, next.fontSize).catch(() => {})
+      rcService.setCodingSettings(next.theme, next.fontFamily, next.fontSize, next.tabSize).catch(() => {})
       return next
     })
   }, [])
@@ -67,6 +68,7 @@ export function useCodingSettings(): UseCodingSettingsResult {
         DEFAULT_CODING_SETTINGS.theme,
         DEFAULT_CODING_SETTINGS.fontFamily,
         DEFAULT_CODING_SETTINGS.fontSize,
+        DEFAULT_CODING_SETTINGS.tabSize,
       )
       .catch(() => {})
     setSettings(DEFAULT_CODING_SETTINGS)

@@ -3,16 +3,22 @@ import {ArchiveRestore, Code2, FileSearch, FolderOpen, MessageSquare, RefreshCw,
 
 import {Button} from "@/components/ui/button"
 import {Input} from "@/components/ui/input"
-import type {Player} from "@/types"
+import {isUsableScriptName} from "@/lib/scriptName"
+import type {Class, NPC, Player, Weapon} from "@/types"
 import {useLanguage} from "@/hooks/useLanguage"
 
 interface GlobalSearchPaletteProps {
   open: boolean
   players: Player[]
+  weapons: Weapon[]
+  classes: Class[]
+  npcs: NPC[]
+  scriptShortcutsEnabled: boolean
   onOpen: () => void
   onClose: () => void
   onOpenPlayers: () => void
   onOpenScripts: () => void
+  onOpenScript: (scriptType: "weapon" | "class" | "npc", key: string) => void
   onOpenFiles: () => void
   onOpenSync: () => void
   onOpenDeployments: () => void
@@ -32,10 +38,15 @@ type SearchResult = {
 export function GlobalSearchPalette({
   open,
   players,
+  weapons,
+  classes,
+  npcs,
+  scriptShortcutsEnabled,
   onOpen,
   onClose,
   onOpenPlayers,
   onOpenScripts,
+  onOpenScript,
   onOpenFiles,
   onOpenSync,
   onOpenDeployments,
@@ -74,7 +85,7 @@ export function GlobalSearchPalette({
   const results = useMemo<SearchResult[]>(() => {
     const actions: SearchResult[] = [
       {id: "players", title: t("dashboard.openPlayers"), description: t("dashboard.searchPlayersDescription"), group: t("dashboard.commands"), icon: Users, run: onOpenPlayers},
-      {id: "scripts", title: t("dashboard.openScripts"), description: t("dashboard.searchScriptsDescription"), group: t("dashboard.commands"), icon: Code2, run: onOpenScripts},
+      ...(scriptShortcutsEnabled ? [{id: "scripts", title: t("dashboard.openScripts"), description: t("dashboard.searchScriptsDescription"), group: t("dashboard.commands"), icon: Code2, run: onOpenScripts}] : []),
       {id: "files", title: t("dashboard.openFiles"), description: t("dashboard.searchFilesDescription"), group: t("dashboard.commands"), icon: FolderOpen, run: onOpenFiles},
       {id: "sync", title: t("dashboard.openSync"), description: t("dashboard.searchSyncDescription"), group: t("dashboard.commands"), icon: RefreshCw, run: onOpenSync},
       {id: "history", title: t("dashboard.openHistory"), description: t("dashboard.searchHistoryDescription"), group: t("dashboard.commands"), icon: ArchiveRestore, run: onOpenDeployments},
@@ -93,8 +104,43 @@ export function GlobalSearchPalette({
         icon: MessageSquare,
         run: () => onOpenPlayerPM(player),
       }))
-    return [...actions.filter((action) => matches(`${action.title} ${action.description}`)), ...playerResults]
-  }, [onOpenDeployments, onOpenFiles, onOpenPlayerPM, onOpenPlayers, onOpenScripts, onOpenSettings, onOpenSync, players, query, t])
+    const scriptResults: SearchResult[] = scriptShortcutsEnabled && q ? [
+      ...weapons
+        .filter((weapon) => isUsableScriptName(weapon.name) && matches(weapon.name))
+        .slice(0, 24)
+        .map((weapon) => ({
+          id: `script:weapon:${weapon.name}`,
+          title: weapon.name.trim(),
+          description: t("dashboard.scriptShortcutDescription", {type: t("dashboard.scriptTypeWeapon")}),
+          group: t("scripts.title"),
+          icon: Code2,
+          run: () => onOpenScript("weapon", weapon.name.trim()),
+        })),
+      ...classes
+        .filter((scriptClass) => isUsableScriptName(scriptClass.name) && matches(scriptClass.name))
+        .slice(0, 24)
+        .map((scriptClass) => ({
+          id: `script:class:${scriptClass.name}`,
+          title: scriptClass.name.trim(),
+          description: t("dashboard.scriptShortcutDescription", {type: t("dashboard.scriptTypeClass")}),
+          group: t("scripts.title"),
+          icon: Code2,
+          run: () => onOpenScript("class", scriptClass.name.trim()),
+        })),
+      ...npcs
+        .filter((npc) => isUsableScriptName(npc.name) && matches(`${npc.name} ${npc.id}`))
+        .slice(0, 24)
+        .map((npc) => ({
+          id: `script:npc:${npc.id}`,
+          title: npc.name.trim(),
+          description: `${t("dashboard.scriptShortcutDescription", {type: t("dashboard.scriptTypeNpc")})} · #${npc.id}`,
+          group: t("scripts.title"),
+          icon: Code2,
+          run: () => onOpenScript("npc", String(npc.id)),
+        })),
+    ] : []
+    return [...actions.filter((action) => matches(`${action.title} ${action.description}`)), ...scriptResults, ...playerResults]
+  }, [classes, npcs, onOpenDeployments, onOpenFiles, onOpenPlayerPM, onOpenPlayers, onOpenScript, onOpenScripts, onOpenSettings, onOpenSync, players, query, scriptShortcutsEnabled, t, weapons])
 
   useEffect(() => {
     setActiveIndex((current) => Math.min(current, Math.max(0, results.length - 1)))

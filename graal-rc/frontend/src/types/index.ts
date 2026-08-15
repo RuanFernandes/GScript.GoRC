@@ -18,6 +18,8 @@ export type {
 export type {
   CodingSettings,
   RemoteTheme,
+  RemoteChangelog,
+  UpdateInfo,
   FileBrowserConfig,
   SqliteInfo,
   SqliteResult,
@@ -68,6 +70,11 @@ export interface CommandMacro {
   parameters?: CommandMacroParameter[]
   createdAt: number
   updatedAt: number
+}
+
+export interface CommandMacroStore {
+  macros: CommandMacro[]
+  exists: boolean
 }
 
 // A single chat line. channel "" = server (RC) chat; otherwise the IRC channel.

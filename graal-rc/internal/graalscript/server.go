@@ -162,7 +162,7 @@ func (s *LanguageServer) handleMethod(method string, params json.RawMessage) (an
 				SignatureHelpProvider: &SignatureHelpOptions{TriggerCharacters: []string{"(", ","}},
 				DiagnosticProvider:    &DiagnosticOptions{},
 			},
-			ServerInfo: ServerInfo{Name: "graalscript-lsp", Version: "3.0.0"},
+			ServerInfo: ServerInfo{Name: "graalscript-lsp", Version: "3.1.0"},
 		}, 0, nil
 	case "initialized", "shutdown", "exit":
 		return nil, 0, nil
@@ -287,6 +287,13 @@ func (s *LanguageServer) completion(params CompletionParams) CompletionList {
 				definitions = append(definitions, entry)
 			}
 		}
+	} else if newObjectCompletionContext(doc.Text, wordStart, sig) {
+		// `new ` starts an object-construction expression. Keep the result set
+		// intentionally narrow: imported class constructors and built-in GUI
+		// types are valid here, while ordinary functions, variables, and methods
+		// would be misleading. Array allocation uses `new[size]` and does not
+		// enter this context because the significant token before the word is `[`.
+		definitions = append(definitions, s.newObjectDefinitions(doc, doc.sideAtOffset(offset))...)
 	} else if receiver, ok := dynamicPropertyCompletionScope(doc, offset); ok {
 		definitions = append(definitions, s.memberDefinitions(receiver, doc, doc.sideAtOffset(offset), params.Position)...)
 		if strings.EqualFold(receiver, "serveroptions") {
@@ -350,6 +357,81 @@ func (s *LanguageServer) completion(params CompletionParams) CompletionList {
 		items = items[:150]
 	}
 	return CompletionList{IsIncomplete: isIncomplete, Items: items}
+}
+
+func newObjectCompletionContext(text string, wordStart int, sig []token) bool {
+	if len(sig) == 0 || wordStart <= 0 || wordStart > len(text) {
+		return false
+	}
+	previous := sig[len(sig)-1]
+	if !isIdentifier(previous, "new") || previous.end >= wordStart {
+		return false
+	}
+	// Require horizontal whitespace after `new`. In particular, `new[size]`
+	// remains the array-allocation form and keeps normal expression completion.
+	gap := text[previous.end:wordStart]
+	return gap != "" && strings.Trim(gap, " \t") == ""
+}
+
+func (s *LanguageServer) newObjectDefinitions(doc *Document, side string) []Definition {
+	definitions := []Definition{}
+	seen := map[string]bool{}
+	appendDefinition := func(definition Definition) {
+		key := normalizeName(definition.Name)
+		if key == "" || seen[key] || !definitionAvailableInSide(definition, side) {
+			return
+		}
+		seen[key] = true
+		definitions = append(definitions, definition)
+	}
+
+	for _, className := range doc.importedClassNames() {
+		constructorName := importedClassCompletionName(className)
+		if constructorName == "" {
+			continue
+		}
+		functions := s.workspace.classSymbols([]string{className}, side)
+		if len(functions) == 0 {
+			continue
+		}
+
+		foundConstructor := false
+		for _, fn := range functions {
+			if !strings.EqualFold(fn.Name, constructorName) {
+				continue
+			}
+			appendDefinition(definitionFromFunctionInScope(fn, classScope(className)))
+			foundConstructor = true
+			break
+		}
+		if !foundConstructor {
+			appendDefinition(Definition{
+				Name:        constructorName,
+				Kind:        "class",
+				Scope:       classScope(className),
+				Description: "Imported GS2 class.",
+			})
+		}
+	}
+
+	for _, entry := range s.catalog.Definitions {
+		if strings.Contains(entry.Name, ".") || !isGUITypeName(entry.Name) {
+			continue
+		}
+		appendDefinition(entry)
+	}
+	return definitions
+}
+
+func importedClassCompletionName(name string) string {
+	name = strings.TrimSpace(strings.Trim(name, `"`))
+	name = strings.ReplaceAll(name, "\\", "/")
+	name = strings.TrimSuffix(name, "/")
+	name = trimScriptExtension(name)
+	if separator := strings.LastIndexAny(name, "/."); separator >= 0 {
+		name = name[separator+1:]
+	}
+	return strings.TrimSpace(name)
 }
 
 func isFunctionDeclarationContext(text string, offset int) bool {
@@ -466,6 +548,12 @@ func (s *LanguageServer) memberDefinitionsForContext(receiver receiverContext, d
 		definitions := s.memberDefinitionsAtOwner(receiver.name, doc, side, position, receiver.ownerKey)
 		return append(definitions, s.serverScopeDefinitions(receiver.name, side)...)
 	case "class":
+		if isGUITypeName(receiver.name) {
+			return s.guiDefinitions(receiver.name, receiver.ownerKey, doc, side)
+		}
+		if definitions := s.catalogObjectDefinitions(receiver.name, side); len(definitions) > 0 {
+			return definitions
+		}
 		definitions := []Definition{}
 		for _, fn := range s.workspace.classSymbols([]string{receiver.name}, side) {
 			definitions = append(definitions, definitionFromFunctionInScope(fn, classScope(receiver.name)))
@@ -509,6 +597,9 @@ func (s *LanguageServer) memberDefinitionsForContext(receiver receiverContext, d
 		}
 		return s.memberDefinitions("string", doc, side, position)
 	case "static":
+		if definitions := s.enumMemberDefinitions(receiver.name, doc, side); len(definitions) > 0 {
+			return definitions
+		}
 		if !serverScopeVisible(receiver.name, side) {
 			return nil
 		}
@@ -527,9 +618,20 @@ func (s *LanguageServer) memberDefinitionsForContext(receiver receiverContext, d
 	}
 }
 
+func (s *LanguageServer) catalogObjectDefinitions(name, side string) []Definition {
+	definitions := []Definition{}
+	for _, entry := range s.catalog.members(name) {
+		if definitionAvailableInSide(entry, side) {
+			definitions = append(definitions, entry)
+		}
+	}
+	return definitions
+}
+
 func (s *LanguageServer) localDefinitions(doc *Document, position Position) []Definition {
 	definitions := []Definition{}
 	side := doc.sideAtOffset(offsetAt(doc.Text, position))
+	definitions = append(definitions, s.enumDefinitions(doc, side)...)
 	currentFunction := functionAt(doc, position)
 	for _, fn := range doc.Functions {
 		if fn.Side != "" && !strings.EqualFold(fn.Side, side) {
@@ -572,6 +674,64 @@ func (s *LanguageServer) localDefinitions(doc *Document, position Position) []De
 		}
 	}
 	return definitions
+}
+
+func (s *LanguageServer) enumDefinitions(doc *Document, side string) []Definition {
+	definitions := []Definition{}
+	seen := map[string]bool{}
+	appendEnum := func(enum EnumSymbol) {
+		key := normalizeName(enum.Name)
+		if key == "" || seen[key] || !enumAvailableInSide(enum, side) {
+			return
+		}
+		seen[key] = true
+		definitions = append(definitions, Definition{
+			Name:        enum.Name,
+			Kind:        "enum",
+			Scope:       "global",
+			Description: "GS2 enum.",
+		})
+	}
+	for _, enum := range doc.Enums {
+		appendEnum(enum)
+	}
+	for _, enum := range s.workspace.enumSymbols() {
+		appendEnum(enum)
+	}
+	return definitions
+}
+
+func (s *LanguageServer) enumMemberDefinitions(enumName string, doc *Document, side string) []Definition {
+	var enum EnumSymbol
+	found := false
+	for _, candidate := range doc.Enums {
+		if strings.EqualFold(candidate.Name, enumName) {
+			enum = candidate
+			found = true
+			break
+		}
+	}
+	if !found {
+		enum, found = s.workspace.enumSymbol(enumName)
+	}
+	if !found || !enumAvailableInSide(enum, side) {
+		return nil
+	}
+
+	definitions := make([]Definition, 0, len(enum.Members))
+	for _, member := range enum.Members {
+		definitions = append(definitions, Definition{
+			Name:      member.Name,
+			Kind:      "enum-member",
+			Scope:     "enum " + enum.Name,
+			EnumValue: member.Value,
+		})
+	}
+	return definitions
+}
+
+func enumAvailableInSide(enum EnumSymbol, side string) bool {
+	return enum.Side == "" || side == "" || strings.EqualFold(enum.Side, side)
 }
 
 func (s *LanguageServer) guiDefinitions(controlType, ownerKey string, doc *Document, side string) []Definition {
@@ -829,13 +989,17 @@ func callContext(doc *Document, position Position) (string, int, receiverContext
 
 func completionItem(definition Definition) CompletionItem {
 	detail := definition.Scope
-	if signature := formatSignature(definition); signature != "" {
+	if isEnumMemberKind(definition.Kind) {
+		if value := strings.TrimSpace(definition.EnumValue); value != "" {
+			detail += " = " + value
+		}
+	} else if signature := formatSignature(definition); signature != "" {
 		detail = signature
 		if scope := completionScope(definition); scope != "" {
 			detail += " · " + scope
 		}
 	}
-	if definition.Scope != "" && definition.Kind != "function" {
+	if definition.Scope != "" && definition.Kind != "function" && !isEnumMemberKind(definition.Kind) {
 		detail = definition.Kind + " · " + definition.Scope
 	}
 	return CompletionItem{
@@ -866,6 +1030,10 @@ func completionKind(kind string) int {
 		return 6
 	case "class", "type":
 		return 7
+	case "enum":
+		return 13
+	case "enum-member", "enummember":
+		return 20
 	default:
 		return 10
 	}
@@ -874,6 +1042,8 @@ func completionKind(kind string) int {
 func completionSortText(definition Definition) string {
 	switch strings.ToLower(definition.Kind) {
 	case "variable", "constant":
+		return "1-" + strings.ToLower(definition.Name)
+	case "enum-member", "enummember":
 		return "1-" + strings.ToLower(definition.Name)
 	case "function", "method":
 		return "2-" + strings.ToLower(definition.Name)
@@ -889,6 +1059,15 @@ func formatSignature(definition Definition) string {
 	return definition.Name + "(" + strings.Join(definition.Params, ", ") + ")" + returnSuffix(definition.Returns)
 }
 
+func isEnumMemberKind(kind string) bool {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "enum-member", "enummember":
+		return true
+	default:
+		return false
+	}
+}
+
 func returnSuffix(value string) string {
 	if strings.TrimSpace(value) == "" {
 		return ""
@@ -901,6 +1080,14 @@ func formatDefinition(definition Definition) string {
 	if signature := formatSignature(definition); signature != "" {
 		out.WriteString("```graalscript\n")
 		out.WriteString(signature)
+		out.WriteString("\n```")
+	} else if isEnumMemberKind(definition.Kind) {
+		out.WriteString("```graalscript\n")
+		out.WriteString(definition.Name)
+		if value := strings.TrimSpace(definition.EnumValue); value != "" {
+			out.WriteString(" = ")
+			out.WriteString(value)
+		}
 		out.WriteString("\n```")
 	} else {
 		out.WriteString("**")
@@ -1093,6 +1280,11 @@ func receiverContextAtDot(doc *Document, tokens []token, dotIndex int, position 
 				return context
 			}
 		}
+		if variable := doc.symbolFor("temp", receiver, position); variable != nil {
+			if context := receiverContextFromType(*variable); context.kind != "" {
+				return context
+			}
+		}
 		return receiverContextForNamedReceiver(doc, receiver, position)
 	}
 	if tokens[dotIndex-1].text != ")" {
@@ -1103,16 +1295,36 @@ func receiverContextAtDot(doc *Document, tokens []token, dotIndex int, position 
 		return receiverContext{}
 	}
 	value := nextSignificant(tokens, open+1)
+	callee := previousSignificant(tokens, open-1)
+	if callee >= 0 && tokens[callee].kind == tokenIdentifier {
+		calleeName := tokens[callee].text
+		switch strings.ToLower(calleeName) {
+		case "findplayer", "findplayer2", "findplayerbyid":
+			return receiverContext{kind: "player", name: "player"}
+		case "findnpc", "findnpcbyname", "findnpcbyid", "findweapon", "findlevel":
+			if value < 0 || value >= dotIndex {
+				return receiverContext{}
+			}
+			name := stringExpressionValue(doc, tokens, value, dotIndex, position)
+			if name == "" {
+				return receiverContext{}
+			}
+			switch strings.ToLower(calleeName) {
+			case "findnpc", "findnpcbyname", "findnpcbyid":
+				return receiverContext{kind: "npc", name: name}
+			case "findweapon":
+				return receiverContext{kind: "weapon", name: name}
+			case "findlevel":
+				return receiverContext{kind: "level", name: name}
+			}
+		}
+	}
 	if value < 0 || value >= dotIndex {
 		return receiverContext{}
 	}
 	name := stringExpressionValue(doc, tokens, value, dotIndex, position)
 	if name == "" {
 		return receiverContext{}
-	}
-	callee := previousSignificant(tokens, open-1)
-	if callee >= 0 && tokens[callee].kind == tokenIdentifier && isNPCFinder(tokens[callee].text) {
-		return receiverContext{kind: "npc", name: name}
 	}
 	if callee < 0 || tokens[callee].kind != tokenIdentifier {
 		return receiverContext{kind: "string", name: name}
@@ -1339,7 +1551,7 @@ func receiverContextFromType(symbol VariableSymbol) receiverContext {
 		return receiverContext{kind: "player", name: "player"}
 	case "level":
 		return receiverContext{kind: "level", name: "level"}
-	case "", "array", "bool", "boolean", "float", "int", "nil", "number", "object", "string":
+	case "", "bool", "boolean", "float", "int", "nil", "number":
 		return receiverContext{}
 	default:
 		return receiverContext{kind: "class", name: typeName}

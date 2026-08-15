@@ -7,15 +7,46 @@ export interface ChangelogEntry {
   current?: boolean
 }
 
-// Keep release notes in the client so the changelog is available offline and
-// remains tied to the versioned RC source instead of a remote service.
+// Keep release notes in the client as an offline fallback. The RC refreshes
+// the visible history from nullborne.com when the release service is reachable.
 const CHANGELOG_PT_BR: ChangelogEntry[] = [
+  {
+    version: "3.1.0",
+    date: "15/08/2026",
+    title: "Produtividade e contexto por servidor",
+    summary: "Uma grande atualização para acelerar o desenvolvimento GraalScript e manter cada instância do RC isolada e consistente.",
+    current: true,
+    changes: [
+      "Macros de comandos agora são salvas no PC por servidor, com migração automática dos macros antigos do navegador.",
+      "Autocomplete contextual para objetos retornados por findplayer, findweapon e findlevel, além de classes importadas, GUIs e objetos built-in atribuídos a variáveis.",
+      "Enums GS2 oferecem os nomes internos no autocomplete e exibem os valores explícitos apenas na informação da sugestão; new filtra construtores e preserva new[size] para arrays.",
+      "Autocomplete de funções ganhou link para abrir a busca da função na wiki gscript.dev dentro de uma janela WebView do RC; links HTTP(S) do chat também são clicáveis no mesmo fluxo.",
+      "Script Manager recebeu Ctrl+F focado no filtro, Ctrl+K passou a abrir armas, classes e NPCs após o primeiro sync, e novas weapons aguardam um segundo antes do refresh automático.",
+      "Editor Monaco permite escolher tab width 1, 2 ou 4, com 2 como padrão.",
+      "File Browser ganhou busca de pastas, F2 para renomear somente arquivos e log de download consolidado em uma única linha por arquivo.",
+      "O RC agora aceita múltiplas instâncias, posiciona novas janelas no monitor da instância e identifica as janelas com o servidor primeiro no título.",
+      "Desconexões fecham janelas relacionadas e limpam o contexto do File Browser antes do login ou de uma reconexão em outro servidor.",
+      "A tela de criação de plugin aponta diretamente para a documentação oficial atualizada em nullborne.com.",
+    ],
+  },
+  {
+    version: "3.0.1",
+    date: "15/08/2026",
+    title: "Atualizações automáticas e changelog conectado",
+    summary: "O RC agora pode se manter atualizado e consultar o histórico publicado pelo serviço de releases da Nullborne.",
+    current: false,
+    changes: [
+      "Verificação automática de atualização em https://nullborne.com/update ao iniciar o RC.",
+      "Download, validação e execução automáticos do instalador Windows amd64 antes de fechar a versão antiga.",
+      "O changelog dentro do RC é atualizado por https://nullborne.com/changelog e mantém as notas locais como fallback offline.",
+      "Metadados do release Windows, tamanho do instalador e SHA-256 publicados pela API de atualização.",
+    ],
+  },
   {
     version: "3.0.0",
     date: "15/08/2026",
     title: "Operações seguras e desenvolvimento GraalScript",
     summary: "Uma grande atualização para administrar servidores, desenvolver scripts e recuperar alterações com segurança.",
-    current: true,
     changes: [
       "Busca global, central de notificações operacionais e atalhos para as principais ferramentas, mantendo o RC Chat como tela principal.",
       "Macros de comandos parametrizadas, com tipos de parâmetro, validação e preenchimento rápido no estilo slash command.",
@@ -91,8 +122,34 @@ const CHANGELOG_PT_BR: ChangelogEntry[] = [
 
 const CHANGELOG_EN: ChangelogEntry[] = [
   {
+    version: "3.1.0", date: "2026-08-15", title: "Productivity and server-scoped context",
+    summary: "A major update for faster GraalScript development and consistent isolation between RC instances and servers.", current: true,
+    changes: [
+      "Command macros are now saved on the PC per server, with automatic migration of macros created by older browser-only builds.",
+      "Contextual completion now resolves objects returned by findplayer, findweapon and findlevel, imported classes, GUI controls and built-in objects assigned to variables.",
+      "GS2 enums offer their internal names in completion and show explicit values only in suggestion details; new filters constructors while preserving new[size] array allocation.",
+      "Function completion includes a gscript.dev wiki search link opened in an RC WebView; HTTP(S) links in RC Chat use the same internal window flow.",
+      "Script Manager now focuses its filter with Ctrl+F, Ctrl+K opens weapons, classes and NPCs after the first sync, and newly created weapons wait one second before the automatic refresh.",
+      "The Monaco editor supports tab widths 1, 2 or 4, with 2 as the default.",
+      "File Browser adds folder search, F2 renaming for files only, and a consolidated download log with one entry per file.",
+      "The RC supports multiple instances, places new windows on the instance's monitor, and puts the server first in secondary window titles.",
+      "Disconnects close related windows and clear File Browser context before login or reconnecting to another server.",
+      "The plugin creation screen now links directly to the official documentation on nullborne.com.",
+    ],
+  },
+  {
+    version: "3.0.1", date: "2026-08-15", title: "Automatic updates and connected release notes",
+    summary: "The RC can now keep itself current and read the published release history from Nullborne's release service.", current: false,
+    changes: [
+      "Automatic update checks against https://nullborne.com/update when the RC starts.",
+      "The Windows amd64 installer is downloaded, verified and launched automatically before the older RC closes.",
+      "The in-app changelog refreshes from https://nullborne.com/changelog and keeps the bundled notes as an offline fallback.",
+      "Windows release metadata, installer size and SHA-256 are published by the update API.",
+    ],
+  },
+  {
     version: "3.0.0", date: "2026-08-15", title: "Safer operations and GraalScript development",
-    summary: "A major update for server administration, script development and safe change recovery.", current: true,
+    summary: "A major update for server administration, script development and safe change recovery.",
     changes: [
       "Global search, an operational notification center and shortcuts to the main tools while keeping RC Chat as the primary surface.",
       "Parameterized command macros with parameter types, validation and fast slash-command-style filling.",
@@ -144,8 +201,34 @@ const CHANGELOG_EN: ChangelogEntry[] = [
 
 const CHANGELOG_ES: ChangelogEntry[] = [
   {
+    version: "3.1.0", date: "2026-08-15", title: "Productividad y contexto por servidor",
+    summary: "Una gran actualización para acelerar el desarrollo GraalScript y mantener aisladas las instancias y los servidores.", current: true,
+    changes: [
+      "Las macros de comandos ahora se guardan en el PC por servidor, con migración automática de las macros de versiones antiguas.",
+      "El autocompletado contextual resuelve objetos de findplayer, findweapon y findlevel, clases importadas, GUIs y objetos built-in asignados a variables.",
+      "Los enums GS2 completan sus nombres internos y muestran los valores explícitos solo en el detalle; new filtra constructores y conserva new[size] para arrays.",
+      "El autocompletado de funciones incluye un enlace a la búsqueda de gscript.dev dentro de una ventana WebView del RC; los enlaces HTTP(S) del chat usan el mismo flujo interno.",
+      "Script Manager enfoca el filtro con Ctrl+F, Ctrl+K abre weapons, clases y NPCs después del primer sync, y las weapons nuevas esperan un segundo antes del refresh automático.",
+      "El editor Monaco permite elegir tab width 1, 2 o 4, con 2 como valor predeterminado.",
+      "File Browser añade búsqueda de carpetas, renombrado con F2 solo para archivos y un log de descargas consolidado con una entrada por archivo.",
+      "El RC admite varias instancias, abre las ventanas nuevas en el monitor de la instancia y coloca el servidor primero en los títulos.",
+      "Las desconexiones cierran las ventanas relacionadas y limpian el contexto del File Browser antes del login o de reconectar a otro servidor.",
+      "La pantalla de creación de plugins enlaza directamente con la documentación oficial en nullborne.com.",
+    ],
+  },
+  {
+    version: "3.0.1", date: "2026-08-15", title: "Actualizaciones automáticas y notas conectadas",
+    summary: "El RC ahora puede mantenerse actualizado y leer el historial publicado por el servicio de releases de Nullborne.", current: false,
+    changes: [
+      "Comprobación automática de actualizaciones en https://nullborne.com/update al iniciar el RC.",
+      "Descarga, validación y ejecución automáticas del instalador Windows amd64 antes de cerrar la versión anterior.",
+      "El changelog dentro del RC se actualiza desde https://nullborne.com/changelog y conserva las notas locales como fallback offline.",
+      "Metadatos del release Windows, tamaño del instalador y SHA-256 publicados por la API de actualización.",
+    ],
+  },
+  {
     version: "3.0.0", date: "2026-08-15", title: "Operaciones seguras y desarrollo GraalScript",
-    summary: "Una gran actualización para administrar servidores, desarrollar scripts y recuperar cambios de forma segura.", current: true,
+    summary: "Una gran actualización para administrar servidores, desarrollar scripts y recuperar cambios de forma segura.",
     changes: [
       "Búsqueda global, centro de notificaciones operativas y atajos para las herramientas principales, manteniendo RC Chat como pantalla principal.",
       "Macros de comandos parametrizadas, con tipos de parámetro, validación y llenado rápido al estilo slash command.",

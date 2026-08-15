@@ -247,7 +247,7 @@ func (a *App) OpenDeploymentCenter() {
 	if server != "" {
 		title += " · " + server
 	}
-	w := a.app.Window.NewWithOptions(application.WebviewWindowOptions{
+	w := a.newWebviewWindow(application.WebviewWindowOptions{
 		Name:             "deployment-center",
 		Title:            title,
 		URL:              "/#deployments",
@@ -261,7 +261,9 @@ func (a *App) OpenDeploymentCenter() {
 	w.Focus()
 	w.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
 		a.deploymentMu.Lock()
-		a.deploymentWindow = nil
+		if a.deploymentWindow == w {
+			a.deploymentWindow = nil
+		}
 		a.deploymentMu.Unlock()
 	})
 }

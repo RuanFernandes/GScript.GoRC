@@ -19,6 +19,7 @@ type Definition struct {
 	Returns           string
 	Scope             string
 	Description       string
+	EnumValue         string
 	ParameterDocs     map[string]string
 	ReturnDoc         string
 	DocTags           []JSDocTag

@@ -54,6 +54,21 @@ type FunctionSymbol struct {
 	Side            string
 }
 
+type EnumSymbol struct {
+	Name           string
+	Members        []EnumMemberSymbol
+	Range          Range
+	SelectionRange Range
+	Side           string
+}
+
+type EnumMemberSymbol struct {
+	Name           string
+	Value          string
+	Range          Range
+	SelectionRange Range
+}
+
 type JSDocTag struct {
 	Name        string
 	Subject     string
@@ -110,6 +125,7 @@ type Document struct {
 	Tokens       []token
 	AST          ASTNode
 	Functions    []FunctionSymbol
+	Enums        []EnumSymbol
 	Variables    []VariableSymbol
 	Members      []VariableSymbol
 	Joins        []string
@@ -129,6 +145,7 @@ func parseDocument(uri, text string, version int) *Document {
 		ClientOffset: clientSideOffset(text),
 	}
 	doc.parseFunctions()
+	doc.parseEnums()
 	doc.parseWithBlocks()
 	doc.parseGUIBlocks()
 	doc.parseJoinsAndVariables()
@@ -139,6 +156,91 @@ func parseDocument(uri, text string, version int) *Document {
 	doc.parseCalls()
 	doc.parseParameterTypes()
 	return doc
+}
+
+func (d *Document) parseEnums() {
+	for i := 0; i < len(d.Tokens); i++ {
+		if !isIdentifier(d.Tokens[i], "enum") {
+			continue
+		}
+		nameIndex := nextSignificant(d.Tokens, i+1)
+		if nameIndex < 0 || d.Tokens[nameIndex].kind != tokenIdentifier {
+			continue
+		}
+		openIndex := nextSignificant(d.Tokens, nameIndex+1)
+		if openIndex < 0 || d.Tokens[openIndex].text != "{" {
+			continue
+		}
+		closeIndex := matchingToken(d.Tokens, openIndex, "{", "}")
+		if closeIndex < 0 {
+			closeIndex = len(d.Tokens) - 1
+		}
+		nameToken := d.Tokens[nameIndex]
+		enum := EnumSymbol{
+			Name:           nameToken.text,
+			Range:          Range{Start: d.Tokens[i].startPos, End: d.Tokens[closeIndex].endPos},
+			SelectionRange: Range{Start: nameToken.startPos, End: nameToken.endPos},
+			Side:           d.sideAtOffset(nameToken.start),
+		}
+
+		memberIndex := nextSignificant(d.Tokens, openIndex+1)
+		for memberIndex >= 0 && memberIndex < closeIndex {
+			if d.Tokens[memberIndex].kind != tokenIdentifier {
+				memberIndex = nextSignificant(d.Tokens, memberIndex+1)
+				continue
+			}
+
+			memberToken := d.Tokens[memberIndex]
+			memberEnd := memberIndex + 1
+			value := ""
+			next := nextSignificant(d.Tokens, memberIndex+1)
+			if next >= 0 && next < closeIndex && d.Tokens[next].text == "=" {
+				valueStart := nextSignificant(d.Tokens, next+1)
+				valueEnd := enumValueEnd(d.Tokens, valueStart, closeIndex)
+				if valueStart >= 0 && valueStart < valueEnd {
+					value = strings.TrimSpace(tokenTextBetween(d.Text, d.Tokens, valueStart, valueEnd))
+					memberEnd = valueEnd
+				}
+			}
+
+			enum.Members = append(enum.Members, EnumMemberSymbol{
+				Name:           memberToken.text,
+				Value:          value,
+				Range:          Range{Start: memberToken.startPos, End: d.Tokens[memberEnd-1].endPos},
+				SelectionRange: Range{Start: memberToken.startPos, End: memberToken.endPos},
+			})
+			memberIndex = nextSignificant(d.Tokens, memberEnd)
+			if memberIndex >= 0 && memberIndex < closeIndex && d.Tokens[memberIndex].text == "," {
+				memberIndex = nextSignificant(d.Tokens, memberIndex+1)
+			}
+		}
+
+		if len(enum.Members) > 0 {
+			d.Enums = append(d.Enums, enum)
+		}
+	}
+}
+
+func enumValueEnd(tokens []token, start, end int) int {
+	if start < 0 || start >= end {
+		return start
+	}
+	depth := 0
+	for i := start; i < end; i++ {
+		switch tokens[i].text {
+		case "(", "[", "{":
+			depth++
+		case ")", "]", "}":
+			if depth > 0 {
+				depth--
+			}
+		case ",":
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return end
 }
 
 func (d *Document) parseFunctions() {

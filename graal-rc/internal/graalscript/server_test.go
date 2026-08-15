@@ -38,6 +38,69 @@ function onPlayerChats(message, count) {
 	}
 }
 
+func TestParseDocumentCollectsEnumsAndExplicitValues(t *testing.T) {
+	doc := parseDocument("memory://enum", `enum Human {
+  ARM,
+  BODY,
+  HAND = "Hands",
+  NEGATIVE = -1,
+}`, 1)
+	if len(doc.Enums) != 1 {
+		t.Fatalf("enums = %d, want 1", len(doc.Enums))
+	}
+	enum := doc.Enums[0]
+	if enum.Name != "Human" || len(enum.Members) != 4 {
+		t.Fatalf("enum = %#v, want Human with four members", enum)
+	}
+	for index, expected := range []struct {
+		name  string
+		value string
+	}{
+		{name: "ARM"},
+		{name: "BODY"},
+		{name: "HAND", value: `"Hands"`},
+		{name: "NEGATIVE", value: "-1"},
+	} {
+		member := enum.Members[index]
+		if member.Name != expected.name || member.Value != expected.value {
+			t.Fatalf("member[%d] = %#v, want %s = %q", index, member, expected.name, expected.value)
+		}
+	}
+}
+
+func TestEnumCompletionUsesInternalNamesAndDisplaysExplicitValues(t *testing.T) {
+	server := NewLanguageServer()
+	list := completionAtText(server, "memory://enum-completion", `enum Human {
+  ARM,
+  BODY,
+  HAND = "Hands",
+}
+Human.`, "Human.")
+	for _, name := range []string{"ARM", "BODY", "HAND"} {
+		if !hasCompletion(list.Items, name) {
+			t.Fatalf("enum completion is missing %q: %#v", name, list.Items)
+		}
+	}
+	for _, value := range []string{"Hands", `"Hands"`} {
+		if hasCompletion(list.Items, value) {
+			t.Fatalf("enum value was offered as a completion label %q: %#v", value, list.Items)
+		}
+	}
+	for _, item := range list.Items {
+		if item.Label != "HAND" {
+			continue
+		}
+		if item.InsertText != "HAND" || item.TextEdit == nil || item.TextEdit.NewText != "HAND" {
+			t.Fatalf("enum completion inserts the value instead of the internal name: %#v", item)
+		}
+		if item.Detail != `enum Human = "Hands"` {
+			t.Fatalf("enum completion detail = %q, want enum Human = %q", item.Detail, `"Hands"`)
+		}
+		return
+	}
+	t.Fatal("HAND enum completion was not inspected")
+}
+
 func TestParseDocumentExtractsJSDocForFunctions(t *testing.T) {
 	doc := parseDocument("memory://jsdoc", `/**
  * Registers an entity.
@@ -271,6 +334,28 @@ func TestClientCompletionIncludesGuiControlConstructor(t *testing.T) {
 	}
 }
 
+func TestNewCompletionOnlyIncludesConstructibleObjects(t *testing.T) {
+	server := NewLanguageServer()
+	server.catalog.add(Definition{
+		Name:  "createGuiWidget",
+		Kind:  "function",
+		Scope: "clientside",
+	})
+
+	list := completionAtText(server, "memory://new-object-filter", "//#CLIENTSIDE\nnew ", "new ")
+	if !hasCompletion(list.Items, "GuiControl") {
+		t.Fatalf("new completion is missing GuiControl: %#v", list.Items)
+	}
+	if hasCompletion(list.Items, "createGuiWidget") || hasCompletion(list.Items, "abs") || hasCompletion(list.Items, "onCreated") {
+		t.Fatalf("new completion exposed non-constructible symbols: %#v", list.Items)
+	}
+
+	list = completionAtText(server, "memory://new-object-array", "//#CLIENTSIDE\nnew[abs", "new[abs")
+	if !hasCompletion(list.Items, "abs") {
+		t.Fatalf("array allocation completion was incorrectly filtered as object construction: %#v", list.Items)
+	}
+}
+
 func TestCompletionMarksTruncatedListsIncomplete(t *testing.T) {
 	server := NewLanguageServer()
 	for i := 0; i < 200; i++ {
@@ -281,7 +366,7 @@ func TestCompletionMarksTruncatedListsIncomplete(t *testing.T) {
 		})
 	}
 
-	list := completionAtText(server, "memory://incomplete-completion", "//#CLIENTSIDE\nnew ", "")
+	list := completionAtText(server, "memory://incomplete-completion", "//#CLIENTSIDE\nlocalCompletion", "localCompletion")
 	if !list.IsIncomplete {
 		t.Fatalf("truncated completion list was not marked incomplete: %d items", len(list.Items))
 	}
@@ -355,6 +440,34 @@ new GuiAlias("Button") {
 	list := completionAtText(server, "memory://gui-return-type", text, "someA")
 	if !hasCompletion(list.Items, "someAction") {
 		t.Fatalf("GUI constructor return type did not provide concrete members: %#v", list.Items)
+	}
+}
+
+func TestGUIConstructorAssignedToVariableProvidesMembers(t *testing.T) {
+	server := NewLanguageServer()
+	uri := "memory://gui-variable"
+	text := `//#CLIENTSIDE
+function onCreated() {
+  temp.guic = new GuiControl("whatevername");
+  temp.guic.wid
+  guic.wid
+  temp.text = "hello";
+  temp.text.le
+}`
+
+	list := completionAtText(server, uri, text, "temp.guic.wid")
+	if !hasCompletion(list.Items, "width") {
+		t.Fatalf("GUI variable completion through temp scope is missing width: %#v", list.Items)
+	}
+
+	list = completionAtText(server, uri, text, "guic.wid")
+	if !hasCompletion(list.Items, "width") {
+		t.Fatalf("GUI variable shorthand completion is missing width: %#v", list.Items)
+	}
+
+	list = completionAtText(server, uri, text, "temp.text.le")
+	if !hasCompletion(list.Items, "length") {
+		t.Fatalf("built-in string completion through a variable is missing length: %#v", list.Items)
 	}
 }
 
@@ -587,6 +700,24 @@ public function clientOnly() {}
 	list = server.completion(CompletionParams{TextDocument: TextDocumentIdentifier{URI: uri}, Position: Position{Line: 0, Character: utf16Length(text)}})
 	if !hasCompletion(list.Items, "sell") {
 		t.Fatalf("string receiver completion does not contain public sell: %#v", list.Items)
+	}
+}
+
+func TestCompletionResolvesPlayerMembersFromFinderCalls(t *testing.T) {
+	server := NewLanguageServer()
+	for _, finder := range []string{"findplayer", "findplayer2", "findplayerbyid"} {
+		uri := "memory://" + finder
+		text := finder + `("Graal").`
+		list := completionAtText(server, uri, text, ".")
+		if !hasCompletion(list.Items, "account") {
+			t.Fatalf("%s completion after the dot does not contain player.account: %#v", finder, list.Items)
+		}
+
+		text += "ac"
+		list = completionAtText(server, uri, text, ".ac")
+		if !hasCompletion(list.Items, "account") {
+			t.Fatalf("%s completion does not contain player.account: %#v", finder, list.Items)
+		}
 	}
 }
 
@@ -1049,6 +1180,10 @@ private function privateClient() {}`
 	if hasCompletion(list.Items, "privateServer") || hasCompletion(list.Items, "privateClient") {
 		t.Fatalf("import exposed private functions: %#v", list.Items)
 	}
+	list = completionAtText(server, uri, "import CombatHelpers;\nnew ", "new ")
+	if !hasCompletion(list.Items, "CombatHelpers") || hasCompletion(list.Items, "publicServer") || hasCompletion(list.Items, "abs") {
+		t.Fatalf("new completion did not isolate the imported class: %#v", list.Items)
+	}
 	list = completionAtText(server, uri, "import CombatHelpers;\npub", "pub")
 	if !hasCompletion(list.Items, "publicServer") || hasCompletion(list.Items, "publicClient") {
 		t.Fatalf("import visibility or side filtering is incorrect: %#v", list.Items)
@@ -1142,6 +1277,10 @@ function onCreated() {
 	list := completionAtText(server, uri, text, "new Ent")
 	if !hasCompletion(list.Items, "Entity") {
 		t.Fatalf("qualified import did not expose Entity constructor: %#v", list.Items)
+	}
+	list = completionAtText(server, uri, text, "new ")
+	if !hasCompletion(list.Items, "Entity") || !hasCompletion(list.Items, "ORM") || hasCompletion(list.Items, "addField") || hasCompletion(list.Items, "registerEntity") || hasCompletion(list.Items, "abs") {
+		t.Fatalf("new completion exposed imported class members or globals: %#v", list.Items)
 	}
 
 	list = completionAtText(server, uri, text, "addF")

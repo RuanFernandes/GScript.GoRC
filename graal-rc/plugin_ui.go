@@ -119,7 +119,7 @@ func (a *App) PluginUIWindowOpen(pluginID string, options PluginUIWindowOptions)
 	if a.app == nil {
 		return info, nil
 	}
-	w := a.app.Window.NewWithOptions(application.WebviewWindowOptions{
+	w := a.newWebviewWindow(application.WebviewWindowOptions{
 		Name:             sanitizePluginUIWindowName(pluginID, options.ID),
 		Title:            options.Title,
 		URL:              "/#plugin-ui?plugin=" + url.QueryEscape(pluginID) + "&window=" + url.QueryEscape(options.ID),
@@ -139,9 +139,14 @@ func (a *App) PluginUIWindowOpen(pluginID string, options PluginUIWindowOptions)
 	w.Focus()
 	w.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
 		a.pluginUIWindowMu.Lock()
-		delete(a.pluginUIWindows, key)
+		isCurrent := a.pluginUIWindows[key] != nil && a.pluginUIWindows[key].Window == w
+		if isCurrent {
+			delete(a.pluginUIWindows, key)
+		}
 		a.pluginUIWindowMu.Unlock()
-		a.emitPluginUIClosed(pluginID, options.ID)
+		if isCurrent {
+			a.emitPluginUIClosed(pluginID, options.ID)
+		}
 	})
 	return info, nil
 }
@@ -189,9 +194,8 @@ func (a *App) PluginUIWindowClose(pluginID, windowID string) error {
 	}
 	if state.Window != nil {
 		state.Window.Close()
-	} else {
-		a.emitPluginUIClosed(pluginID, windowID)
 	}
+	a.emitPluginUIClosed(pluginID, windowID)
 	return nil
 }
 
@@ -214,9 +218,8 @@ func (a *App) PluginUIWindowCloseAll(pluginID string) error {
 	for _, state := range states {
 		if state.Window != nil {
 			state.Window.Close()
-		} else {
-			a.emitPluginUIClosed(pluginID, state.Info.ID)
 		}
+		a.emitPluginUIClosed(pluginID, state.Info.ID)
 	}
 	return nil
 }

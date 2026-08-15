@@ -29,12 +29,6 @@ func applicationOptions(a *App) application.Options {
 		},
 		OnShutdown:   a.shutdown,
 		PostShutdown: a.postShutdown,
-		SingleInstance: &application.SingleInstanceOptions{
-			UniqueID: "com.rauanf.graalrc",
-			OnSecondInstanceLaunch: func(application.SecondInstanceData) {
-				a.showMainWindow()
-			},
-		},
 		Services: []application.Service{
 			application.NewService(a),
 		},

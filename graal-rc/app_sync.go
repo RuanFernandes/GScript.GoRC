@@ -738,7 +738,7 @@ func (a *App) OpenSyncReview() {
 		a.syncReviewWindow.Focus()
 		return
 	}
-	w := a.app.Window.NewWithOptions(application.WebviewWindowOptions{
+	w := a.newWebviewWindow(application.WebviewWindowOptions{
 		Name:             "syncreview",
 		Title:            "Sync Review",
 		URL:              "/#sync",
@@ -754,7 +754,9 @@ func (a *App) OpenSyncReview() {
 	w.Focus()
 	w.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
 		a.syncReviewMu.Lock()
-		a.syncReviewWindow = nil
+		if a.syncReviewWindow == w {
+			a.syncReviewWindow = nil
+		}
 		a.syncReviewMu.Unlock()
 	})
 }
