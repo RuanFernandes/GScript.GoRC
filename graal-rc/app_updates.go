@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	RCVersion          = "3.1.0"
+	RCVersion          = "3.1.1"
 	releaseAPIBaseURL  = "https://nullborne.com"
 	updateRequestLimit = 512 * 1024
 	maxInstallerBytes  = 512 * 1024 * 1024

@@ -11,11 +11,21 @@ export interface ChangelogEntry {
 // the visible history from nullborne.com when the release service is reachable.
 const CHANGELOG_PT_BR: ChangelogEntry[] = [
   {
+    version: "3.1.1",
+    date: "15/08/2026",
+    title: "Hotfix do atualizador Windows",
+    summary: "Corrige a verificação de processo usada pelo instalador durante o auto-update.",
+    current: true,
+    changes: [
+      "Corrigida a verificação do RC em instalações iniciadas pelo auto-update; o instalador agora executa o tasklist de forma compatível com o plugin Unicode do NSIS.",
+    ],
+  },
+  {
     version: "3.1.0",
     date: "15/08/2026",
     title: "Produtividade e contexto por servidor",
     summary: "Uma grande atualização para acelerar o desenvolvimento GraalScript e manter cada instância do RC isolada e consistente.",
-    current: true,
+    current: false,
     changes: [
       "Macros de comandos agora são salvas no PC por servidor, com migração automática dos macros antigos do navegador.",
       "Autocomplete contextual para objetos retornados por findplayer, findweapon e findlevel, além de classes importadas, GUIs e objetos built-in atribuídos a variáveis.",
@@ -122,8 +132,15 @@ const CHANGELOG_PT_BR: ChangelogEntry[] = [
 
 const CHANGELOG_EN: ChangelogEntry[] = [
   {
+    version: "3.1.1", date: "2026-08-15", title: "Windows updater hotfix",
+    summary: "Fixes the process check used by the installer during automatic updates.", current: true,
+    changes: [
+      "Fixed RC detection for installers launched by automatic updates; the installer now runs tasklist through a Unicode NSIS-compatible invocation.",
+    ],
+  },
+  {
     version: "3.1.0", date: "2026-08-15", title: "Productivity and server-scoped context",
-    summary: "A major update for faster GraalScript development and consistent isolation between RC instances and servers.", current: true,
+    summary: "A major update for faster GraalScript development and consistent isolation between RC instances and servers.", current: false,
     changes: [
       "Command macros are now saved on the PC per server, with automatic migration of macros created by older browser-only builds.",
       "Contextual completion now resolves objects returned by findplayer, findweapon and findlevel, imported classes, GUI controls and built-in objects assigned to variables.",
@@ -201,8 +218,15 @@ const CHANGELOG_EN: ChangelogEntry[] = [
 
 const CHANGELOG_ES: ChangelogEntry[] = [
   {
+    version: "3.1.1", date: "2026-08-15", title: "Hotfix del actualizador de Windows",
+    summary: "Corrige la verificación de procesos usada por el instalador durante las actualizaciones automáticas.", current: true,
+    changes: [
+      "Corregida la detección del RC para instaladores iniciados por actualizaciones automáticas; el instalador ahora ejecuta tasklist con una invocación compatible con NSIS Unicode.",
+    ],
+  },
+  {
     version: "3.1.0", date: "2026-08-15", title: "Productividad y contexto por servidor",
-    summary: "Una gran actualización para acelerar el desarrollo GraalScript y mantener aisladas las instancias y los servidores.", current: true,
+    summary: "Una gran actualización para acelerar el desarrollo GraalScript y mantener aisladas las instancias y los servidores.", current: false,
     changes: [
       "Las macros de comandos ahora se guardan en el PC por servidor, con migración automática de las macros de versiones antiguas.",
       "El autocompletado contextual resuelve objetos de findplayer, findweapon y findlevel, clases importadas, GUIs y objetos built-in asignados a variables.",

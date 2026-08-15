@@ -215,7 +215,10 @@ RequestExecutionLevel "${REQUEST_EXECUTION_LEVEL}"
 !macroend
 
 !macro wails.checkAppClosed SEARCH_FUNCTION
-    nsExec::ExecToStack '/OEM /TIMEOUT=5000 "$SYSDIR\tasklist.exe" /FI "IMAGENAME eq ${PRODUCT_EXECUTABLE}" /FO CSV /NH'
+    ; The bundled Unicode nsExec plug-in returns "error" when /OEM or
+    ; /TIMEOUT is passed on current Windows builds. tasklist is a short-lived
+    ; local query, so use its default execution path and preserve its output.
+    nsExec::ExecToStack '"$SYSDIR\tasklist.exe" /FI "IMAGENAME eq ${PRODUCT_EXECUTABLE}" /FO CSV /NH'
     Pop $R0
     Pop $R1
 
