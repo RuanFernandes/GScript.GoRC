@@ -25,6 +25,7 @@ import {Label} from "@/components/ui/label"
 import {Skeleton} from "@/components/ui/skeleton"
 import {useScriptLists} from "@/hooks/useScriptLists"
 import {scriptCompare} from "@/lib/scriptSort"
+import {isUsableScriptName} from "@/lib/scriptName"
 import {rcService} from "@/services/rcService"
 import type {NPC} from "@/types"
 import {useLanguage} from "@/hooks/useLanguage"
@@ -103,6 +104,18 @@ export function ScriptManagerWindowScreen() {
   const [onlyReadable, setOnlyReadable] = useState(false)
   const lists = useScriptLists(rcService, onlyReadable)
   const [tab, setTab] = useState<"weapons" | "classes" | "npcs">("weapons")
+  const weaponRows = useMemo(() => lists.weapons.map((weapon, index) => {
+    const name = weapon.name?.trim() ?? ""
+    return isUsableScriptName(name)
+      ? {key: name, cols: [name]}
+      : {key: `__invalid_weapon_${index}`, cols: [t("scripts.invalidWeapon")], disabled: true}
+  }), [lists.weapons, t])
+  const classRows = useMemo(() => lists.classes.map((scriptClass, index) => {
+    const name = scriptClass.name?.trim() ?? ""
+    return isUsableScriptName(name)
+      ? {key: name, cols: [name]}
+      : {key: `__invalid_class_${index}`, cols: [t("scripts.invalidClass")], disabled: true}
+  }), [lists.classes, t])
 
   useEffect(() => {
     if (lists.error) {
@@ -136,7 +149,7 @@ export function ScriptManagerWindowScreen() {
         <TabsContent value="weapons" className="mt-3 min-h-0 flex-1">
           <WeaponClassTab
             kind="weapon"
-            rows={lists.weapons.map((w) => ({key: w.name, cols: [w.name]}))}
+            rows={weaponRows}
             loading={lists.loading}
             onRefresh={async () => {
               try {
@@ -152,7 +165,7 @@ export function ScriptManagerWindowScreen() {
         <TabsContent value="classes" className="mt-3 min-h-0 flex-1">
           <WeaponClassTab
             kind="class"
-            rows={lists.classes.map((c) => ({key: c.name, cols: [c.name]}))}
+            rows={classRows}
             loading={lists.loading}
             onRefresh={lists.refresh}
           />
@@ -168,6 +181,7 @@ export function ScriptManagerWindowScreen() {
 interface Row {
   key: string
   cols: string[]
+  disabled?: boolean
 }
 
 // WeaponClassTab handles weapon and class lists (both name-keyed; weapons add an
@@ -303,19 +317,21 @@ function WeaponClassTab({
                 <tr
                   key={r.key}
                   aria-busy={opening}
-                  aria-disabled={opening}
-                  onClick={() => { if (!opening) setSelected(r.key) }}
-                  onDoubleClick={() => { if (!opening) void openRow(r.key) }}
+                  aria-disabled={opening || r.disabled}
+                  onClick={() => { if (!opening && !r.disabled) setSelected(r.key) }}
+                  onDoubleClick={() => { if (!opening && !r.disabled) void openRow(r.key) }}
                   className={`border-b ${
-                    opening
-                      ? "cursor-wait opacity-60"
+                    r.disabled
+                      ? "cursor-not-allowed opacity-60"
+                      : opening
+                        ? "cursor-wait opacity-60"
                       : `cursor-pointer ${selected === r.key ? "bg-accent" : "hover:bg-accent/50"}`
                   }`}
                 >
                   {r.cols.map((c, i) => (
                     <td key={i} className="px-3 py-1.5">
                       {i === 0 ? (
-                        <span className="inline-flex items-center gap-2">
+                        <span className={r.disabled ? "text-muted-foreground italic" : "inline-flex items-center gap-2"}>
                           {opening && <Loader2 className="text-muted-foreground size-3.5 animate-spin" aria-label="Loading" />}
                           {c}
                         </span>
@@ -401,7 +417,7 @@ function NPCTab({
     const q = filter.toLowerCase()
     const f = npcs.filter(
       (n) =>
-        n.name.toLowerCase().includes(q) ||
+        (isUsableScriptName(n.name) ? n.name.trim() : t("scripts.invalidNpc", {id: n.id})).toLowerCase().includes(q) ||
         String(n.id).includes(q) ||
         n.type.toLowerCase().includes(q) ||
         (n.level ?? "").toLowerCase().includes(q),
@@ -420,7 +436,7 @@ function NPCTab({
       }
     })
     return f
-  }, [npcs, filter, sortKey, sortDir])
+  }, [npcs, filter, sortKey, sortDir, t])
 
   const toggleSort = (key: "id" | "name" | "type" | "level") => {
     if (sortKey === key) setSortDir((d) => (d === "asc" ? "desc" : "asc"))
@@ -431,6 +447,7 @@ function NPCTab({
   }
 
   const selectedNPC = npcs.find((n) => n.id === selected) ?? null
+  const selectedNPCUsable = selectedNPC !== null && isUsableScriptName(selectedNPC.name)
 
   useEffect(() => {
     if (!npcMenu) return
@@ -445,7 +462,7 @@ function NPCTab({
   }, [npcMenu])
 
   const doDelete = async () => {
-    if (selected == null) return
+    if (selected == null || !selectedNPCUsable) return
     try {
       await rcService.deleteNPC(selected)
       toast.success(`Deleted NPC ${selected}`)
@@ -482,7 +499,7 @@ function NPCTab({
           <Button size="sm" onClick={() => setAdding(true)}>
             {t("scripts.addNpc")}
           </Button>
-          <Button variant="destructive" size="sm" disabled={!selectedNPC} onClick={() => setDeleteOpen(true)}>
+          <Button variant="destructive" size="sm" disabled={!selectedNPCUsable} onClick={() => setDeleteOpen(true)}>
             {t("scripts.delete")}
           </Button>
         </div>
@@ -530,19 +547,24 @@ function NPCTab({
             {filtered.map((n) => (
               <tr
                 key={n.id}
-                onClick={() => setSelected(n.id)}
-                onDoubleClick={() => openScriptEditorOrFail("npc", String(n.id))}
+                onClick={() => { if (isUsableScriptName(n.name)) setSelected(n.id) }}
+                onDoubleClick={() => { if (isUsableScriptName(n.name)) void openScriptEditorOrFail("npc", String(n.id)) }}
                 onContextMenu={(event) => {
                   event.preventDefault()
+                  if (!isUsableScriptName(n.name)) return
                   setSelected(n.id)
                   setNpcMenu({npc: n, left: Math.min(event.clientX, window.innerWidth - 220), top: Math.min(event.clientY, window.innerHeight - 220)})
                 }}
-                className={`cursor-pointer border-b ${
-                  selected === n.id ? "bg-accent" : "hover:bg-accent/50"
+                className={`border-b ${
+                  !isUsableScriptName(n.name)
+                    ? "cursor-not-allowed opacity-60"
+                    : `cursor-pointer ${selected === n.id ? "bg-accent" : "hover:bg-accent/50"}`
                 }`}
               >
                 <td className="px-3 py-1.5">{n.id}</td>
-                <td className="px-3 py-1.5">{n.name}</td>
+                <td className={isUsableScriptName(n.name) ? "px-3 py-1.5" : "text-muted-foreground px-3 py-1.5 italic"}>
+                  {isUsableScriptName(n.name) ? n.name : t("scripts.invalidNpc", {id: n.id})}
+                </td>
                 <td className="px-3 py-1.5">{n.type}</td>
                 <td className="text-muted-foreground px-3 py-1.5">{n.level}</td>
               </tr>

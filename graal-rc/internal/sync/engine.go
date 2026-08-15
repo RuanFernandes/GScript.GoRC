@@ -352,6 +352,9 @@ func refFromReply(r rclib.ScriptReply) scriptRef {
 	if r.Type != "weapon" && r.Type != "class" && r.Type != "npc" {
 		return scriptRef{}
 	}
+	if !rclib.IsUsableScriptName(r.Name) {
+		return scriptRef{}
+	}
 	key, name := r.Name, r.Name
 	if r.Type == "npc" {
 		key = strconv.Itoa(r.ID)

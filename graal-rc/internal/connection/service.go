@@ -2281,6 +2281,11 @@ func (s *Service) FetchAllScripts(ctx context.Context, allowed func(scriptType, 
 	var jobs []job
 	skipped := 0
 	for _, w := range weapons {
+		if !rclib.IsUsableScriptName(w.Name) {
+			skipped++
+			log.Printf("[sync fetch] skipping weapon with invalid name %q", w.Name)
+			continue
+		}
 		if allowed == nil || allowed("weapon", w.Name) {
 			jobs = append(jobs, job{"weapon", w.Name, w.Name})
 		} else {
@@ -2288,6 +2293,11 @@ func (s *Service) FetchAllScripts(ctx context.Context, allowed func(scriptType, 
 		}
 	}
 	for _, c := range classes {
+		if !rclib.IsUsableScriptName(c.Name) {
+			skipped++
+			log.Printf("[sync fetch] skipping class with invalid name %q", c.Name)
+			continue
+		}
 		if allowed == nil || allowed("class", c.Name) {
 			jobs = append(jobs, job{"class", c.Name, c.Name})
 		} else {
@@ -2295,6 +2305,11 @@ func (s *Service) FetchAllScripts(ctx context.Context, allowed func(scriptType, 
 		}
 	}
 	for _, n := range npcs {
+		if !rclib.IsUsableScriptName(n.Name) {
+			skipped++
+			log.Printf("[sync fetch] skipping NPC id=%d with invalid name %q", n.ID, n.Name)
+			continue
+		}
 		if allowed == nil || allowed("npc", n.Name) {
 			jobs = append(jobs, job{"npc", strconv.Itoa(n.ID), n.Name})
 		} else {
@@ -2506,6 +2521,9 @@ func (s *Service) openScriptContext(ctx context.Context, scriptType, key, name s
 	}
 	if scriptType != "weapon" && scriptType != "class" && scriptType != "npc" {
 		return rclib.ScriptReply{}, errors.New("unknown script type: " + scriptType)
+	}
+	if !rclib.IsUsableScriptName(name) {
+		return rclib.ScriptReply{}, fmt.Errorf("%s script name is empty or invalid", scriptType)
 	}
 	if err := s.requireScriptPermission(scriptType, name, 'r'); err != nil {
 		return rclib.ScriptReply{}, err

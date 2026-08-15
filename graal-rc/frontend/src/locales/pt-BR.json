@@ -522,6 +522,9 @@
   "scripts.weapons": "Armas",
   "scripts.classes": "Classes",
   "scripts.npcs": "NPCs",
+  "scripts.invalidWeapon": "Weapon sem nome (ignorada)",
+  "scripts.invalidClass": "Classe sem nome (ignorada)",
+  "scripts.invalidNpc": "NPC sem nome (ignorado) #{id}",
   "scripts.create": "Criar"
   ,"scripts.confirmDelete": "Excluir este script?",
   "scripts.confirmDeleteDescription": "Isso excluirá permanentemente {name} do servidor.",

@@ -206,3 +206,16 @@ func TestReconcilePreservesEditMadeDuringServerFetch(t *testing.T) {
 }
 
 func stringPtr(value string) *string { return &value }
+
+func TestRefFromReplyRejectsUnnamedScripts(t *testing.T) {
+	for _, reply := range []rclib.ScriptReply{
+		{Type: "weapon", Name: ""},
+		{Type: "weapon", Name: "\u200b"},
+		{Type: "class", Name: "\ufffd"},
+		{Type: "npc", ID: 42, Name: ""},
+	} {
+		if ref := refFromReply(reply); ref.kind != "" {
+			t.Fatalf("invalid reply produced a sync ref: %#v -> %#v", reply, ref)
+		}
+	}
+}

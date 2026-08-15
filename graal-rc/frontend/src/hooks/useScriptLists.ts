@@ -32,6 +32,10 @@ export function useScriptLists(service: RcService, onlyReadable: boolean): UseSc
     try {
       const lists = await service.getScriptLists(onlyReadable)
       if (!lists) throw new Error("The server returned no script lists")
+      // Keep malformed entries for the manager's disabled fallback row. The
+      // backend already filters them before any NC request; retaining them
+      // here makes a stale/native cache entry visible without making it
+      // actionable or rendering a blank glyph.
       setWeapons(lists.weapons ?? [])
       setClasses(lists.classes ?? [])
       setNPCs(lists.npcs ?? [])
