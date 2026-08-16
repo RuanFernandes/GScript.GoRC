@@ -43,6 +43,11 @@ on:
           - "true"
         required: true
         default: "false"
+      publish_release:
+        description: "Create a GitHub release; false keeps downloadable artifacts only"
+        type: boolean
+        required: true
+        default: true
 
 permissions:
   contents: write # needed to push the computed tag and create the release
@@ -105,7 +110,7 @@ jobs:
 
   linux-amd64:
     name: Linux x64 (AppImage)
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: graal-rc
@@ -229,7 +234,7 @@ jobs:
   release:
     name: Publish release
     needs: [windows, linux-amd64, macos-amd64]
-    if: ${{ always() && needs.windows.result == 'success' && needs['linux-amd64'].result == 'success' && needs['macos-amd64'].result == 'success' }}
+    if: ${{ always() && inputs.publish_release == true && needs.windows.result == 'success' && needs['linux-amd64'].result == 'success' && needs['macos-amd64'].result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -286,7 +291,7 @@ jobs:
 
   cleanup:
     name: Remove intermediate artifacts
-    if: ${{ always() }}
+    if: ${{ always() && inputs.publish_release == true }}
     needs: [release]
     runs-on: ubuntu-22.04
     permissions:
