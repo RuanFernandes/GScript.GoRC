@@ -126,9 +126,10 @@ Layering is strict and one-directional:
 
 ## Requirements
 
-**To run a release:** just grab the installer/AppImage from
-[Releases](#releases). No extra runtime is needed on Windows; Linux needs the
-GTK/WebKit runtime libraries (typically preinstalled on mainstream desktop distros).
+**To run a release:** just grab the installer, AppImage, or macOS `.app`
+tarball from [Releases](#releases). No extra runtime is needed on Windows or
+macOS; Linux needs the GTK/WebKit runtime libraries (typically preinstalled on
+mainstream desktop distros).
 
 **To build from source:**
 
@@ -138,7 +139,8 @@ GTK/WebKit runtime libraries (typically preinstalled on mainstream desktop distr
 - **Linux only:** `libgtk-4-dev libwebkitgtk-6.0-dev libadwaita-1-dev libfuse2t64`
   (and `pkg-config`, `file`, `zip`).
 - **Windows only (packaging):** [NSIS](https://nsis.sourceforge.io/) for the installer.
-- The prebuilt protocol library (`grclib64.dll` / `grclib64.so`) under `rclib/`.
+- The prebuilt protocol library (`grclib64.dll`, `grclib.so`, or `grclib.dylib`)
+  under `rclib/`.
   See [`rclib/README.md`](./rclib/README.md) to build it yourself.
 
 ## Building from source
@@ -157,6 +159,7 @@ wails3 task build          # native binary in graal-rc/bin/
 # 3. Package for the host OS
 wails3 task windows:package   # Windows: NSIS installer (.exe)
 wails3 task linux:package     # Linux: AppImage
+wails3 task darwin:package    # macOS: graal-rc.app bundle
 ```
 
 > **Note:** build the Go packages explicitly (`go build . ./rclib/ ./internal/connection/`)
@@ -188,6 +191,7 @@ triggered manually from the **Actions** tab. It builds and publishes:
 
 - **Windows x64** — NSIS installer
 - **Linux x64** — AppImage
+- **macOS x64** — `.app` bundle in a tarball (native Intel and Rosetta 2)
 
 Each release bundles the matching native protocol library for its platform and bitness.
 

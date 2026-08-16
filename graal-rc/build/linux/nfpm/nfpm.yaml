@@ -6,7 +6,7 @@
 name: "graal-rc"
 arch: ${GOARCH}
 platform: "linux"
-version: "3.1.6"
+version: "3.1.7"
 section: "default"
 priority: "extra"
 maintainer: ${GIT_COMMITTER_NAME} <${GIT_COMMITTER_EMAIL}>
@@ -19,6 +19,8 @@ release: "1"
 contents:
   - src: "./bin/graal-rc"
     dst: "/usr/local/bin/graal-rc"
+  - src: "./rclib/grclib.so"
+    dst: "/usr/local/bin/grclib.so"
   - src: "./build/appicon.png"
     dst: "/usr/share/icons/hicolor/128x128/apps/graal-rc.png"
   - src: "./build/linux/graal-rc.desktop"

@@ -10,6 +10,9 @@ vars:
 tasks:
   build:
     summary: Builds the application
+    preconditions:
+      - sh: '[ "{{.TARGET_ARCH}}" = "amd64" ]'
+        msg: "macOS ARM64 is disabled until an ARM64 rclib/grclib.dylib is available. Use the amd64 build under Rosetta for now."
     cmds:
       - task: '{{if eq OS "darwin"}}build:native{{else}}build:docker{{end}}'
         vars:
@@ -22,6 +25,7 @@ tasks:
     vars:
       DEFAULT_OUTPUT: '{{.BIN_DIR}}/{{.APP_NAME}}'
       OUTPUT: '{{ .OUTPUT | default .DEFAULT_OUTPUT }}'
+      TARGET_ARCH: '{{.ARCH | default ARCH}}'
 
   build:native:
     summary: Builds the application natively on macOS
@@ -87,6 +91,9 @@ tasks:
 
   build:universal:
     summary: Builds darwin universal binary (arm64 + amd64)
+    preconditions:
+      - sh: 'false'
+        msg: "Universal macOS builds are disabled until an ARM64 rclib/grclib.dylib is available."
     deps:
       - task: build
         vars:
@@ -122,6 +129,9 @@ tasks:
 
   package:universal:
     summary: Packages darwin universal binary (arm64 + amd64)
+    preconditions:
+      - sh: 'false'
+        msg: "Universal macOS packages are disabled until an ARM64 rclib/grclib.dylib is available."
     deps:
       - task: build:universal
     cmds:
@@ -131,13 +141,12 @@ tasks:
   create:app:bundle:
     summary: Creates an `.app` bundle
     cmds:
+      - rm -rf "{{.BIN_DIR}}/{{.APP_NAME}}.app"
       - mkdir -p "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS"
+      - mkdir -p "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Frameworks"
       - mkdir -p "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources"
       - cp build/darwin/icons.icns "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources"
-      - |
-        if [ -f build/darwin/Assets.car ]; then
-          cp build/darwin/Assets.car "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources"
-        fi
+      - cp rclib/grclib.dylib "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Frameworks"
       - cp "{{.BIN_DIR}}/{{.APP_NAME}}" "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS"
       - cp build/darwin/Info.plist "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents"
       - task: '{{if eq OS "darwin"}}codesign:adhoc{{else}}codesign:skip{{end}}'
@@ -156,17 +165,16 @@ tasks:
 
   run:
     cmds:
+      - rm -rf "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app"
       - mkdir -p "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app/Contents/MacOS"
+      - mkdir -p "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app/Contents/Frameworks"
       - mkdir -p "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app/Contents/Resources"
       - cp build/darwin/icons.icns "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app/Contents/Resources"
-      - |
-        if [ -f build/darwin/Assets.car ]; then
-          cp build/darwin/Assets.car "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app/Contents/Resources"
-        fi
+      - cp rclib/grclib.dylib "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app/Contents/Frameworks"
       - cp "{{.BIN_DIR}}/{{.APP_NAME}}" "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app/Contents/MacOS"
       - cp "build/darwin/Info.dev.plist" "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app/Contents/Info.plist"
       - codesign --force --deep --sign - "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app"
-      - '"{{.BIN_DIR}}/{{.APP_NAME}}.dev.app/Contents/MacOS/{{.APP_NAME}}"'
+      - 'open "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app"'
 
   sign:
     summary: Signs the application bundle with Developer ID

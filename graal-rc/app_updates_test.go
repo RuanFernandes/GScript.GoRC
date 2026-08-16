@@ -39,8 +39,8 @@ func TestDownloadInstallerRejectsUntrustedRoutesBeforeNetworkAccess(t *testing.T
 }
 
 func TestAppVersionIsReleaseVersion(t *testing.T) {
-	if (&App{}).GetAppVersion() != "3.1.6" {
-		t.Fatalf("GetAppVersion() = %q, want 3.1.6", (&App{}).GetAppVersion())
+	if (&App{}).GetAppVersion() != "3.1.7" {
+		t.Fatalf("GetAppVersion() = %q, want 3.1.7", (&App{}).GetAppVersion())
 	}
 }
 
@@ -76,7 +76,7 @@ func TestUpdateDownloadRoutesAndTemporaryNames(t *testing.T) {
 	}{
 		{platform: "windows", path: "/windows", pattern: "nullbornes-rc-update-*.exe"},
 		{platform: "linux", path: "/linux", pattern: "nullbornes-rc-update-*.AppImage"},
-		{platform: "mac", path: "/mac", pattern: "nullbornes-rc-update-*.dmg"},
+		{platform: "mac", path: "/mac", pattern: "nullbornes-rc-update-*.tar.gz"},
 	}
 	for _, test := range tests {
 		if got := updateDownloadPath(test.platform); got != test.path {
@@ -96,7 +96,7 @@ func TestUpdateFilenameUsesSafeArtifactBasename(t *testing.T) {
 	if got := updateFilename(info, "linux"); got != "nullbornes-rc-linux.AppImage" {
 		t.Fatalf("updateFilename returned %q, want basename", got)
 	}
-	if got := updateFilename(UpdateInfo{}, "mac"); got != "nullbornes-rc-macos.dmg" {
+	if got := updateFilename(UpdateInfo{}, "mac"); got != "nullbornes-rc-macos-x64.tar.gz" {
 		t.Fatalf("updateFilename fallback = %q, want macOS filename", got)
 	}
 }

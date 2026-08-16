@@ -7,9 +7,7 @@
 		<key>CFBundleGetInfoString</key>
 		<string>Graal Remote Control client</string>
 		<key>CFBundleIconFile</key>
-		<string>icons</string>
-		<key>CFBundleIconName</key>
-		<string>appicon</string>
+		<string>icons.icns</string>
 		<key>CFBundleIdentifier</key>
 		<string>com.rauanf.graalrc</string>
 		<key>CFBundleName</key>
@@ -17,9 +15,9 @@
 		<key>CFBundlePackageType</key>
 		<string>APPL</string>
 		<key>CFBundleShortVersionString</key>
-		<string>3.1.6</string>
+		<string>3.1.7</string>
 		<key>CFBundleVersion</key>
-		<string>3.1.6</string>
+		<string>3.1.7</string>
 		<key>LSMinimumSystemVersion</key>
 		<string>12.0.0</string>
 		<key>NSAppTransportSecurity</key>

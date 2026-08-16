@@ -365,8 +365,9 @@ func libFileName() string {
 // libSearchPaths returns candidate locations for the native library. It checks
 // the cwd and executable directory, then walks every parent of each looking for
 // a "rclib/<lib>" sibling. This finds the lib during `wails dev` (cwd at the
-// project root) and when running the built binary from build/bin (lib several
-// levels up at <repo>/rclib/<lib>).
+// project root), when running the built binary from build/bin (lib several
+// levels up at <repo>/rclib/<lib>), and from a packaged macOS app
+// (Contents/Frameworks/<lib>).
 func libSearchPaths() []string {
 	name := libFileName()
 
@@ -398,6 +399,12 @@ func libSearchPaths() []string {
 	for _, root := range roots {
 		add(filepath.Join(root, name))
 		add(filepath.Join(root, "rclib", name))
+		if runtime.GOOS == "darwin" {
+			// Packaged macOS apps keep native libraries in
+			// <app>.app/Contents/Frameworks while the executable lives in
+			// <app>.app/Contents/MacOS.
+			add(filepath.Join(root, "..", "Frameworks", name))
+		}
 		// Walk parents: <root>/.., <root>/../.., ... looking for rclib/<lib>.
 		dir := root
 		for i := 0; i < 8; i++ {

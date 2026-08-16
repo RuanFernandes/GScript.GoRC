@@ -17,7 +17,7 @@ on:
         description: "Version bump (auto-computes next tag from the latest one)"
         required: true
         type: choice
-        default: minor
+        default: patch
         options:
           - patch   # 0.0.1
           - minor   # 0.1.0
@@ -34,7 +34,7 @@ on:
         description: "Mark as pre-release"
         type: boolean
         required: true
-        default: true
+        default: false
       make_latest:
         description: "Set as latest release"
         type: choice
@@ -42,7 +42,7 @@ on:
           - "false"
           - "true"
         required: true
-        default: "false"
+        default: "true"
       publish_release:
         description: "Create a GitHub release; false keeps downloadable artifacts only"
         type: boolean
@@ -58,8 +58,53 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  version:
+    name: Resolve release version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve semver
+        id: resolve
+        shell: bash
+        env:
+          BUMP_LEVEL: ${{ inputs.level }}
+          CUSTOM_TAG: ${{ inputs.custom_tag }}
+        run: |
+          set -euo pipefail
+          version="${CUSTOM_TAG#v}"
+          if [ -z "$version" ]; then
+            latest=$(git tag -l 'v[0-9]*' --sort=-v:refname | head -n1 || true)
+            base="${latest#v}"
+            [ -z "$base" ] && base="0.0.0"
+            if [[ ! "$base" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Latest tag '$latest' is not a stable semver tag." >&2
+              exit 1
+            fi
+            IFS='.' read -r major minor patch <<< "$base"
+            case "$BUMP_LEVEL" in
+              major) major=$((major + 1)); minor=0; patch=0 ;;
+              minor) minor=$((minor + 1)); patch=0 ;;
+              patch) patch=$((patch + 1)) ;;
+              *) echo "Unsupported bump level: $BUMP_LEVEL" >&2; exit 1 ;;
+            esac
+            version="$major.$minor.$patch"
+          fi
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Version '$version' must contain exactly three numeric components." >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "Resolved release version: $version"
+
   windows:
     name: Windows (amd64)
+    needs: version
     runs-on: windows-2022
     defaults:
       run:
@@ -71,6 +116,8 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: graal-rc/frontend/package-lock.json
+      - name: Set release version in build metadata
+        run: node build/ci/set-version.mjs "${{ needs.version.outputs.version }}"
       - uses: actions/setup-go@v5
         with:
           go-version: ">=1.25.0"
@@ -101,15 +148,19 @@ jobs:
         env:
           CGO_ENABLED: "0" # syscall loader — no C toolchain needed for Windows
         run: task windows:package
+      - name: Normalize installer name
+        shell: bash
+        run: cp bin/graal-rc-amd64-installer.exe bin/nullbornes-rc-windows-x64-installer.exe
       - uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: graal-rc/bin/*-installer.exe
+          path: graal-rc/bin/nullbornes-rc-windows-x64-installer.exe
           if-no-files-found: error
           retention-days: 1
 
   linux-amd64:
     name: Linux x64 (AppImage)
+    needs: version
     runs-on: ubuntu-24.04
     defaults:
       run:
@@ -121,6 +172,8 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: graal-rc/frontend/package-lock.json
+      - name: Set release version in build metadata
+        run: node build/ci/set-version.mjs "${{ needs.version.outputs.version }}"
       - uses: actions/setup-go@v5
         with:
           go-version: ">=1.25.0"
@@ -140,43 +193,22 @@ jobs:
           curl -sSL -o "$HOME/appimagetool" https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x "$HOME/appimagetool"
           "$HOME/appimagetool" --version
-      - name: Build native binary (linux/amd64, CGO)
+      - name: Build AppImage with GTK/WebKit runtime and grclib.so
         env:
           CGO_ENABLED: "1"
-        run: task linux:build
-      - name: Assemble AppImage (bundles grclib.so)
-        run: |
-          set -e
-          rm -rf bin/AppDir
-          mkdir -p bin/AppDir/usr/bin
-          cp bin/graal-rc bin/AppDir/usr/bin/
-          cp rclib/grclib.so bin/AppDir/usr/bin/
-          cp build/appicon.png bin/AppDir/graal-rc.png
-          cat > bin/AppDir/graal-rc.desktop <<'DESKTOP'
-          [Desktop Entry]
-          Type=Application
-          Name=Graal Remote Control
-          Exec=graal-rc
-          Icon=graal-rc
-          Categories=Development;
-          DESKTOP
-          cat > bin/AppDir/AppRun <<'RUN'
-          #!/bin/sh
-          HERE="$(dirname "$(readlink -f "$0")")"
-          export LD_LIBRARY_PATH="$HERE/usr/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          exec "$HERE/usr/bin/graal-rc" "$@"
-          RUN
-          chmod +x bin/AppDir/AppRun
-          "$HOME/appimagetool" bin/AppDir bin/graal-rc-amd64.AppImage
+        run: APPIMAGETOOL="$HOME/appimagetool" task linux:create:appimage
+      - name: Normalize AppImage name
+        run: cp bin/graal-rc-x86_64.AppImage bin/nullbornes-rc-linux-x64.AppImage
       - uses: actions/upload-artifact@v4
         with:
           name: linux-amd64
-          path: graal-rc/bin/graal-rc-amd64.AppImage
+          path: graal-rc/bin/nullbornes-rc-linux-x64.AppImage
           if-no-files-found: error
           retention-days: 1
 
   macos-amd64:
-    name: macOS x64 (tarball)
+    name: macOS x64 (.app tarball)
+    needs: version
     # macos-13 (Intel) runner pools are effectively gone from GitHub's free
     # tier — jobs sit in "queued" indefinitely. macos-14 is Apple Silicon and
     # always available, so we cross-compile to x86_64 via `clang -arch x86_64`
@@ -194,6 +226,8 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: graal-rc/frontend/package-lock.json
+      - name: Set release version in build metadata
+        run: node build/ci/set-version.mjs "${{ needs.version.outputs.version }}"
       - uses: actions/setup-go@v5
         with:
           go-version: ">=1.25.0"
@@ -206,6 +240,8 @@ jobs:
         run: go install github.com/go-task/task/v3/cmd/task@latest
       - name: Build frontend + bindings
         run: task common:build:frontend
+      - name: Generate macOS icon
+        run: task common:generate:icons
       - name: Cross-build darwin/amd64 (CGO x86_64)
         env:
           GOOS: darwin
@@ -215,73 +251,66 @@ jobs:
           CGO_LDFLAGS: "-arch x86_64 -mmacosx-version-min=12.0"
           MACOSX_DEPLOYMENT_TARGET: "12.0"
         run: go build -tags production -trimpath -buildvcs=false -ldflags="-w -s" -o bin/graal-rc .
-      - name: Bundle binary + grclib.dylib
+      - name: Create macOS application bundle
+        run: task darwin:create:app:bundle
+      - name: Verify ad-hoc signature
+        run: codesign --verify --deep --strict --verbose=2 bin/graal-rc.app
+      - name: Archive macOS application bundle
         run: |
-          set -e
+          set -euo pipefail
+          test -d bin/graal-rc.app
+          test -f bin/graal-rc.app/Contents/Resources/icons.icns
+          test -f bin/graal-rc.app/Contents/Frameworks/grclib.dylib
+          test ! -e bin/graal-rc.app/Contents/Resources/Assets.car
           mkdir -p stage
-          cp bin/graal-rc stage/
-          cp rclib/grclib.dylib stage/
-          # rclib resolves the lib by searching the binary's dir and parents,
-          # so shipping them side-by-side is enough.
-          tar -C stage -czf bin/graal-rc-darwin-amd64.tar.gz .
+          cp -R bin/graal-rc.app stage/
+          tar -C stage -czf bin/graal-rc-darwin-amd64.tar.gz graal-rc.app
+          cp bin/graal-rc-darwin-amd64.tar.gz bin/nullbornes-rc-macos-x64.tar.gz
       - uses: actions/upload-artifact@v4
         with:
           name: macos-amd64
-          path: graal-rc/bin/graal-rc-darwin-amd64.tar.gz
+          path: graal-rc/bin/nullbornes-rc-macos-x64.tar.gz
           if-no-files-found: error
           retention-days: 1
 
   release:
     name: Publish release
-    needs: [windows, linux-amd64, macos-amd64]
-    if: ${{ always() && inputs.publish_release == true && needs.windows.result == 'success' && needs['linux-amd64'].result == 'success' && needs['macos-amd64'].result == 'success' }}
+    needs: [version, windows, linux-amd64, macos-amd64]
+    if: ${{ always() && inputs.publish_release == true && needs.version.result == 'success' && needs.windows.result == 'success' && needs['linux-amd64'].result == 'success' && needs['macos-amd64'].result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # need full history + tags to read the latest tag
-      - name: Compute release tag
-        id: tag
-        run: |
-          set -euo pipefail
-          custom="${{ github.event.inputs.custom_tag }}"
-          if [ -n "$custom" ]; then
-            tag="$custom"
-          else
-            latest=$(git tag -l 'v*' --sort=-v:refname | head -n1 || true)
-            base="${latest#v}"; [ -z "$base" ] && base="0.0.0"
-            IFS='.' read -r MA MI PA <<<"$base"
-            case "${{ github.event.inputs.level }}" in
-              major) MA=$((MA+1)); MI=0; PA=0 ;;
-              minor) MI=$((MI+1)); PA=0 ;;
-              patch) PA=$((PA+1)) ;;
-              *) echo "bad level"; exit 1 ;;
-            esac
-            tag="v${MA}.${MI}.${PA}"
-          fi
-          echo "Computed tag: $tag"
-          echo "name=$tag" >>"$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         with:
           path: dist
       - name: Flatten artifacts
         run: |
+          set -euo pipefail
           mkdir -p release
-          find dist -type f \( -name '*.exe' -o -name '*.AppImage' -o -name '*.tar.gz' \) -exec cp {} release/ \;
+          for artifact in \
+            nullbornes-rc-windows-x64-installer.exe \
+            nullbornes-rc-linux-x64.AppImage \
+            nullbornes-rc-macos-x64.tar.gz; do
+            source=$(find dist -type f -name "$artifact" -print -quit)
+            test -n "$source"
+            cp "$source" "release/$artifact"
+          done
           ls -la release
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.tag.outputs.name }}
+          tag_name: ${{ needs.version.outputs.tag }}
           name: ${{ github.event.inputs.release_name }}
           prerelease: ${{ github.event.inputs.prerelease }}
           make_latest: ${{ github.event.inputs.make_latest }}
           body: |
-            Built from commit ${{ github.sha }} on `${{ github.ref_name }}` via manual dispatch.
+            Version ${{ needs.version.outputs.version }} built from commit ${{ github.sha }} on `${{ github.ref_name }}` via manual dispatch.
 
             Targets:
             - Windows 10/11 x64 (NSIS installer)
             - Linux x86_64 (AppImage; choose language in Settings on first launch)
-            - macOS x86_64 (tarball; native Intel and Rosetta 2 on Apple Silicon)
+            - macOS x86_64 (.app tarball; native Intel and Rosetta 2 on Apple Silicon)
 
             GoRC stores the selected language in the platform user config directory,
             so the preference survives updates and is shared by all app windows.

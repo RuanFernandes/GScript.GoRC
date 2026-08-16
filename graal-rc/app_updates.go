@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/sha256"
+	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -26,10 +27,13 @@ const (
 	updateQuitWait     = 2 * time.Second
 )
 
+//go:embed VERSION
+var embeddedRCVersion string
+
 // RCVersion is a variable so local release builds can override the client
 // version through Go's -ldflags -X option without changing production source
-// metadata. Normal builds keep the checked-in release version.
-var RCVersion = "3.1.6"
+// metadata. Normal builds use the checked-in VERSION file.
+var RCVersion = strings.TrimSpace(embeddedRCVersion)
 
 // UpdateInstaller describes the artifact advertised by the release service.
 // The checksum is verified before the executable is handed to the installer
@@ -351,7 +355,7 @@ func updateTemporaryPattern(platform string) string {
 	case "linux":
 		return "nullbornes-rc-update-*.AppImage"
 	case "mac":
-		return "nullbornes-rc-update-*.dmg"
+		return "nullbornes-rc-update-*.tar.gz"
 	default:
 		return "nullbornes-rc-update-*"
 	}
@@ -368,7 +372,7 @@ func updateFilename(info UpdateInfo, platform string) string {
 	case "linux":
 		return "nullbornes-rc-linux.AppImage"
 	case "mac":
-		return "nullbornes-rc-macos.dmg"
+		return "nullbornes-rc-macos-x64.tar.gz"
 	default:
 		return "nullbornes-rc-update"
 	}
@@ -474,7 +478,7 @@ func (a *App) SaveUpdate() (string, error) {
 	case "linux":
 		dialog.AddFilter("Linux AppImage", "*.AppImage")
 	case "mac":
-		dialog.AddFilter("macOS disk image", "*.dmg")
+		dialog.AddFilter("macOS app archive", "*.tar.gz")
 	}
 	chosenPath, err := dialog.PromptForSingleSelection()
 	if err != nil {

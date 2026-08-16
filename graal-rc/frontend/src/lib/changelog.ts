@@ -11,11 +11,24 @@ export interface ChangelogEntry {
 // the visible history from nullborne.com when the release service is reachable.
 const CHANGELOG_PT_BR: ChangelogEntry[] = [
   {
+    version: "3.1.7",
+    date: "16/08/2026",
+    title: "Distribuição macOS e Linux reforçada",
+    summary: "Corrige o empacotamento multiplataforma, o ícone do macOS e a independência do RC em relação ao terminal.",
+    current: true,
+    changes: [
+      "A build macOS agora entrega um app bundle com ícone icns e metadados de versão corretos; o artefato x64 funciona nativamente em Macs Intel e via Rosetta 2 em Apple Silicon.",
+      "O AppImage Linux passa a carregar o runtime GTK4/WebKitGTK6 e o grclib.so nativos; os pacotes DEB/RPM também instalam a biblioteca necessária.",
+      "O RC não depende mais de um terminal aberto para permanecer executando, e o updater macOS usa o novo arquivo tar.gz.",
+      "Os três instaladores usam nomes canônicos e metadados alinhados à versão 3.1.7.",
+    ],
+  },
+  {
     version: "3.1.6",
     date: "15/08/2026",
     title: "Fluxo de scripts e Sync mais controláveis",
     summary: "Melhora o Script Manager, a personalização visual e o controle das notificações de Sync.",
-    current: true,
+    current: false,
     changes: [
       "O Script Manager agora permite abrir qualquer script sincronizado diretamente no explorador de arquivos nativo do Windows, macOS ou Linux pelo menu de contexto.",
       "As notificações de progresso do Sync podem ser minimizadas ou dispensadas enquanto o download inicial continua em segundo plano.",
@@ -190,8 +203,18 @@ const CHANGELOG_PT_BR: ChangelogEntry[] = [
 
 const CHANGELOG_EN: ChangelogEntry[] = [
   {
+    version: "3.1.7", date: "2026-08-16", title: "Stronger macOS and Linux distribution",
+    summary: "Fixes cross-platform packaging, the macOS icon and the RC's dependency on an open terminal.", current: true,
+    changes: [
+      "The macOS build now ships an app bundle with the correct icns icon and version metadata; the x64 artifact runs natively on Intel Macs and through Rosetta 2 on Apple Silicon.",
+      "The Linux AppImage now carries the GTK4/WebKitGTK6 runtime and native grclib.so; DEB/RPM packages also install the required library.",
+      "The RC no longer depends on an open terminal to keep running, and the macOS updater uses the new tar.gz archive.",
+      "All three installers use canonical names and metadata aligned with version 3.1.7.",
+    ],
+  },
+  {
     version: "3.1.6", date: "2026-08-15", title: "More controllable script and Sync workflow",
-    summary: "Improves Script Manager, visual customization and Sync notification control.", current: true,
+    summary: "Improves Script Manager, visual customization and Sync notification control.", current: false,
     changes: [
       "Script Manager can now open any synchronized script directly in the native file browser on Windows, macOS or Linux from its context menu.",
       "Sync progress notifications can be minimized or dismissed while the initial download continues in the background.",
@@ -319,8 +342,18 @@ const CHANGELOG_EN: ChangelogEntry[] = [
 
 const CHANGELOG_ES: ChangelogEntry[] = [
   {
+    version: "3.1.7", date: "2026-08-16", title: "Distribución macOS y Linux reforzada",
+    summary: "Corrige el empaquetado multiplataforma, el icono de macOS y la dependencia del RC de un terminal abierto.", current: true,
+    changes: [
+      "La build de macOS ahora incluye un app bundle con el icono icns y los metadatos de versión correctos; el artefacto x64 funciona de forma nativa en Macs Intel y mediante Rosetta 2 en Apple Silicon.",
+      "El AppImage de Linux ahora incluye el runtime GTK4/WebKitGTK6 y el grclib.so nativo; los paquetes DEB/RPM también instalan la biblioteca requerida.",
+      "El RC ya no depende de un terminal abierto para seguir ejecutándose y el actualizador de macOS usa el nuevo archivo tar.gz.",
+      "Los tres instaladores usan nombres canónicos y metadatos alineados con la versión 3.1.7.",
+    ],
+  },
+  {
     version: "3.1.6", date: "2026-08-15", title: "Flujo de scripts y Sync más controlable",
-    summary: "Mejora Script Manager, la personalización visual y el control de las notificaciones de Sync.", current: true,
+    summary: "Mejora Script Manager, la personalización visual y el control de las notificaciones de Sync.", current: false,
     changes: [
       "Script Manager ahora permite abrir cualquier script sincronizado directamente en el explorador de archivos nativo de Windows, macOS o Linux desde su menú contextual.",
       "Las notificaciones de progreso de Sync se pueden minimizar o descartar mientras la descarga inicial continúa en segundo plano.",

@@ -11,10 +11,10 @@ info:
   description: "Graal Remote Control client" # The application description
   copyright: "© 2026, RuanFernandes" # Copyright text
   comments: "Graal Remote Control client" # Comments
-  version: "3.1.6" # The application version
-  # cfBundleIconName: "appicon" # The macOS icon name in Assets.car icon bundles (optional)
-  #                               # Should match the name of your .icon file without the extension
-  #                               # If not set and Assets.car exists, defaults to "appicon"
+  version: "3.1.7" # The application version
+  # macOS release bundles use build/darwin/icons.icns, generated from
+  # build/appicon.png. Do not set cfBundleIconName unless an Assets.car catalog
+  # is intentionally shipped with the application.
 
 # iOS build configuration (uncomment to customise iOS project generation)
 # Note: Keys under `ios` OVERRIDE values under `info` when set.

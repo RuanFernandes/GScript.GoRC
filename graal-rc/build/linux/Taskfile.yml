@@ -16,6 +16,9 @@ vars:
 tasks:
   build:
     summary: Builds the application for Linux
+    preconditions:
+      - sh: '[ "{{.TARGET_ARCH}}" = "amd64" ]'
+        msg: "Linux ARM64 is disabled until an ARM64 rclib/grclib.so is available. Use the amd64 build for now."
     cmds:
       # Linux requires CGO - use Docker when:
       # 1. Cross-compiling from non-Linux, OR
@@ -115,16 +118,25 @@ tasks:
     deps:
       - task: build
       - task: generate:dotdesktop
+    preconditions:
+      - sh: '[ "{{OS}}" = "linux" ]'
+        msg: "AppImage generation must run on Linux because Wails bundles the GTK4/WebKitGTK6 runtime there."
+      - sh: 'command -v "{{.APPIMAGETOOL}}" >/dev/null 2>&1'
+        msg: "appimagetool is required to repack the AppImage after bundling grclib.so."
     cmds:
       - cp "{{.APP_BINARY}}" "{{.APP_NAME}}"
       - cp ../../appicon.png "{{.APP_NAME}}.png"
       - wails3 generate appimage -binary "{{.APP_NAME}}" -icon {{.ICON}} -desktopfile {{.DESKTOP_FILE}} -outputdir {{.OUTPUT_DIR}} -builddir {{.ROOT_DIR}}/build/linux/appimage/build
+      - cp "{{.ROOT_DIR}}/rclib/grclib.so" "{{.ROOT_DIR}}/build/linux/appimage/build/{{.APP_NAME}}-x86_64.AppDir/usr/bin/"
+      - rm -f "{{.ROOT_DIR}}/bin/{{.APP_NAME}}-x86_64.AppImage"
+      - '"{{.APPIMAGETOOL}}" "{{.ROOT_DIR}}/build/linux/appimage/build/{{.APP_NAME}}-x86_64.AppDir" "{{.ROOT_DIR}}/bin/{{.APP_NAME}}-x86_64.AppImage"'
     vars:
       APP_NAME: '{{.APP_NAME}}'
       APP_BINARY: '../../../bin/{{.APP_NAME}}'
       ICON: '{{.APP_NAME}}.png'
       DESKTOP_FILE: '../{{.APP_NAME}}.desktop'
       OUTPUT_DIR: '../../../bin'
+      APPIMAGETOOL: '{{.APPIMAGETOOL | default "appimagetool"}}'
 
   create:deb:
     summary: Creates a deb package
