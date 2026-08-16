@@ -1,5 +1,5 @@
-// useCodingSettings owns the Monaco editor appearance and indentation (theme,
-// font family, font size, tab width). Persisted in the Go backend (coding.json) — NOT localStorage — because
+// useCodingSettings owns the Monaco editor appearance, indentation, and the
+// selected external code editor. Persisted in the Go backend (coding.json) — NOT localStorage — because
 // each Wails v3 window is its own webview and does not reliably share
 // localStorage. The backend broadcasts an rc:codingSettings event on change so
 // every open editor window updates live.
@@ -14,6 +14,7 @@ export const DEFAULT_CODING_SETTINGS: CodingSettings = {
   fontFamily: "Consolas, 'Courier New', monospace",
   fontSize: 14,
   tabSize: 2,
+  externalEditor: "vscode",
 }
 
 export interface UseCodingSettingsResult {
@@ -33,7 +34,7 @@ export function useCodingSettings(): UseCodingSettingsResult {
     rcService
       .getCodingSettings()
       .then((cs) => {
-        if (!cancelled) setSettings(cs)
+        if (!cancelled) setSettings({...DEFAULT_CODING_SETTINGS, ...cs, externalEditor: cs.externalEditor || DEFAULT_CODING_SETTINGS.externalEditor})
       })
       .catch(() => {})
       .finally(() => {
@@ -43,7 +44,8 @@ export function useCodingSettings(): UseCodingSettingsResult {
     // Live updates from other windows (backend broadcasts on every save).
     const off = Events.On("rc:codingSettings", (e: {data: string}) => {
       try {
-        setSettings(JSON.parse(e.data) as CodingSettings)
+        const next = JSON.parse(e.data) as CodingSettings
+        setSettings({...DEFAULT_CODING_SETTINGS, ...next, externalEditor: next.externalEditor || DEFAULT_CODING_SETTINGS.externalEditor})
       } catch {
         // ignore malformed
       }
@@ -57,20 +59,24 @@ export function useCodingSettings(): UseCodingSettingsResult {
   const update = useCallback((patch: Partial<CodingSettings>) => {
     setSettings((prev) => {
       const next = {...prev, ...patch}
-      rcService.setCodingSettings(next.theme, next.fontFamily, next.fontSize, next.tabSize).catch(() => {})
+      if (patch.theme !== undefined || patch.fontFamily !== undefined || patch.fontSize !== undefined || patch.tabSize !== undefined) {
+        rcService.setCodingSettings(next.theme, next.fontFamily, next.fontSize, next.tabSize).catch(() => {})
+      }
+      if (patch.externalEditor !== undefined) rcService.setExternalEditor(next.externalEditor).catch(() => {})
       return next
     })
   }, [])
 
   const reset = useCallback(() => {
-    rcService
-      .setCodingSettings(
+    void (async () => {
+      await rcService.setCodingSettings(
         DEFAULT_CODING_SETTINGS.theme,
         DEFAULT_CODING_SETTINGS.fontFamily,
         DEFAULT_CODING_SETTINGS.fontSize,
         DEFAULT_CODING_SETTINGS.tabSize,
       )
-      .catch(() => {})
+      await rcService.setExternalEditor(DEFAULT_CODING_SETTINGS.externalEditor)
+    })().catch(() => {})
     setSettings(DEFAULT_CODING_SETTINGS)
   }, [])
 

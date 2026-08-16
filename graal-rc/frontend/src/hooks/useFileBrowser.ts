@@ -29,12 +29,19 @@ export interface UseFileBrowserResult {
   loaded: boolean
   refresh: () => Promise<void>
   cd: (folder: string) => Promise<void>
-  download: (entry: FileBrowserEntry, saveAs?: boolean) => Promise<void>
+  download: (entry: FileBrowserEntry, saveAs?: boolean, notify?: boolean) => Promise<boolean>
   uploadFiles: (files: FileList | File[]) => Promise<void>
   uploadViaDialog: () => Promise<void>
   rename: (entry: FileBrowserEntry, newName: string) => Promise<void>
   remove: (entry: FileBrowserEntry) => Promise<void>
-  move: (entry: FileBrowserEntry, destFolder: string, newName?: string) => Promise<void>
+  move: (entry: FileBrowserEntry, destFolder: string, newName?: string) => Promise<boolean>
+}
+
+function normalizeFileBrowserConfig(config?: Partial<FileBrowserConfig> | null): FileBrowserConfig {
+  return {
+    downloadDir: config?.downloadDir ?? "",
+    showImageThumbnails: config?.showImageThumbnails === true,
+  }
 }
 
 // joinPath composes a folder + name into the path grclib expects for uploads.
@@ -77,7 +84,7 @@ export function useFileBrowser(service: RcService): UseFileBrowserResult {
   const [files, setFiles] = useState<FileBrowserEntry[]>([])
   const [currentFolder, setCurrentFolder] = useState("")
   const [messages, setMessages] = useState<string[]>([])
-  const [config, setConfig] = useState<FileBrowserConfig>({downloadDir: ""})
+  const [config, setConfig] = useState<FileBrowserConfig>(normalizeFileBrowserConfig())
   const [maxUpload, setMaxUpload] = useState(0)
   const [loading, setLoading] = useState(true)
   // loaded flips true once the first folder/file snapshot arrives, so the UI can
@@ -135,13 +142,15 @@ export function useFileBrowser(service: RcService): UseFileBrowserResult {
   )
 
   const download = useCallback(
-    async (entry: FileBrowserEntry, saveAs = false) => {
-      if (entry.isDirectory) return
+    async (entry: FileBrowserEntry, saveAs = false, notify = true) => {
+      if (entry.isDirectory) return false
       try {
         const saved = await service.downloadFile(entry.path, saveAs)
-        if (saved) toast.success(t("file.savedTo", {path: saved}))
+        if (saved && notify) toast.success(t("file.savedTo", {path: saved}))
+        return Boolean(saved)
       } catch (err) {
         toast.error(t("file.downloadFailed"), {description: String(err)})
+        return false
       }
     },
     [service, t],
@@ -224,8 +233,10 @@ export function useFileBrowser(service: RcService): UseFileBrowserResult {
         } else {
           await service.fileBrowserMove(destFolder, entry.path)
         }
+        return true
       } catch (err) {
         toast.error(t("file.moveFailed"), {description: String(err)})
+        return false
       }
     },
     [service, t],
@@ -235,7 +246,7 @@ export function useFileBrowser(service: RcService): UseFileBrowserResult {
     // Initial config + max upload size; then start the browser session.
     service
       .getFileBrowserConfig()
-      .then((c) => setConfig(c))
+      .then((c) => setConfig(normalizeFileBrowserConfig(c)))
       .catch(() => {})
     service
       .fileBrowserMaxUploadSize()
@@ -284,7 +295,7 @@ export function useFileBrowser(service: RcService): UseFileBrowserResult {
     // Downloads-folder changes broadcast raw (not on rc:evt).
     const offCfg = Events.On("rc:fbConfig", (e: {data: string}) => {
       try {
-        setConfig(JSON.parse(e.data) as FileBrowserConfig)
+        setConfig(normalizeFileBrowserConfig(JSON.parse(e.data) as FileBrowserConfig))
       } catch {
         // ignore
       }

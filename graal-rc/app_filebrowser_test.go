@@ -45,3 +45,47 @@ func TestCodingSettingsAcceptOnlySupportedTabSizes(t *testing.T) {
 		}
 	}
 }
+
+func TestExternalEditorSettingsAcceptOnlySupportedPresets(t *testing.T) {
+	if DefaultCodingSettings.ExternalEditor != externalEditorVSCode {
+		t.Fatalf("default external editor = %q, want %q", DefaultCodingSettings.ExternalEditor, externalEditorVSCode)
+	}
+	for _, editor := range []string{externalEditorVSCode, externalEditorSublime, externalEditorNotepadPlus} {
+		if !isSupportedExternalEditor(editor) {
+			t.Fatalf("external editor %q was rejected", editor)
+		}
+		if normalizeExternalEditor("  "+editor+"  ") != editor {
+			t.Fatalf("external editor %q was not normalized", editor)
+		}
+	}
+	for _, editor := range []string{"", "vim", "notepad", "vscode --wait"} {
+		if isSupportedExternalEditor(editor) {
+			t.Fatalf("unsupported external editor %q was accepted", editor)
+		}
+		if normalizeExternalEditor(editor) != externalEditorVSCode {
+			t.Fatalf("invalid external editor %q did not fall back to %q", editor, externalEditorVSCode)
+		}
+	}
+}
+
+func TestImageThumbnailMIMEAcceptsOnlySupportedImageExtensions(t *testing.T) {
+	for _, path := range []string{"preview.png", "folder/photo.JPG", "icon.webp", "favicon.ico"} {
+		if mimeType, ok := imageThumbnailMIME(path); !ok || mimeType == "" {
+			t.Fatalf("imageThumbnailMIME(%q) = %q, %v; want a supported MIME type", path, mimeType, ok)
+		}
+	}
+	for _, path := range []string{"notes.txt", "movie.mp4", "archive.zip", "folder/"} {
+		if mimeType, ok := imageThumbnailMIME(path); ok || mimeType != "" {
+			t.Fatalf("imageThumbnailMIME(%q) = %q, %v; want unsupported", path, mimeType, ok)
+		}
+	}
+}
+
+func TestFileBrowserImageThumbnailsAreDisabledByDefault(t *testing.T) {
+	if (FileBrowserConfig{}).ShowImageThumbnails {
+		t.Fatal("image thumbnails must be disabled by default")
+	}
+	if maxImageThumbnailBytes != 500*1024 {
+		t.Fatalf("thumbnail limit = %d bytes, want %d", maxImageThumbnailBytes, 500*1024)
+	}
+}

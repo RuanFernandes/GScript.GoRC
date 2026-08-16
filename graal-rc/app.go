@@ -143,8 +143,9 @@ type App struct {
 	languageMu sync.Mutex
 	language   string
 
-	fileBrowserCfgMu sync.Mutex
-	fileBrowserCfg   FileBrowserConfig
+	fileBrowserCfgMu     sync.Mutex
+	fileBrowserCfg       FileBrowserConfig
+	fileBrowserCfgLoaded bool
 
 	commandMacrosMu sync.Mutex
 
@@ -1789,6 +1790,66 @@ func (a *App) GetFileBrowserFiles() ([]rclib.FileBrowserEntry, error) {
 	return a.sessions.GetFileBrowserFiles()
 }
 
+const maxImageThumbnailBytes = 500 * 1024
+
+var imageThumbnailMIMETypes = map[string]string{
+	"png":  "image/png",
+	"jpg":  "image/jpeg",
+	"jpeg": "image/jpeg",
+	"gif":  "image/gif",
+	"webp": "image/webp",
+	"bmp":  "image/bmp",
+	"ico":  "image/x-icon",
+}
+
+func imageThumbnailMIME(remotePath string) (string, bool) {
+	mimeType, ok := imageThumbnailMIMETypes[extOf(remotePath)]
+	return mimeType, ok
+}
+
+// GetFileBrowserImageThumbnail returns a data URL for an eligible image in the
+// current remote folder. The server-side metadata check prevents the frontend
+// from turning this preview path into a general-purpose file downloader.
+func (a *App) GetFileBrowserImageThumbnail(remotePath string) (string, error) {
+	mimeType, ok := imageThumbnailMIME(remotePath)
+	if !ok {
+		return "", errors.New("unsupported image type for thumbnail")
+	}
+
+	entries, err := a.sessions.GetFileBrowserFiles()
+	if err != nil {
+		return "", err
+	}
+	normalizedPath := normalizeFileBrowserPath(remotePath)
+	fileSize := -1
+	for _, entry := range entries {
+		if normalizeFileBrowserPath(entry.Path) != normalizedPath {
+			continue
+		}
+		if entry.IsDirectory {
+			return "", errors.New("cannot create a thumbnail for a folder")
+		}
+		fileSize = entry.Size
+		break
+	}
+	if fileSize <= 0 {
+		return "", errors.New("image is not available for thumbnail")
+	}
+	if int64(fileSize) >= maxImageThumbnailBytes {
+		return "", errors.New("image is too large for a thumbnail")
+	}
+
+	content, err := a.sessions.DownloadFile(remotePath)
+	if err != nil {
+		return "", err
+	}
+	if len(content) == 0 || int64(len(content)) >= maxImageThumbnailBytes {
+		return "", errors.New("image is too large for a thumbnail")
+	}
+
+	return "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(content), nil
+}
+
 // FileBrowserMaxUploadSize returns the server's max upload size in bytes.
 func (a *App) FileBrowserMaxUploadSize() int64 { return a.sessions.MaxUploadFileSize() }
 
@@ -3166,14 +3227,39 @@ func (a *App) RefreshGraalScriptDocAPI() error {
 	return a.graalScriptLSP.RefreshDefinitions()
 }
 
-// CodingSettings are the Monaco editor appearance and indentation prefs,
-// persisted to a file so every editor window (its own webview) reads the same
-// values — localStorage is not reliably shared across Wails v3 windows.
+// CodingSettings are the Monaco editor appearance, indentation, and external
+// editor preferences, persisted to a file so every editor window (its own
+// webview) reads the same values — localStorage is not reliably shared across
+// Wails v3 windows.
 type CodingSettings struct {
-	Theme      string `json:"theme"`
-	FontFamily string `json:"fontFamily"`
-	FontSize   int    `json:"fontSize"`
-	TabSize    int    `json:"tabSize"`
+	Theme          string `json:"theme"`
+	FontFamily     string `json:"fontFamily"`
+	FontSize       int    `json:"fontSize"`
+	TabSize        int    `json:"tabSize"`
+	ExternalEditor string `json:"externalEditor"`
+}
+
+const (
+	externalEditorVSCode      = "vscode"
+	externalEditorSublime     = "sublime"
+	externalEditorNotepadPlus = "notepad++"
+)
+
+func isSupportedExternalEditor(editor string) bool {
+	switch strings.ToLower(strings.TrimSpace(editor)) {
+	case externalEditorVSCode, externalEditorSublime, externalEditorNotepadPlus:
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeExternalEditor(editor string) string {
+	editor = strings.ToLower(strings.TrimSpace(editor))
+	if isSupportedExternalEditor(editor) {
+		return editor
+	}
+	return externalEditorVSCode
 }
 
 // AppTheme contains the application surface colors. Monaco themes remain
@@ -3273,10 +3359,11 @@ func loadLanguage() string {
 
 // DefaultCodingSettings are the first-run defaults.
 var DefaultCodingSettings = CodingSettings{
-	Theme:      "vs-dark",
-	FontFamily: "Consolas, 'Courier New', monospace",
-	FontSize:   14,
-	TabSize:    2,
+	Theme:          "vs-dark",
+	FontFamily:     "Consolas, 'Courier New', monospace",
+	FontSize:       14,
+	TabSize:        2,
+	ExternalEditor: externalEditorVSCode,
 }
 
 // codingPath returns the coding-settings file location.
@@ -3314,6 +3401,7 @@ func (a *App) loadCodingSettingsLocked() CodingSettings {
 		if isSupportedTabSize(cs.TabSize) {
 			a.codingSettings.TabSize = cs.TabSize
 		}
+		a.codingSettings.ExternalEditor = normalizeExternalEditor(cs.ExternalEditor)
 	}
 	return a.codingSettings
 }
@@ -3339,10 +3427,38 @@ func (a *App) SetCodingSettings(theme, fontFamily string, fontSize, tabSize int)
 		return fmt.Errorf("unsupported tab size: %d", tabSize)
 	}
 	a.codingMu.Lock()
-	a.codingSettings = CodingSettings{Theme: theme, FontFamily: fontFamily, FontSize: fontSize, TabSize: tabSize}
-	cs := a.codingSettings
-	a.codingMu.Unlock()
+	defer a.codingMu.Unlock()
+	if a.codingSettings.Theme == "" {
+		a.loadCodingSettingsLocked()
+	}
+	a.codingSettings = CodingSettings{
+		Theme:          theme,
+		FontFamily:     fontFamily,
+		FontSize:       fontSize,
+		TabSize:        tabSize,
+		ExternalEditor: normalizeExternalEditor(a.codingSettings.ExternalEditor),
+	}
+	return a.persistCodingSettings(a.codingSettings)
+}
 
+// SetExternalEditor persists one of the supported editor presets and updates
+// every open Wails window through the existing coding-settings event.
+func (a *App) SetExternalEditor(editor string) error {
+	editor = strings.ToLower(strings.TrimSpace(editor))
+	if !isSupportedExternalEditor(editor) {
+		return fmt.Errorf("unsupported external editor: %s", editor)
+	}
+
+	a.codingMu.Lock()
+	defer a.codingMu.Unlock()
+	if a.codingSettings.Theme == "" {
+		a.loadCodingSettingsLocked()
+	}
+	a.codingSettings.ExternalEditor = editor
+	return a.persistCodingSettings(a.codingSettings)
+}
+
+func (a *App) persistCodingSettings(cs CodingSettings) error {
 	path, err := codingPath()
 	if err != nil {
 		return err
@@ -3566,11 +3682,12 @@ func (a *App) DeleteAppTheme(key string) error {
 	return nil
 }
 
-// FileBrowserConfig holds the file-browser preferences (the required downloads
-// folder), persisted to a file so every file-browser window reads the same
-// value — localStorage is not reliably shared across Wails v3 windows.
+// FileBrowserConfig holds the file-browser preferences, persisted to a file so
+// every file-browser window reads the same values — localStorage is not
+// reliably shared across Wails v3 windows.
 type FileBrowserConfig struct {
-	DownloadDir string `json:"downloadDir"`
+	DownloadDir         string `json:"downloadDir"`
+	ShowImageThumbnails bool   `json:"showImageThumbnails"`
 }
 
 // fileBrowserPath returns the file-browser config file location.
@@ -3586,6 +3703,7 @@ func fileBrowserPath() (string, error) {
 // must hold a.fileBrowserCfgMu.
 func (a *App) loadFileBrowserConfigLocked() FileBrowserConfig {
 	a.fileBrowserCfg = FileBrowserConfig{}
+	a.fileBrowserCfgLoaded = true
 	path, err := fileBrowserPath()
 	if err != nil {
 		return a.fileBrowserCfg
@@ -3605,7 +3723,7 @@ func (a *App) loadFileBrowserConfigLocked() FileBrowserConfig {
 func (a *App) GetFileBrowserConfig() FileBrowserConfig {
 	a.fileBrowserCfgMu.Lock()
 	defer a.fileBrowserCfgMu.Unlock()
-	if a.fileBrowserCfg.DownloadDir == "" {
+	if !a.fileBrowserCfgLoaded {
 		a.loadFileBrowserConfigLocked()
 	}
 	return a.fileBrowserCfg
@@ -3615,10 +3733,31 @@ func (a *App) GetFileBrowserConfig() FileBrowserConfig {
 // file-browser window updates live.
 func (a *App) SetFileBrowserConfig(downloadDir string) error {
 	a.fileBrowserCfgMu.Lock()
-	a.fileBrowserCfg = FileBrowserConfig{DownloadDir: downloadDir}
+	if !a.fileBrowserCfgLoaded {
+		a.loadFileBrowserConfigLocked()
+	}
+	a.fileBrowserCfg.DownloadDir = downloadDir
 	cfg := a.fileBrowserCfg
 	a.fileBrowserCfgMu.Unlock()
+	return a.persistFileBrowserConfig(cfg)
+}
 
+// SetFileBrowserImageThumbnails persists whether the File Browser may fetch
+// small image files for inline previews. The limit is enforced independently by
+// GetFileBrowserImageThumbnail, so this preference never enables large-file
+// downloads.
+func (a *App) SetFileBrowserImageThumbnails(enabled bool) error {
+	a.fileBrowserCfgMu.Lock()
+	if !a.fileBrowserCfgLoaded {
+		a.loadFileBrowserConfigLocked()
+	}
+	a.fileBrowserCfg.ShowImageThumbnails = enabled
+	cfg := a.fileBrowserCfg
+	a.fileBrowserCfgMu.Unlock()
+	return a.persistFileBrowserConfig(cfg)
+}
+
+func (a *App) persistFileBrowserConfig(cfg FileBrowserConfig) error {
 	path, err := fileBrowserPath()
 	if err != nil {
 		return err

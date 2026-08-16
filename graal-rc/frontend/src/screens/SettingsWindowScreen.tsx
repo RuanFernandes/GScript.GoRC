@@ -5,6 +5,7 @@
 import {useCallback, useEffect, useRef, useState} from "react"
 import {Events} from "@wailsio/runtime"
 import {BookOpen, Bot, Check, ChevronDown, Code2, FolderDown, Languages, MessageSquareText, Palette, Puzzle} from "lucide-react"
+import {toast} from "sonner"
 
 import {Button} from "@/components/ui/button"
 import {Input} from "@/components/ui/input"
@@ -59,6 +60,7 @@ export function SettingsWindowScreen() {
             fontFamily={coding.settings.fontFamily}
             fontSize={coding.settings.fontSize}
             tabSize={coding.settings.tabSize}
+            externalEditor={coding.settings.externalEditor}
             onChange={coding.update}
             onReset={coding.reset}
             t={t}
@@ -114,20 +116,26 @@ function PluginsSection({t}: {t: (key: string) => string}) {
 }
 
 // FilesSection configures the required downloads folder (without it, downloads
-// in the File Browser are disabled). Persists via the backend and stays in sync
-// across windows via the raw rc:fbConfig event.
+// in the File Browser are disabled) and optional small-image thumbnails.
+// Persists via the backend and stays in sync across windows via the raw
+// rc:fbConfig event.
 function FilesSection({t}: {t: (key: string) => string}) {
   const [dir, setDir] = useState("")
+  const [showImageThumbnails, setShowImageThumbnails] = useState(false)
 
   useEffect(() => {
     rcService
       .getFileBrowserConfig()
-      .then((c) => setDir(c.downloadDir ?? ""))
+      .then((c) => {
+        setDir(c.downloadDir ?? "")
+        setShowImageThumbnails(c.showImageThumbnails === true)
+      })
       .catch(() => {})
     const off = Events.On("rc:fbConfig", (e: {data: string}) => {
       try {
         const c = JSON.parse(e.data) as FileBrowserConfig
         setDir(c.downloadDir ?? "")
+        setShowImageThumbnails(c.showImageThumbnails === true)
       } catch {
         // ignore
       }
@@ -150,6 +158,15 @@ function FilesSection({t}: {t: (key: string) => string}) {
     setDir("")
   }
 
+  const toggleImageThumbnails = async (enabled: boolean) => {
+    try {
+      await rcService.setFileBrowserImageThumbnails(enabled)
+      setShowImageThumbnails(enabled)
+    } catch (err) {
+      toast.error(t("toast.saveFailed"), {description: String(err)})
+    }
+  }
+
   return (
     <div className="mx-auto grid max-w-3xl gap-5">
       <SectionHeading title={t("settings.files")} description={t("settings.filesDescription")} />
@@ -166,6 +183,25 @@ function FilesSection({t}: {t: (key: string) => string}) {
             <Button variant="ghost" onClick={clear} disabled={!dir}>{t("settings.clear")}</Button>
           </div>
         </div>
+      </div>
+      <div className="overflow-hidden rounded-lg border bg-card/40">
+        <div className="border-b px-4 py-3">
+          <p className="text-sm font-medium">{t("settings.imageThumbnails")}</p>
+          <p className="text-muted-foreground mt-1 text-xs">{t("settings.imageThumbnailsDescription")}</p>
+        </div>
+        <label htmlFor="image-thumbnails" className="flex cursor-pointer items-start gap-3 p-4">
+          <input
+            id="image-thumbnails"
+            type="checkbox"
+            checked={showImageThumbnails}
+            onChange={(e) => { void toggleImageThumbnails(e.target.checked) }}
+            className="mt-0.5 size-4 accent-primary"
+          />
+          <span className="grid gap-1">
+            <span className="text-sm font-medium">{t("settings.imageThumbnailsEnabled")}</span>
+            <span className="text-muted-foreground text-xs">{t("settings.imageThumbnailsLimit")}</span>
+          </span>
+        </label>
       </div>
     </div>
   )
@@ -184,6 +220,7 @@ function CodingSection({
   fontFamily,
   fontSize,
   tabSize,
+  externalEditor,
   onChange,
   onReset,
   t,
@@ -192,7 +229,8 @@ function CodingSection({
   fontFamily: string
   fontSize: number
   tabSize: number
-  onChange: (patch: {theme?: string; fontFamily?: string; fontSize?: number; tabSize?: number}) => void
+  externalEditor: string
+  onChange: (patch: {theme?: string; fontFamily?: string; fontSize?: number; tabSize?: number; externalEditor?: string}) => void
   onReset: () => void
   t: (key: string) => string
 }) {
@@ -321,6 +359,23 @@ function CodingSection({
             <option key={value} value={value}>{value}</option>
           ))}
         </select>
+      </div>
+
+      <div className="grid gap-2 sm:grid-cols-[140px_1fr] sm:items-start">
+        <Label htmlFor="external-editor" className="pt-2">{t("settings.externalEditor")}</Label>
+        <div className="grid gap-1.5">
+          <select
+            id="external-editor"
+            value={externalEditor}
+            onChange={(e) => onChange({externalEditor: e.target.value})}
+            className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-9 w-full rounded-md border px-3 py-1 text-sm shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-offset-2"
+          >
+            <option value="vscode">Visual Studio Code</option>
+            <option value="sublime">Sublime Text</option>
+            <option value="notepad++">Notepad++</option>
+          </select>
+          <p className="text-muted-foreground text-xs">{t("settings.externalEditorDescription")}</p>
+        </div>
       </div>
 
         </div>

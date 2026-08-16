@@ -236,6 +236,74 @@ export const BUILT_IN_APP_THEMES: EditableAppTheme[] = [
 ]
 
 export const DEFAULT_APP_THEME_KEY = "default-dark"
+export const APP_THEME_CACHE_KEY = "graal-rc:active-app-theme"
+export const APP_THEME_PENDING_CLASS = "theme-pending"
+
+function getAppThemeStorage(): Storage | null {
+  if (typeof window === "undefined") return null
+  try {
+    return window.localStorage
+  } catch {
+    return null
+  }
+}
+
+export function readCachedAppTheme(): EditableAppTheme | null {
+  const storage = getAppThemeStorage()
+  if (!storage) return null
+  let raw: string | null
+  try {
+    raw = storage.getItem(APP_THEME_CACHE_KEY)
+  } catch {
+    return null
+  }
+  if (!raw) return null
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<EditableAppTheme> | null
+    if (
+      !parsed ||
+      typeof parsed.key !== "string" ||
+      typeof parsed.name !== "string" ||
+      (parsed.mode !== "light" && parsed.mode !== "dark") ||
+      !parsed.colors ||
+      typeof parsed.colors !== "object"
+    ) {
+      return null
+    }
+    return normalizeAppTheme(parsed as EditableAppTheme)
+  } catch {
+    return null
+  }
+}
+
+export function cacheAppTheme(theme: EditableAppTheme): void {
+  const storage = getAppThemeStorage()
+  if (!storage) return
+  try {
+    storage.setItem(APP_THEME_CACHE_KEY, JSON.stringify(normalizeAppTheme(theme)))
+  } catch {
+    // Storage can be unavailable or full; the backend remains the source of truth.
+  }
+}
+
+export function getInitialAppThemeState(): {activeKey: string; themes: EditableAppTheme[]} {
+  const cached = readCachedAppTheme()
+  if (!cached) return {activeKey: DEFAULT_APP_THEME_KEY, themes: BUILT_IN_APP_THEMES}
+  const isBuiltIn = BUILT_IN_APP_THEMES.some((theme) => theme.key === cached.key)
+  return {
+    activeKey: cached.key,
+    themes: isBuiltIn ? BUILT_IN_APP_THEMES : [...BUILT_IN_APP_THEMES, cached],
+  }
+}
+
+export function bootstrapCachedAppTheme(): boolean {
+  const cached = readCachedAppTheme()
+  if (!cached) return false
+  applyAppTheme(cached)
+  if (typeof document !== "undefined") document.documentElement.classList.remove(APP_THEME_PENDING_CLASS)
+  return true
+}
 
 export function normalizeAppTheme(theme: AppTheme | EditableAppTheme): EditableAppTheme {
   const mode: AppThemeMode = theme.mode === "light" ? "light" : "dark"

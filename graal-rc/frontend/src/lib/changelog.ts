@@ -203,8 +203,19 @@ const CHANGELOG_PT_BR: ChangelogEntry[] = [
 
 const CHANGELOG_EN: ChangelogEntry[] = [
   {
+    version: "3.1.8", date: "2026-08-16", title: "File Browser workflow and themed startup",
+    summary: "Adds faster file handling, external editor integration and removes the custom-theme flash when opening RC windows.", current: true,
+    changes: [
+      "File Browser now shows the file count for the current folder and supports selecting multiple files for bulk downloads and moves.",
+      "Optional image thumbnails can be enabled in Settings; only images smaller than 500 KB are downloaded and displayed, while larger images are never fetched for previews.",
+      "Settings now supports VS Code, Sublime Text and Notepad++ as external editors, with an Open with external editor action in script context menus.",
+      "The folder pane in File Browser can be resized and its width can be reset with a double-click or keyboard controls.",
+      "New windows apply the active custom theme before showing their content, eliminating the brief default-theme flash during startup.",
+    ],
+  },
+  {
     version: "3.1.7", date: "2026-08-16", title: "Stronger macOS and Linux distribution",
-    summary: "Fixes cross-platform packaging, the macOS icon and the RC's dependency on an open terminal.", current: true,
+    summary: "Fixes cross-platform packaging, the macOS icon and the RC's dependency on an open terminal.", current: false,
     changes: [
       "The macOS build now ships an app bundle with the correct icns icon and version metadata; the x64 artifact runs natively on Intel Macs and through Rosetta 2 on Apple Silicon.",
       "The Linux AppImage now carries the GTK4/WebKitGTK6 runtime and native grclib.so; DEB/RPM packages also install the required library.",

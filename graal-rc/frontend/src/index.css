@@ -133,6 +133,13 @@
     overflow: hidden;
     font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   }
+  html.theme-pending,
+  html.theme-pending body {
+    background: #252525;
+  }
+  html.theme-pending #root {
+    visibility: hidden;
+  }
 }
 
 .server-picker-screen {

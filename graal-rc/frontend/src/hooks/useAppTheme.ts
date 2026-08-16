@@ -1,18 +1,18 @@
-import {useCallback, useEffect, useMemo, useState} from "react"
+import {useCallback, useEffect, useLayoutEffect, useMemo, useState} from "react"
 import {Events} from "@wailsio/runtime"
 
 import {rcService} from "@/services/rcService"
 import type {AppThemeStore} from "@/types"
 import {
   applyAppTheme,
-  BUILT_IN_APP_THEMES,
+  APP_THEME_PENDING_CLASS,
+  cacheAppTheme,
   DEFAULT_APP_THEME_KEY,
+  getInitialAppThemeState,
   mergeAppThemeStore,
   normalizeAppTheme,
   type EditableAppTheme,
 } from "@/lib/appThemes"
-
-const INITIAL_STATE = {activeKey: DEFAULT_APP_THEME_KEY, themes: BUILT_IN_APP_THEMES}
 
 export interface UseAppThemeResult {
   activeKey: string
@@ -26,7 +26,7 @@ export interface UseAppThemeResult {
 }
 
 export function useAppTheme(): UseAppThemeResult {
-  const [state, setState] = useState(INITIAL_STATE)
+  const [state, setState] = useState(getInitialAppThemeState)
   const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
@@ -57,9 +57,12 @@ export function useAppTheme(): UseAppThemeResult {
     [state.activeKey, state.themes],
   )
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     applyAppTheme(activeTheme)
-  }, [activeTheme])
+    if (!loaded) return
+    cacheAppTheme(activeTheme)
+    if (typeof document !== "undefined") document.documentElement.classList.remove(APP_THEME_PENDING_CLASS)
+  }, [activeTheme, loaded])
 
   const select = useCallback(async (key: string) => {
     if (!state.themes.some((theme) => theme.key === key)) return

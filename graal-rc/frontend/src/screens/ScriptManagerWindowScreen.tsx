@@ -6,7 +6,7 @@
 import {useEffect, useMemo, useRef, useState, type RefObject} from "react"
 import {toast} from "sonner"
 import {Events} from "@wailsio/runtime"
-import {CircleAlert, CircleCheck, CircleOff, Flag, FolderOpen, LocateFixed, Loader2, RotateCcw, UserRound} from "lucide-react"
+import {CircleAlert, CircleCheck, CircleOff, Code2, Flag, FolderOpen, LocateFixed, Loader2, RotateCcw, UserRound} from "lucide-react"
 
 import {ContextMenu} from "@/components/ContextMenu"
 import {Button} from "@/components/ui/button"
@@ -238,6 +238,22 @@ async function openLocalScriptOrFail(
   }
 }
 
+async function openLocalScriptExternallyOrFail(
+  kind: ScriptKind,
+  name: string,
+  t: (key: string, vars?: Record<string, string | number>) => string,
+) {
+  try {
+    await rcService.openLocalScriptInExternalEditor(kind, name)
+  } catch (err) {
+    const message = String(err)
+    const description = /not installed|not available on PATH/i.test(message)
+      ? t("scripts.externalEditorNotInstalled")
+      : message
+    toast.error(t("scripts.openExternalFailed"), {description})
+  }
+}
+
 // WeaponClassTab handles weapon and class lists (both name-keyed; weapons add an
 // Image column). Add takes a single name; delete takes the selected name.
 function WeaponClassTab({
@@ -433,6 +449,9 @@ function WeaponClassTab({
           items={[{
             label: t("scripts.openLocalFile"),
             onSelect: () => { void openLocalScriptOrFail(kind, scriptMenu.name, t) },
+          }, {
+            label: t("scripts.openExternalEditor"),
+            onSelect: () => { void openLocalScriptExternallyOrFail(kind, scriptMenu.name, t) },
           }]}
           onClose={() => setScriptMenu(null)}
         />
@@ -684,6 +703,9 @@ function NPCTab({
           </div>
           <button type="button" className="hover:bg-accent flex w-full items-center gap-2 px-3 py-2 text-left" onClick={() => { const npc = npcMenu.npc; setNpcMenu(null); void openLocalScriptOrFail("npc", npc.name, t) }}>
             <FolderOpen className="size-4" />{t("scripts.openLocalFile")}
+          </button>
+          <button type="button" className="hover:bg-accent flex w-full items-center gap-2 px-3 py-2 text-left" onClick={() => { const npc = npcMenu.npc; setNpcMenu(null); void openLocalScriptExternallyOrFail("npc", npc.name, t) }}>
+            <Code2 className="size-4" />{t("scripts.openExternalEditor")}
           </button>
           <button type="button" className="hover:bg-accent flex w-full items-center gap-2 px-3 py-2 text-left" onClick={() => { void doReset(npcMenu.npc.id); setNpcMenu(null) }}>
             <RotateCcw className="size-4" />{t("scripts.reset")}

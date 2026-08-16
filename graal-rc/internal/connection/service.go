@@ -2540,14 +2540,15 @@ func runScriptFetchJobs(ctx context.Context, jobs []scriptFetchJob, workerCount 
 		}()
 	}
 
+sendJobs:
 	for _, j := range jobs {
 		select {
 		case <-ctx.Done():
-			break
+			break sendJobs
 		case jobCh <- j:
 		}
 		if ctx.Err() != nil {
-			break
+			break sendJobs
 		}
 	}
 	close(jobCh)

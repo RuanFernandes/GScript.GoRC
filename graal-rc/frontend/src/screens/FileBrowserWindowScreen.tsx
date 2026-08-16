@@ -87,6 +87,25 @@ function trimFolder(folder: string): string {
   return folder.replace(/\/+$/, "")
 }
 
+const DEFAULT_FOLDER_PANE_WIDTH = 240
+const MIN_FOLDER_PANE_WIDTH = 180
+const MAX_FOLDER_PANE_WIDTH = 480
+const MIN_FILE_PANE_WIDTH = 240
+const IMAGE_THUMBNAIL_LIMIT_BYTES = 500 * 1024
+const THUMBNAIL_IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico"])
+
+function maxFolderPaneWidth(): number {
+  return Math.max(
+    MIN_FOLDER_PANE_WIDTH,
+    Math.min(MAX_FOLDER_PANE_WIDTH, window.innerWidth - MIN_FILE_PANE_WIDTH),
+  )
+}
+
+function isThumbnailImage(path: string): boolean {
+  const dot = path.lastIndexOf(".")
+  return dot >= 0 && THUMBNAIL_IMAGE_EXTENSIONS.has(path.slice(dot + 1).toLowerCase())
+}
+
 // TreeNode is one node of the recursive folder tree, built from the flat
 // pattern list the server returns at start.
 interface TreeNode {
@@ -155,6 +174,10 @@ export function FileBrowserWindowScreen() {
   const [dragging, setDragging] = useState(false)
   const [query, setQuery] = useState("")
   const [folderQuery, setFolderQuery] = useState("")
+  const [folderPaneWidth, setFolderPaneWidth] = useState(DEFAULT_FOLDER_PANE_WIDTH)
+  const [resizingFolderPane, setResizingFolderPane] = useState(false)
+  const folderResizeRef = useRef<{startX: number; startWidth: number} | null>(null)
+  const [imageThumbnails, setImageThumbnails] = useState<Record<string, string>>({})
 
   // Expanded node paths (by cleaned path). Start collapsed so opening the
   // Files window does not expand the entire folder tree.
@@ -164,12 +187,14 @@ export function FileBrowserWindowScreen() {
   const [renameTarget, setRenameTarget] = useState<FileBrowserEntry | null>(null)
   const [renameValue, setRenameValue] = useState("")
   const [deleteTarget, setDeleteTarget] = useState<FileBrowserEntry | null>(null)
-  const [moveTarget, setMoveTarget] = useState<FileBrowserEntry | null>(null)
+  const [moveTargets, setMoveTargets] = useState<FileBrowserEntry[]>([])
   const [moveDest, setMoveDest] = useState("")
   const [moveName, setMoveName] = useState("")
+  const [bulkBusy, setBulkBusy] = useState(false)
 
   // Selected file (single-click highlight) + right-click context menu target.
   const [selected, setSelected] = useState<string | null>(null)
+  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(() => new Set())
   const [ctx, setCtx] = useState<{x: number; y: number; entry: FileBrowserEntry} | null>(null)
 
   const tree = useMemo(() => buildTree(fb.folders), [fb.folders])
@@ -223,7 +248,104 @@ export function FileBrowserWindowScreen() {
     return fb.files.filter((f) => basename(f.path).toLowerCase().includes(q))
   }, [fb.files, query])
 
+  const selectableFiles = useMemo(() => filteredFiles.filter((entry) => !entry.isDirectory), [filteredFiles])
+  const selectedFileEntries = useMemo(
+    () => fb.files.filter((entry) => !entry.isDirectory && selectedPaths.has(entry.path)),
+    [fb.files, selectedPaths],
+  )
+  const fileCount = useMemo(() => fb.files.filter((entry) => !entry.isDirectory).length, [fb.files])
+  const allVisibleSelected = selectableFiles.length > 0 && selectableFiles.every((entry) => selectedPaths.has(entry.path))
+  const someVisibleSelected = selectableFiles.some((entry) => selectedPaths.has(entry.path))
+
+  useEffect(() => {
+    setSelectedPaths((previous) => {
+      const available = new Set(fb.files.filter((entry) => !entry.isDirectory).map((entry) => entry.path))
+      const next = new Set([...previous].filter((path) => available.has(path)))
+      return next.size === previous.size ? previous : next
+    })
+  }, [fb.files])
+
+  useEffect(() => {
+    setSelected(null)
+    setSelectedPaths(new Set())
+  }, [fb.currentFolder])
+
+  const thumbnailCandidates = useMemo(() => {
+    if (!fb.config.showImageThumbnails) return []
+    return fb.files.filter((entry) =>
+      !entry.isDirectory && entry.size > 0 && entry.size < IMAGE_THUMBNAIL_LIMIT_BYTES && isThumbnailImage(entry.path),
+    )
+  }, [fb.config.showImageThumbnails, fb.files])
+
+  useEffect(() => {
+    let cancelled = false
+    setImageThumbnails({})
+    if (!fb.config.showImageThumbnails || thumbnailCandidates.length === 0) return
+
+    const pending = [...thumbnailCandidates]
+    const loaded: Record<string, string> = {}
+    const worker = async () => {
+      while (!cancelled) {
+        const entry = pending.shift()
+        if (!entry) return
+        try {
+          const dataUrl = await rcService.getFileBrowserImageThumbnail(entry.path)
+          if (dataUrl) loaded[entry.path] = dataUrl
+        } catch {
+          // A thumbnail is optional. Keep the normal file icon when it cannot be fetched.
+        }
+      }
+    }
+    const workerCount = Math.min(4, pending.length)
+    void Promise.all(Array.from({length: workerCount}, () => worker())).then(() => {
+      if (!cancelled) setImageThumbnails(loaded)
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [fb.config.showImageThumbnails, thumbnailCandidates])
+
   const currentClean = trimFolder(fb.currentFolder)
+  const folderPaneMax = maxFolderPaneWidth()
+  const visibleFolderPaneWidth = Math.min(folderPaneMax, Math.max(MIN_FOLDER_PANE_WIDTH, folderPaneWidth))
+
+  const startFolderPaneResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return
+    event.preventDefault()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    folderResizeRef.current = {startX: event.clientX, startWidth: visibleFolderPaneWidth}
+    setResizingFolderPane(true)
+  }
+
+  const updateFolderPaneResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    const start = folderResizeRef.current
+    if (!start) return
+    const next = start.startWidth + event.clientX - start.startX
+    setFolderPaneWidth(Math.min(maxFolderPaneWidth(), Math.max(MIN_FOLDER_PANE_WIDTH, next)))
+  }
+
+  const stopFolderPaneResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!folderResizeRef.current) return
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    folderResizeRef.current = null
+    setResizingFolderPane(false)
+  }
+
+  const handleFolderPaneResizeKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const maxWidth = maxFolderPaneWidth()
+    const step = event.shiftKey ? 48 : 16
+    let next: number | null = null
+    if (event.key === "ArrowLeft") next = visibleFolderPaneWidth - step
+    if (event.key === "ArrowRight") next = visibleFolderPaneWidth + step
+    if (event.key === "Home") next = MIN_FOLDER_PANE_WIDTH
+    if (event.key === "End") next = maxWidth
+    if (next === null) return
+    event.preventDefault()
+    setFolderPaneWidth(Math.min(maxWidth, Math.max(MIN_FOLDER_PANE_WIDTH, next)))
+  }
 
   const toggle = (path: string) =>
     setExpanded((prev) => {
@@ -232,6 +354,29 @@ export function FileBrowserWindowScreen() {
       else next.add(path)
       return next
     })
+
+  const toggleFileSelection = (path: string) => {
+    setSelectedPaths((previous) => {
+      const next = new Set(previous)
+      if (next.has(path)) next.delete(path)
+      else next.add(path)
+      return next
+    })
+    setSelected(path)
+  }
+
+  const toggleAllVisibleFiles = (checked: boolean) => {
+    setSelectedPaths((previous) => {
+      const next = new Set(previous)
+      for (const entry of selectableFiles) {
+        if (checked) next.add(entry.path)
+        else next.delete(entry.path)
+      }
+      return next
+    })
+  }
+
+  const clearSelection = () => setSelectedPaths(new Set())
 
   // cdPath navigates a folder node: cleaned path + trailing slash (matches the
   // reference onFolderSelected, which appends "/" before rc_filebrowser_cd).
@@ -277,18 +422,68 @@ export function FileBrowserWindowScreen() {
   }
 
   const openMove = (entry: FileBrowserEntry) => {
-    setMoveTarget(entry)
+    setMoveTargets([entry])
     setMoveDest(destFolders[0]?.path ?? "")
     setMoveName(basename(entry.path))
   }
 
+  const openBulkMove = () => {
+    if (selectedFileEntries.length === 0) return
+    setMoveTargets(selectedFileEntries)
+    setMoveDest(destFolders[0]?.path ?? "")
+    setMoveName("")
+  }
+
+  const downloadSelected = async () => {
+    if (!hasDownloadDir || selectedFileEntries.length === 0 || bulkBusy) return
+    const targets = [...selectedFileEntries]
+    const succeeded = new Set<string>()
+    setBulkBusy(true)
+    try {
+      for (const entry of targets) {
+        if (await fb.download(entry, false, false)) succeeded.add(entry.path)
+      }
+    } finally {
+      setBulkBusy(false)
+    }
+    if (succeeded.size > 0) {
+      toast.success(t("file.downloadedCount", {count: succeeded.size}))
+      setSelectedPaths((previous) => {
+        const next = new Set(previous)
+        succeeded.forEach((path) => next.delete(path))
+        return next
+      })
+    }
+  }
+
   const doMove = async () => {
-    const target = moveTarget
+    const targets = moveTargets
     const dest = moveDest
     const name = moveName.trim()
-    if (!target || !dest) return
-    setMoveTarget(null)
-    await fb.move(target, dest, name)
+    if (targets.length === 0 || !dest || !moveValid || bulkBusy) return
+    setMoveTargets([])
+    if (targets.length === 1) {
+      await fb.move(targets[0], dest, name)
+      return
+    }
+
+    const succeeded = new Set<string>()
+    setBulkBusy(true)
+    try {
+      for (const entry of targets) {
+        if (await fb.move(entry, dest)) succeeded.add(entry.path)
+      }
+    } finally {
+      setBulkBusy(false)
+    }
+    if (succeeded.size > 0) {
+      toast.success(t("file.movedCount", {count: succeeded.size}))
+      setSelectedPaths((previous) => {
+        const next = new Set(previous)
+        succeeded.forEach((path) => next.delete(path))
+        return next
+      })
+    }
   }
 
   // Rights validation for the move dialog: a file name must match at least one
@@ -296,7 +491,12 @@ export function FileBrowserWindowScreen() {
   const moveSelected = destFolders.find((d) => d.path === moveDest)
   const moveGlobs = moveSelected?.globs ?? []
   const nameOk = moveGlobs.length === 0 || moveGlobs.some((g) => globMatch(moveName, g))
-  const moveValid = !!moveDest && moveName.trim().length > 0 && nameOk
+  const bulkNamesOk = moveTargets.every((entry) => moveGlobs.length === 0 || moveGlobs.some((g) => globMatch(basename(entry.path), g)))
+  const moveValid = !!moveDest && moveTargets.length > 0 && (
+    moveTargets.length > 1
+      ? bulkNamesOk
+      : moveName.trim().length > 0 && nameOk
+  )
 
   const doDelete = async () => {
     const target = deleteTarget
@@ -368,6 +568,9 @@ export function FileBrowserWindowScreen() {
           <Home />
         </Button>
         <Breadcrumb path={fb.currentFolder} onNavigate={fb.cd} />
+        <Badge variant="secondary" className="shrink-0 text-[11px]">
+          {t(fileCount === 1 ? "file.fileCountOne" : "file.fileCountMany", {count: fileCount})}
+        </Badge>
         <div className="ml-auto flex items-center gap-2">
           {fb.maxUpload > 0 && (
             <span className="text-muted-foreground hidden text-xs sm:inline">
@@ -408,7 +611,10 @@ export function FileBrowserWindowScreen() {
 
       {/* Main: folder tree | files */}
       <div className="flex min-h-0 flex-1">
-        <aside className="flex w-60 min-h-0 shrink-0 flex-col border-r">
+        <aside
+          className="flex min-h-0 shrink-0 flex-col"
+          style={{width: visibleFolderPaneWidth, flexBasis: visibleFolderPaneWidth}}
+        >
           <div className="border-b p-1.5">
             <div className="relative">
               <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2" />
@@ -475,6 +681,32 @@ export function FileBrowserWindowScreen() {
           </ScrollArea>
         </aside>
 
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label={t("file.resizeFolderPane")}
+          aria-valuemin={MIN_FOLDER_PANE_WIDTH}
+          aria-valuemax={folderPaneMax}
+          aria-valuenow={Math.round(visibleFolderPaneWidth)}
+          tabIndex={0}
+          className={`group relative z-10 w-2 shrink-0 cursor-col-resize touch-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset ${
+            resizingFolderPane ? "bg-primary/10" : ""
+          }`}
+          onPointerDown={startFolderPaneResize}
+          onPointerMove={updateFolderPaneResize}
+          onPointerUp={stopFolderPaneResize}
+          onPointerCancel={stopFolderPaneResize}
+          onDoubleClick={() => setFolderPaneWidth(DEFAULT_FOLDER_PANE_WIDTH)}
+          onKeyDown={handleFolderPaneResizeKeyDown}
+        >
+          <span
+            aria-hidden="true"
+            className={`absolute inset-y-0 left-1/2 w-px -translate-x-1/2 transition-colors ${
+              resizingFolderPane ? "bg-primary" : "bg-border group-hover:bg-primary/60"
+            }`}
+          />
+        </div>
+
         <section
           className="relative min-w-0 flex-1"
           onDragOver={(e) => {
@@ -486,10 +718,42 @@ export function FileBrowserWindowScreen() {
           }}
           onDrop={onDrop}
         >
+          {selectedFileEntries.length > 0 && (
+            <div className="bg-accent/30 flex flex-wrap items-center gap-2 border-b px-3 py-2">
+              <span className="text-xs font-medium">{t("file.selectedCount", {count: selectedFileEntries.length})}</span>
+              <div className="ml-auto flex flex-wrap items-center gap-1.5">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={!hasDownloadDir || bulkBusy}
+                  onClick={() => { void downloadSelected() }}
+                >
+                  <HardDriveDownload />{t("file.downloadSelected")}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={bulkBusy}
+                  onClick={openBulkMove}
+                >
+                  <FolderOpen />{t("file.moveSelected")}
+                </Button>
+                <Button variant="ghost" size="sm" disabled={bulkBusy} onClick={clearSelection}>
+                  {t("file.clearSelection")}
+                </Button>
+              </div>
+            </div>
+          )}
           <FileTable
             files={filteredFiles}
             loaded={fb.loaded}
             selected={selected}
+            thumbnails={imageThumbnails}
+            selectedPaths={selectedPaths}
+            allVisibleSelected={allVisibleSelected}
+            someVisibleSelected={someVisibleSelected}
+            onToggleSelect={toggleFileSelection}
+            onToggleAll={toggleAllVisibleFiles}
             onSelect={(path) => setSelected(path)}
             onContextMenu={(entry, x, y) => setCtx({x, y, entry})}
             onOpen={openFile}
@@ -551,11 +815,17 @@ export function FileBrowserWindowScreen() {
       </AlertDialog>
 
       {/* Move dialog */}
-      <AlertDialog open={moveTarget !== null} onOpenChange={(v) => !v && setMoveTarget(null)}>
+      <AlertDialog open={moveTargets.length > 0} onOpenChange={(v) => !v && setMoveTargets([])}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>{t("file.moveTitle", {name: moveTarget ? basename(moveTarget.path) : ""})}</AlertDialogTitle>
-            <AlertDialogDescription>{t("file.moveDescription")}</AlertDialogDescription>
+            <AlertDialogTitle>
+              {moveTargets.length > 1
+                ? t("file.moveSelectedTitle", {count: moveTargets.length})
+                : t("file.moveTitle", {name: moveTargets[0] ? basename(moveTargets[0].path) : ""})}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {moveTargets.length > 1 ? t("file.moveSelectedDescription") : t("file.moveDescription")}
+            </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="grid gap-2">
             <Label htmlFor="move-dest">{t("file.destination")}</Label>
@@ -564,23 +834,32 @@ export function FileBrowserWindowScreen() {
               options={destFolders.map((d) => d.path)}
               onChange={setMoveDest}
             />
-            <Label htmlFor="move-name">{t("file.destinationName")}</Label>
-            <Input
-              id="move-name"
-              value={moveName}
-              onChange={(e) => setMoveName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && moveValid) doMove()
-              }}
-            />
+            {moveTargets.length === 1 && (
+              <>
+                <Label htmlFor="move-name">{t("file.destinationName")}</Label>
+                <Input
+                  id="move-name"
+                  value={moveName}
+                  onChange={(e) => setMoveName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && moveValid) doMove()
+                  }}
+                />
+              </>
+            )}
             {moveGlobs.length > 0 && (
               <p className="text-xs text-muted-foreground">
                 {t("file.writeRights", {globs: moveGlobs.join(", ")})}
               </p>
             )}
-            {!nameOk && moveName.trim().length > 0 && (
+            {moveTargets.length === 1 && !nameOk && moveName.trim().length > 0 && (
               <p className="text-xs text-destructive">
                 {t("file.invalidName")}
+              </p>
+            )}
+            {moveTargets.length > 1 && !bulkNamesOk && (
+              <p className="text-xs text-destructive">
+                {t("file.invalidSelectedNames")}
               </p>
             )}
           </div>
@@ -865,6 +1144,12 @@ function FileTable({
   files,
   loaded,
   selected,
+  thumbnails,
+  selectedPaths,
+  allVisibleSelected,
+  someVisibleSelected,
+  onToggleSelect,
+  onToggleAll,
   onSelect,
   onContextMenu,
   onOpen,
@@ -872,6 +1157,12 @@ function FileTable({
   files: FileBrowserEntry[]
   loaded?: boolean
   selected: string | null
+  thumbnails: Record<string, string>
+  selectedPaths: Set<string>
+  allVisibleSelected: boolean
+  someVisibleSelected: boolean
+  onToggleSelect: (path: string) => void
+  onToggleAll: (checked: boolean) => void
   onSelect: (path: string) => void
   onContextMenu: (entry: FileBrowserEntry, x: number, y: number) => void
   onOpen: (entry: FileBrowserEntry) => void
@@ -879,6 +1170,11 @@ function FileTable({
   const {t} = useLanguage()
   const [widths, setWidths] = useState({...DEFAULT_WIDTHS})
   const [sort, setSort] = useState<{key: SortKey; dir: SortDir}>({key: "name", dir: "asc"})
+  const selectAllRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (selectAllRef.current) selectAllRef.current.indeterminate = someVisibleSelected && !allVisibleSelected
+  }, [allVisibleSelected, someVisibleSelected])
 
   const sorted = useMemo(() => {
     const dir = sort.dir === "asc" ? 1 : -1
@@ -969,7 +1265,25 @@ function FileTable({
         </colgroup>
         <thead className="bg-muted/40 sticky top-0">
           <tr className="text-muted-foreground select-none text-xs">
-            <Th label={t("file.name")} active={sort.key === "name"} onClick={() => toggleSort("name")} icon={<SortIcon k="name" />} onResize={(e) => startResize("name", e)} />
+            <Th
+              label={t("file.name")}
+              active={sort.key === "name"}
+              onClick={() => toggleSort("name")}
+              icon={<SortIcon k="name" />}
+              onResize={(e) => startResize("name", e)}
+              leading={
+                <input
+                  ref={selectAllRef}
+                  type="checkbox"
+                  checked={allVisibleSelected}
+                  onChange={(e) => onToggleAll(e.target.checked)}
+                  onClick={(e) => e.stopPropagation()}
+                  aria-label={t("file.selectAllFiles")}
+                  disabled={!files.some((entry) => !entry.isDirectory)}
+                  className="size-3.5 accent-primary"
+                />
+              }
+            />
             <Th label={t("file.size")} align="right" active={sort.key === "size"} onClick={() => toggleSort("size")} icon={<SortIcon k="size" />} onResize={(e) => startResize("size", e)} />
             <Th label={t("file.modified")} active={sort.key === "modified"} onClick={() => toggleSort("modified")} icon={<SortIcon k="modified" />} onResize={(e) => startResize("modified", e)} />
             <Th label={t("file.rights")} align="right" active={sort.key === "rights"} onClick={() => toggleSort("rights")} icon={<SortIcon k="rights" />} onResize={(e) => startResize("rights", e)} />
@@ -991,7 +1305,25 @@ function FileTable({
             >
               <td className="overflow-hidden px-3 py-1.5">
                 <div className="flex min-w-0 items-center gap-2 text-left" title={basename(entry.path)}>
-                  {entry.isDirectory ? (
+                  {!entry.isDirectory && (
+                    <input
+                      type="checkbox"
+                      checked={selectedPaths.has(entry.path)}
+                      onChange={() => onToggleSelect(entry.path)}
+                      onClick={(e) => e.stopPropagation()}
+                      aria-label={t("file.selectFile", {name: basename(entry.path)})}
+                      className="size-3.5 shrink-0 accent-primary"
+                    />
+                  )}
+                  {thumbnails[entry.path] ? (
+                    <img
+                      src={thumbnails[entry.path]}
+                      alt=""
+                      loading="lazy"
+                      decoding="async"
+                      className="border-border/60 size-8 shrink-0 rounded border object-cover"
+                    />
+                  ) : entry.isDirectory ? (
                     <Folder className="h-4 w-4 shrink-0 text-sky-400" />
                   ) : (
                     <HardDriveDownload className="text-muted-foreground h-4 w-4 shrink-0" />
@@ -1029,6 +1361,7 @@ function Th({
   onClick,
   icon,
   onResize,
+  leading,
 }: {
   label: string
   align?: "left" | "right"
@@ -1036,23 +1369,27 @@ function Th({
   onClick?: () => void
   icon?: React.ReactNode
   onResize?: (e: React.MouseEvent) => void
+  leading?: React.ReactNode
 }) {
   return (
     <th className="relative px-3 py-2 font-medium">
-      {onClick ? (
-        <button
-          className={`flex w-full items-center gap-1 hover:text-foreground ${align === "right" ? "justify-end" : ""} ${
-            active ? "text-foreground" : ""
-          }`}
-          onClick={onClick}
-        >
-          {align === "right" && icon}
-          <span>{label}</span>
-          {align === "left" && icon}
-        </button>
-      ) : (
-        <div className={align === "right" ? "text-right" : ""}>{label}</div>
-      )}
+      <div className={`flex items-center gap-1 ${align === "right" ? "justify-end" : ""}`}>
+        {leading}
+        {onClick ? (
+          <button
+            className={`flex min-w-0 flex-1 items-center gap-1 hover:text-foreground ${align === "right" ? "justify-end" : ""} ${
+              active ? "text-foreground" : ""
+            }`}
+            onClick={onClick}
+          >
+            {align === "right" && icon}
+            <span>{label}</span>
+            {align === "left" && icon}
+          </button>
+        ) : (
+          <div className={align === "right" ? "text-right" : ""}>{label}</div>
+        )}
+      </div>
       {onResize && (
         <span
           className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize hover:bg-primary/40"

@@ -148,6 +148,7 @@ export interface RcService {
   listFonts(): Promise<string[] | null>
   getCodingSettings(): Promise<CodingSettings>
   setCodingSettings(theme: string, fontFamily: string, fontSize: number, tabSize: number): Promise<void>
+  setExternalEditor(editor: string): Promise<void>
   getAppThemeStore(): Promise<AppThemeStore | null>
   saveAppTheme(theme: AppTheme): Promise<void>
   deleteAppTheme(key: string): Promise<void>
@@ -217,16 +218,19 @@ export interface RcService {
   fileBrowserMove(destFolder: string, filePath: string): Promise<void>
   getFileBrowserFolders(): Promise<FileBrowserFolder[] | null>
   getFileBrowserFiles(): Promise<FileBrowserEntry[] | null>
+  getFileBrowserImageThumbnail(path: string): Promise<string>
   fileBrowserMaxUploadSize(): Promise<number>
   downloadFile(path: string, saveAs: boolean): Promise<string>
   uploadFileViaDialog(): Promise<void>
   uploadFileBytes(path: string, b64: string): Promise<void>
   getFileBrowserConfig(): Promise<FileBrowserConfig>
   setFileBrowserConfig(downloadDir: string): Promise<void>
+  setFileBrowserImageThumbnails(enabled: boolean): Promise<void>
   // Type-aware file open (double-click).
   openRemoteFile(path: string): Promise<string>
   openRemoteFileAsText(path: string): Promise<void>
   openLocalScriptInFileBrowser(kind: string, name: string): Promise<void>
+  openLocalScriptInExternalEditor(kind: string, name: string): Promise<void>
   getTextFile(path: string): Promise<string>
   saveTextFile(path: string, content: string): Promise<void>
   // SQLite explorer.
@@ -368,6 +372,7 @@ export const rcService: RcService = {
   listFonts: () => App.ListFonts(),
   getCodingSettings: () => App.GetCodingSettings(),
   setCodingSettings: (theme, fontFamily, fontSize, tabSize) => App.SetCodingSettings(theme, fontFamily, fontSize, tabSize),
+  setExternalEditor: (editor) => App.SetExternalEditor(editor),
   getAppThemeStore: () => App.GetAppThemeStore(),
   saveAppTheme: (theme) => App.SaveAppTheme(theme),
   deleteAppTheme: (key) => App.DeleteAppTheme(key),
@@ -538,16 +543,19 @@ export const rcService: RcService = {
   fileBrowserMove: (destFolder, filePath) => App.FileBrowserMove(destFolder, filePath),
   getFileBrowserFolders: () => App.GetFileBrowserFolders(),
   getFileBrowserFiles: () => App.GetFileBrowserFiles(),
+  getFileBrowserImageThumbnail: (path) => App.GetFileBrowserImageThumbnail(path),
   fileBrowserMaxUploadSize: () => App.FileBrowserMaxUploadSize(),
   downloadFile: (path, saveAs) => App.DownloadFile(path, saveAs),
   uploadFileViaDialog: () => App.UploadFileViaDialog(),
   uploadFileBytes: (path, b64) => App.UploadFileBytes(path, b64),
   getFileBrowserConfig: () => App.GetFileBrowserConfig(),
   setFileBrowserConfig: (downloadDir) => App.SetFileBrowserConfig(downloadDir),
+  setFileBrowserImageThumbnails: (enabled) => App.SetFileBrowserImageThumbnails(enabled),
   // Type-aware file open (double-click).
   openRemoteFile: (path) => App.OpenRemoteFile(path),
   openRemoteFileAsText: (path) => App.OpenRemoteFileAsText(path),
   openLocalScriptInFileBrowser: (kind, name) => App.OpenLocalScriptInFileBrowser(kind, name),
+  openLocalScriptInExternalEditor: (kind, name) => App.OpenLocalScriptInExternalEditor(kind, name),
   getTextFile: (path) => App.GetTextFile(path),
   saveTextFile: (path, content) => App.SaveTextFile(path, content),
   // SQLite explorer.
