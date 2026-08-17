@@ -16,6 +16,7 @@ func (a *App) closeSessionWindows() {
 	if a == nil {
 		return
 	}
+	a.clearExternalFileSessions()
 
 	a.sessionWindowsMu.Lock()
 	defer a.sessionWindowsMu.Unlock()

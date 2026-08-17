@@ -11,6 +11,19 @@ export interface ChangelogEntry {
 // the visible history from nullborne.com when the release service is reachable.
 const CHANGELOG_PT_BR: ChangelogEntry[] = [
   {
+    version: "3.2.0",
+    date: "17/08/2026",
+    title: "Cross-platform File Browser and external editing",
+    summary: "Completes the File Browser workflow, adds native .nw/.gmap editing and makes GraalScript highlighting follow RC themes.",
+    current: true,
+    changes: [
+      "Double-clicking a .nw or .gmap file downloads it to the configured folder, opens it with the operating system's default application and uploads local edits when the server grants write access.",
+      "Thumbnail previews are serialized through the native File Browser transfer channel, keep preview protocol messages out of the visible log and never fetch images at or above 500 KB.",
+      "GraalScript theme definitions now cover the full set of RC themes, while Script Manager refreshes coalesce concurrent cache events into a single native request.",
+      "External file sessions are detached safely when the RC disconnects, logs out or switches servers, preventing edits from being sent to the wrong session.",
+    ],
+  },
+  {
     version: "3.1.7",
     date: "16/08/2026",
     title: "Distribuição macOS e Linux reforçada",
@@ -203,8 +216,18 @@ const CHANGELOG_PT_BR: ChangelogEntry[] = [
 
 const CHANGELOG_EN: ChangelogEntry[] = [
   {
+    version: "3.2.0", date: "2026-08-17", title: "Cross-platform File Browser and external editing",
+    summary: "Completes the File Browser workflow, adds native .nw/.gmap editing and makes GraalScript highlighting follow RC themes.", current: true,
+    changes: [
+      "Double-clicking a .nw or .gmap file downloads it to the configured folder, opens it with the operating system's default application and uploads local edits when the server grants write access.",
+      "Thumbnail previews are serialized through the native File Browser transfer channel, keep preview protocol messages out of the visible log and never fetch images at or above 500 KB.",
+      "GraalScript theme definitions now cover the full set of RC themes, while Script Manager refreshes coalesce concurrent cache events into a single native request.",
+      "External file sessions are detached safely when the RC disconnects, logs out or switches servers, preventing edits from being sent to the wrong session.",
+    ],
+  },
+  {
     version: "3.1.8", date: "2026-08-16", title: "File Browser workflow and themed startup",
-    summary: "Adds faster file handling, external editor integration and removes the custom-theme flash when opening RC windows.", current: true,
+    summary: "Adds faster file handling, external editor integration and removes the custom-theme flash when opening RC windows.", current: false,
     changes: [
       "File Browser now shows the file count for the current folder and supports selecting multiple files for bulk downloads and moves.",
       "Optional image thumbnails can be enabled in Settings; only images smaller than 500 KB are downloaded and displayed, while larger images are never fetched for previews.",
@@ -353,8 +376,18 @@ const CHANGELOG_EN: ChangelogEntry[] = [
 
 const CHANGELOG_ES: ChangelogEntry[] = [
   {
+    version: "3.2.0", date: "2026-08-17", title: "Cross-platform File Browser and external editing",
+    summary: "Completes the File Browser workflow, adds native .nw/.gmap editing and makes GraalScript highlighting follow RC themes.", current: true,
+    changes: [
+      "Double-clicking a .nw or .gmap file downloads it to the configured folder, opens it with the operating system's default application and uploads local edits when the server grants write access.",
+      "Thumbnail previews are serialized through the native File Browser transfer channel, keep preview protocol messages out of the visible log and never fetch images at or above 500 KB.",
+      "GraalScript theme definitions now cover the full set of RC themes, while Script Manager refreshes coalesce concurrent cache events into a single native request.",
+      "External file sessions are detached safely when the RC disconnects, logs out or switches servers, preventing edits from being sent to the wrong session.",
+    ],
+  },
+  {
     version: "3.1.7", date: "2026-08-16", title: "Distribución macOS y Linux reforzada",
-    summary: "Corrige el empaquetado multiplataforma, el icono de macOS y la dependencia del RC de un terminal abierto.", current: true,
+    summary: "Corrige el empaquetado multiplataforma, el icono de macOS y la dependencia del RC de un terminal abierto.", current: false,
     changes: [
       "La build de macOS ahora incluye un app bundle con el icono icns y los metadatos de versión correctos; el artefacto x64 funciona de forma nativa en Macs Intel y mediante Rosetta 2 en Apple Silicon.",
       "El AppImage de Linux ahora incluye el runtime GTK4/WebKitGTK6 y el grclib.so nativo; los paquetes DEB/RPM también instalan la biblioteca requerida.",
