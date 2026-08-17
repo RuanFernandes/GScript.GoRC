@@ -1,7 +1,19 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import {mergeFileBrowserMessage} from "../src/lib/fileBrowserMessages.ts"
+import {isPreviewTransferMessage, mergeFileBrowserMessage} from "../src/lib/fileBrowserMessages.ts"
+
+test("identifies preview transfer protocol messages by path or basename", () => {
+  const previewPaths = ["levels/users/Graal/images/damon_test.gif"]
+
+  assert.equal(isPreviewTransferMessage("Bigfile transfer started: damon_test.gif", previewPaths), true)
+  assert.equal(isPreviewTransferMessage("File downloaded: levels\\users\\Graal\\images\\damon_test.gif", previewPaths), true)
+  assert.equal(
+    isPreviewTransferMessage("Received chunk: 1024/2048 bytes for levels/users/Graal/images/damon_test.gif", previewPaths),
+    true,
+  )
+  assert.equal(isPreviewTransferMessage("File downloaded: another.gif", previewPaths), false)
+})
 
 test("keeps only the newest received chunk for one file", () => {
   let messages: string[] = []

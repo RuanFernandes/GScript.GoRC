@@ -1,4 +1,5 @@
 import {adaptMonacoTheme} from "@/lib/adaptTheme"
+import {BUILT_IN_APP_THEMES, type EditableAppTheme} from "@/lib/appThemes"
 
 // Monaco theme catalog for the Coding settings. Built-in themes (vs, vs-dark,
 // hc-black, hc-light) need no definition; custom themes (monokai, darcula,
@@ -43,6 +44,241 @@ const baseTheme = (base: StandaloneThemeData["base"]): StandaloneThemeData => ({
   colors: {},
 })
 
+type GraalScriptThemeKey = "default-dark" | "default-light" | "midnight-blue" | "forest-terminal" | "warm-paper"
+
+type GraalScriptSyntaxPalette = {
+  comment: string
+  controlKeyword: string
+  otherKeyword: string
+  storage: string
+  constant: string
+  number: string
+  variable: string
+  prefix: string
+  member: string
+  flag: string
+  type: string
+  function: string
+  string: string
+  sqlKeyword: string
+  escape: string
+  operator: string
+  append: string
+  punctuation: string
+}
+
+// These semantic colors are deliberately separate from the RC chrome tokens:
+// the same roles stay distinguishable in a GS script even when a surface color
+// is edited in a future custom application theme.
+const GS_SYNTAX_PALETTES: Record<GraalScriptThemeKey, GraalScriptSyntaxPalette> = {
+  "default-dark": {
+    comment: "#8f9aa7",
+    controlKeyword: "#c7a0ff",
+    otherKeyword: "#f3b76e",
+    storage: "#ff8db5",
+    constant: "#f5d06f",
+    number: "#f5d06f",
+    variable: "#78dce8",
+    prefix: "#67d2a7",
+    member: "#e7eaf0",
+    flag: "#ff9d9d",
+    type: "#79b8ff",
+    function: "#a8e6cf",
+    string: "#8fe3b0",
+    sqlKeyword: "#f6d365",
+    escape: "#ffad66",
+    operator: "#c5b9ff",
+    append: "#e5c07b",
+    punctuation: "#fafafa",
+  },
+  "default-light": {
+    comment: "#6b7280",
+    controlKeyword: "#6d28d9",
+    otherKeyword: "#a21caf",
+    storage: "#0f766e",
+    constant: "#956d18",
+    number: "#995c16",
+    variable: "#0f3a66",
+    prefix: "#0f766e",
+    member: "#252525",
+    flag: "#9d174d",
+    type: "#236b73",
+    function: "#795e26",
+    string: "#9b2c1f",
+    sqlKeyword: "#1d4ed8",
+    escape: "#c2410c",
+    operator: "#374151",
+    append: "#1d4ed8",
+    punctuation: "#252525",
+  },
+  "midnight-blue": {
+    comment: "#8297b2",
+    controlKeyword: "#d8a8ff",
+    otherKeyword: "#ff9fba",
+    storage: "#8ac8ff",
+    constant: "#f6c86e",
+    number: "#f6c86e",
+    variable: "#b8e5ff",
+    prefix: "#71d4bb",
+    member: "#e6f0ff",
+    flag: "#ff9b9b",
+    type: "#8ac8ff",
+    function: "#a7e8ca",
+    string: "#a6e3a1",
+    sqlKeyword: "#ffd166",
+    escape: "#ffb86b",
+    operator: "#b7c9ff",
+    append: "#f2c572",
+    punctuation: "#dce8f8",
+  },
+  "forest-terminal": {
+    comment: "#73a78c",
+    controlKeyword: "#ff9b9b",
+    otherKeyword: "#e8c171",
+    storage: "#77e0b1",
+    constant: "#f0c674",
+    number: "#f0c674",
+    variable: "#b8f5d1",
+    prefix: "#77e0b1",
+    member: "#e4fff0",
+    flag: "#ff8f8f",
+    type: "#78c7e8",
+    function: "#a5e8b7",
+    string: "#9fe6a0",
+    sqlKeyword: "#f5d76e",
+    escape: "#ffae6b",
+    operator: "#9cd9c0",
+    append: "#e0c0ff",
+    punctuation: "#d9f3e6",
+  },
+  "warm-paper": {
+    comment: "#7d6e63",
+    controlKeyword: "#8c3d62",
+    otherKeyword: "#9a4d2e",
+    storage: "#236c68",
+    constant: "#956d18",
+    number: "#995c16",
+    variable: "#334e68",
+    prefix: "#438c73",
+    member: "#342f2a",
+    flag: "#9c2f2f",
+    type: "#236c68",
+    function: "#7a4e26",
+    string: "#7a3e2a",
+    sqlKeyword: "#7a4d00",
+    escape: "#a04a17",
+    operator: "#5b556e",
+    append: "#6b4d9a",
+    punctuation: "#342f2a",
+  },
+}
+
+function addAlpha(color: string, alpha: string): string {
+  return /^#[0-9a-f]{6}$/i.test(color) ? `${color}${alpha}` : color
+}
+
+function graalScriptRules(palette: GraalScriptSyntaxPalette): StandaloneThemeData["rules"] {
+  const rules = [
+    ["identifier", palette.member],
+    ["comment", palette.comment],
+    ["comment.line.double-slash", palette.comment],
+    ["comment.block", palette.comment],
+    ["comment.block.documentation", palette.comment],
+    ["keyword", palette.controlKeyword],
+    ["keyword.control", palette.controlKeyword],
+    ["keyword.other", palette.otherKeyword],
+    ["storage", palette.storage],
+    ["storage.type", palette.storage],
+    ["storage.modifier", palette.storage],
+    ["constant", palette.constant],
+    ["constant.language", palette.constant],
+    ["constant.numeric", palette.number],
+    ["variable", palette.variable],
+    ["variable.language", palette.variable],
+    ["variable.language.prefix", palette.prefix],
+    ["variable.language.member", palette.member],
+    ["variable.language.flag", palette.flag],
+    ["type.identifier", palette.type],
+    ["entity.name.function", palette.function],
+    ["function", palette.function],
+    ["string", palette.string],
+    ["string.quoted.double.sql", palette.string],
+    ["keyword.other.sql", palette.sqlKeyword],
+    ["constant.character.escape", palette.escape],
+    ["keyword.operator", palette.operator],
+    ["keyword.operator.array", palette.operator],
+    ["keyword.operator.append", palette.append],
+    ["punctuation", palette.punctuation],
+  ] as const
+
+  return rules.map(([token, foreground]) => ({token, foreground: foreground.replace(/^#/, "")}))
+}
+
+function graalScriptTheme(appTheme: EditableAppTheme, syntax: GraalScriptSyntaxPalette): StandaloneThemeData {
+  const colors = appTheme.colors
+  const primary = colors.sidebarPrimary || colors.primary
+  const surface = colors.card || colors.background
+  const border = colors.border || colors.windowBorder
+  const selection = addAlpha(primary, "66")
+  const inactiveSelection = addAlpha(primary, "3d")
+  const lineHighlight = addAlpha(appTheme.mode === "light" ? colors.secondary : surface, "b8")
+
+  return {
+    base: appTheme.mode === "light" ? "vs" : "vs-dark",
+    inherit: true,
+    rules: graalScriptRules(syntax),
+    colors: {
+      "editor.background": colors.background,
+      "editor.foreground": colors.foreground,
+      "editorGutter.background": colors.background,
+      "editorCursor.foreground": colors.serverAccent || primary,
+      "editor.selectionBackground": selection,
+      "editor.inactiveSelectionBackground": inactiveSelection,
+      "editor.selectionHighlightBackground": addAlpha(primary, "38"),
+      "editor.lineHighlightBackground": lineHighlight,
+      "editorLineNumber.foreground": addAlpha(colors.mutedForeground, "cc"),
+      "editorLineNumber.activeForeground": primary,
+      "editorIndentGuide.background": addAlpha(border, "99"),
+      "editorIndentGuide.activeBackground": addAlpha(primary, "aa"),
+      "editorWhitespace.foreground": addAlpha(colors.mutedForeground, "99"),
+      "editorBracketMatch.background": addAlpha(colors.accent, "cc"),
+      "editorBracketMatch.border": colors.ring,
+      "editor.findMatchBackground": addAlpha(colors.chart3, "aa"),
+      "editor.findMatchHighlightBackground": addAlpha(colors.chart3, "55"),
+      "editorOverviewRuler.border": border,
+      "editorOverviewRuler.findMatchForeground": colors.chart3,
+      "editorOverviewRuler.errorForeground": colors.destructive,
+      "editorOverviewRuler.warningForeground": colors.chart3,
+      "editorOverviewRuler.infoForeground": colors.chart2,
+      "editorError.foreground": colors.destructive,
+      "editorWarning.foreground": colors.chart3,
+      "editorInfo.foreground": colors.chart2,
+      "editorWidget.background": colors.popover,
+      "editorWidget.foreground": colors.popoverForeground,
+      "editorWidget.border": border,
+      "editorSuggestWidget.background": colors.popover,
+      "editorSuggestWidget.foreground": colors.popoverForeground,
+      "editorSuggestWidget.border": border,
+      "editorSuggestWidget.selectedBackground": colors.accent,
+      "peekViewEditor.background": colors.background,
+      "peekViewResult.background": colors.card,
+      "peekViewTitle.background": colors.sidebar,
+      "peekViewBorder": border,
+      "scrollbarSlider.background": addAlpha(colors.secondary, "aa"),
+      "scrollbarSlider.hoverBackground": addAlpha(primary, "99"),
+      "scrollbarSlider.activeBackground": primary,
+      "minimap.background": colors.background,
+      "minimap.selectionHighlight": addAlpha(primary, "aa"),
+    },
+  }
+}
+
+export const GRAAL_SCRIPT_THEME_OPTIONS: ThemeOption[] = BUILT_IN_APP_THEMES.map((appTheme) => ({
+  key: `gs-${appTheme.key}`,
+  label: `GraalScript · ${appTheme.name}`,
+  define: graalScriptTheme(appTheme, GS_SYNTAX_PALETTES[appTheme.key as GraalScriptThemeKey]),
+}))
+
 // monokai/darcula/one-dark-pro/night-owl evoked via base vs-dark + token rules
 // covering the common highlights.
 export const MONACO_THEME_OPTIONS: ThemeOption[] = [
@@ -50,6 +286,7 @@ export const MONACO_THEME_OPTIONS: ThemeOption[] = [
   {key: "vs", label: "Light (VS)", define: baseTheme("vs")},
   {key: "hc-black", label: "Dark High Contrast", define: baseTheme("hc-black")},
   {key: "hc-light", label: "Light High Contrast", define: baseTheme("hc-light")},
+  ...GRAAL_SCRIPT_THEME_OPTIONS,
   {
     key: "monokai",
     label: "Monokai",

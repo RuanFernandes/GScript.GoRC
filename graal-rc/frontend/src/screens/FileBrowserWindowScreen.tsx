@@ -20,6 +20,8 @@ import {
   FolderOpen,
   HardDriveDownload,
   Home,
+  LayoutGrid,
+  List,
   RefreshCw,
   Search,
   Upload,
@@ -178,6 +180,9 @@ export function FileBrowserWindowScreen() {
   const [resizingFolderPane, setResizingFolderPane] = useState(false)
   const folderResizeRef = useRef<{startX: number; startWidth: number} | null>(null)
   const [imageThumbnails, setImageThumbnails] = useState<Record<string, string>>({})
+  const imageThumbnailsRef = useRef<Record<string, string>>({})
+  const [visibleThumbnailPaths, setVisibleThumbnailPaths] = useState<Set<string>>(() => new Set())
+  const [viewMode, setViewMode] = useState<"list" | "grid">("list")
 
   // Expanded node paths (by cleaned path). Start collapsed so opening the
   // Files window does not expand the entire folder tree.
@@ -270,6 +275,29 @@ export function FileBrowserWindowScreen() {
     setSelectedPaths(new Set())
   }, [fb.currentFolder])
 
+  // The reference File Browser uses its icon grid when thumbnail previews are
+  // enabled. Keep the normal table as the default, but switch to the same
+  // thumbnail-oriented surface as soon as the preference is turned on.
+  useEffect(() => {
+    setViewMode(fb.config.showImageThumbnails ? "grid" : "list")
+  }, [fb.config.showImageThumbnails])
+
+  const updateThumbnailVisibility = useCallback((path: string, visible: boolean) => {
+    setVisibleThumbnailPaths((previous) => {
+      if (previous.has(path) === visible) return previous
+      const next = new Set(previous)
+      if (visible) next.add(path)
+      else next.delete(path)
+      return next
+    })
+  }, [])
+
+  useEffect(() => {
+    setVisibleThumbnailPaths(new Set())
+    imageThumbnailsRef.current = {}
+    setImageThumbnails({})
+  }, [fb.currentFolder, viewMode])
+
   const thumbnailCandidates = useMemo(() => {
     if (!fb.config.showImageThumbnails) return []
     return fb.files.filter((entry) =>
@@ -277,34 +305,48 @@ export function FileBrowserWindowScreen() {
     )
   }, [fb.config.showImageThumbnails, fb.files])
 
+  const thumbnailRequestCandidates = useMemo(() => {
+    if (viewMode !== "grid") return thumbnailCandidates
+    return thumbnailCandidates.filter((entry) => visibleThumbnailPaths.has(entry.path))
+  }, [thumbnailCandidates, viewMode, visibleThumbnailPaths])
+
+  useEffect(() => {
+    // Preview transfers use the same File Browser message stream as explicit
+    // downloads. Register every eligible path before starting requests so
+    // completion/progress messages for lazy thumbnails stay out of the log.
+    fb.setThumbnailPreviewPaths(thumbnailCandidates.map((entry) => entry.path))
+    return () => fb.setThumbnailPreviewPaths([])
+  }, [fb.setThumbnailPreviewPaths, thumbnailCandidates])
+
   useEffect(() => {
     let cancelled = false
-    setImageThumbnails({})
-    if (!fb.config.showImageThumbnails || thumbnailCandidates.length === 0) return
+    if (!fb.config.showImageThumbnails || thumbnailRequestCandidates.length === 0) return
 
-    const pending = [...thumbnailCandidates]
-    const loaded: Record<string, string> = {}
+    const pending = thumbnailRequestCandidates.filter((entry) => !imageThumbnailsRef.current[entry.path])
     const worker = async () => {
       while (!cancelled) {
         const entry = pending.shift()
         if (!entry) return
         try {
           const dataUrl = await rcService.getFileBrowserImageThumbnail(entry.path)
-          if (dataUrl) loaded[entry.path] = dataUrl
+          if (!cancelled && dataUrl) {
+            imageThumbnailsRef.current[entry.path] = dataUrl
+            setImageThumbnails((current) => ({...current, [entry.path]: dataUrl}))
+          }
         } catch {
           // A thumbnail is optional. Keep the normal file icon when it cannot be fetched.
         }
       }
     }
-    const workerCount = Math.min(4, pending.length)
-    void Promise.all(Array.from({length: workerCount}, () => worker())).then(() => {
-      if (!cancelled) setImageThumbnails(loaded)
-    })
+    // grclib exposes one active file-browser transfer slot. Starting several
+    // requests before the previous callback arrives clears the native pending
+    // path and makes the thumbnails fail intermittently.
+    void worker()
 
     return () => {
       cancelled = true
     }
-  }, [fb.config.showImageThumbnails, thumbnailCandidates])
+  }, [fb.config.showImageThumbnails, thumbnailRequestCandidates])
 
   const currentClean = trimFolder(fb.currentFolder)
   const folderPaneMax = maxFolderPaneWidth()
@@ -514,6 +556,7 @@ export function FileBrowserWindowScreen() {
     try {
       const kind = await rcService.openRemoteFile(entry.path)
       if (kind === "media") toast.success(t("file.openedDefault"))
+      else if (kind === "external") toast.success(t("file.openedExternal"))
       else if (kind === "text") toast.success(t("file.openedEditor"))
       else if (kind === "database") toast.success(t("file.openedSqlite"))
     } catch (err) {
@@ -580,6 +623,15 @@ export function FileBrowserWindowScreen() {
           <Button variant="outline" size="sm" onClick={fb.uploadViaDialog}>
             <Upload />
             {t("file.upload")}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setViewMode((mode) => (mode === "grid" ? "list" : "grid"))}
+            title={viewMode === "grid" ? t("file.switchToList") : t("file.switchToGrid")}
+            aria-label={viewMode === "grid" ? t("file.switchToList") : t("file.switchToGrid")}
+          >
+            {viewMode === "grid" ? <List /> : <LayoutGrid />}
           </Button>
           <Button variant="outline" size="sm" onClick={fb.refresh} disabled={fb.loading}>
             <RefreshCw className={fb.loading ? "animate-spin" : undefined} />
@@ -744,20 +796,38 @@ export function FileBrowserWindowScreen() {
               </div>
             </div>
           )}
-          <FileTable
-            files={filteredFiles}
-            loaded={fb.loaded}
-            selected={selected}
-            thumbnails={imageThumbnails}
-            selectedPaths={selectedPaths}
-            allVisibleSelected={allVisibleSelected}
-            someVisibleSelected={someVisibleSelected}
-            onToggleSelect={toggleFileSelection}
-            onToggleAll={toggleAllVisibleFiles}
-            onSelect={(path) => setSelected(path)}
-            onContextMenu={(entry, x, y) => setCtx({x, y, entry})}
-            onOpen={openFile}
-          />
+          {viewMode === "grid" ? (
+            <FileGrid
+              files={filteredFiles}
+              loaded={fb.loaded}
+              selected={selected}
+              thumbnails={imageThumbnails}
+              selectedPaths={selectedPaths}
+              allVisibleSelected={allVisibleSelected}
+              someVisibleSelected={someVisibleSelected}
+              onToggleSelect={toggleFileSelection}
+              onToggleAll={toggleAllVisibleFiles}
+              onSelect={(path) => setSelected(path)}
+              onContextMenu={(entry, x, y) => setCtx({x, y, entry})}
+              onOpen={openFile}
+              onThumbnailVisibility={updateThumbnailVisibility}
+            />
+          ) : (
+            <FileTable
+              files={filteredFiles}
+              loaded={fb.loaded}
+              selected={selected}
+              thumbnails={imageThumbnails}
+              selectedPaths={selectedPaths}
+              allVisibleSelected={allVisibleSelected}
+              someVisibleSelected={someVisibleSelected}
+              onToggleSelect={toggleFileSelection}
+              onToggleAll={toggleAllVisibleFiles}
+              onSelect={(path) => setSelected(path)}
+              onContextMenu={(entry, x, y) => setCtx({x, y, entry})}
+              onOpen={openFile}
+            />
+          )}
           {dragging && (
             <div className="bg-primary/10 pointer-events-none absolute inset-0 flex items-center justify-center border-2 border-dashed">
               <div className="text-primary flex flex-col items-center gap-1 text-sm font-medium">
@@ -1140,6 +1210,22 @@ const MIN_WIDTH = 48
 //   - left click: select (highlight)
 //   - right click: context menu (built by the parent)
 //   - double click: open by type (parent)
+type FileListingProps = {
+  files: FileBrowserEntry[]
+  loaded?: boolean
+  selected: string | null
+  thumbnails: Record<string, string>
+  selectedPaths: Set<string>
+  allVisibleSelected: boolean
+  someVisibleSelected: boolean
+  onToggleSelect: (path: string) => void
+  onToggleAll: (checked: boolean) => void
+  onSelect: (path: string) => void
+  onContextMenu: (entry: FileBrowserEntry, x: number, y: number) => void
+  onOpen: (entry: FileBrowserEntry) => void
+  onThumbnailVisibility?: (path: string, visible: boolean) => void
+}
+
 function FileTable({
   files,
   loaded,
@@ -1153,20 +1239,7 @@ function FileTable({
   onSelect,
   onContextMenu,
   onOpen,
-}: {
-  files: FileBrowserEntry[]
-  loaded?: boolean
-  selected: string | null
-  thumbnails: Record<string, string>
-  selectedPaths: Set<string>
-  allVisibleSelected: boolean
-  someVisibleSelected: boolean
-  onToggleSelect: (path: string) => void
-  onToggleAll: (checked: boolean) => void
-  onSelect: (path: string) => void
-  onContextMenu: (entry: FileBrowserEntry, x: number, y: number) => void
-  onOpen: (entry: FileBrowserEntry) => void
-}) {
+}: FileListingProps) {
   const {t} = useLanguage()
   const [widths, setWidths] = useState({...DEFAULT_WIDTHS})
   const [sort, setSort] = useState<{key: SortKey; dir: SortDir}>({key: "name", dir: "asc"})
@@ -1349,6 +1422,179 @@ function FileTable({
         </tbody>
       </table>
     </ScrollArea>
+  )
+}
+
+// FileGrid mirrors the reference client's modern GtkIconView: folders and
+// files are laid out as compact cards, with a real image occupying the icon
+// slot when the optional, size-guarded thumbnail has arrived.
+function FileGrid({
+  files,
+  loaded,
+  selected,
+  thumbnails,
+  selectedPaths,
+  allVisibleSelected,
+  someVisibleSelected,
+  onToggleSelect,
+  onToggleAll,
+  onSelect,
+  onContextMenu,
+  onOpen,
+  onThumbnailVisibility,
+}: FileListingProps) {
+  const {t} = useLanguage()
+  const selectAllRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (selectAllRef.current) selectAllRef.current.indeterminate = someVisibleSelected && !allVisibleSelected
+  }, [allVisibleSelected, someVisibleSelected])
+
+  const sorted = useMemo(
+    () =>
+      [...files].sort((a, b) => {
+        if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1
+        return basename(a.path).localeCompare(basename(b.path), undefined, {sensitivity: "base"})
+      }),
+    [files],
+  )
+
+  if (files.length === 0) {
+    if (!loaded) {
+      return (
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(112px,1fr))] gap-3 p-3">
+          {Array.from({length: 8}).map((_, i) => (
+            <div key={i} className="flex flex-col items-center gap-2 rounded-md border border-border/60 p-2">
+              <Skeleton className="size-[88px]" />
+              <Skeleton className="h-3 w-20" />
+            </div>
+          ))}
+        </div>
+      )
+    }
+    return (
+      <div className="text-muted-foreground flex h-full items-center justify-center text-sm">
+        {t("file.emptyFolder")}
+      </div>
+    )
+  }
+
+  return (
+    <ScrollArea className="h-full">
+      <div className="bg-background sticky top-0 z-10 flex items-center gap-2 border-b px-3 py-2 text-xs">
+        <input
+          ref={selectAllRef}
+          type="checkbox"
+          checked={allVisibleSelected}
+          onChange={(e) => onToggleAll(e.target.checked)}
+          aria-label={t("file.selectAllFiles")}
+          disabled={!files.some((entry) => !entry.isDirectory)}
+          className="size-3.5 accent-primary"
+        />
+        <span className="text-muted-foreground">{t("file.selectAllFiles")}</span>
+      </div>
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(112px,1fr))] gap-3 p-3">
+        {sorted.map((entry) => {
+          const name = basename(entry.path)
+          const active = selected === entry.path
+          const checked = selectedPaths.has(entry.path)
+          const card = (
+            <div
+              role="button"
+              tabIndex={0}
+              aria-pressed={active}
+              aria-label={name}
+              className={`group relative flex min-w-0 cursor-default flex-col items-center gap-2 rounded-md border p-2 text-center outline-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-ring ${
+                active || checked ? "border-primary/60 bg-accent/70" : "border-border/60 hover:border-border hover:bg-accent/40"
+              }`}
+              onClick={() => onSelect(entry.path)}
+              onDoubleClick={() => onOpen(entry)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") onOpen(entry)
+                if (event.key === " ") {
+                  event.preventDefault()
+                  onSelect(entry.path)
+                }
+              }}
+              onContextMenu={(event) => {
+                event.preventDefault()
+                onContextMenu(entry, event.clientX, event.clientY)
+              }}
+              title={entry.path}
+            >
+              {!entry.isDirectory && (
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => onToggleSelect(entry.path)}
+                  onClick={(event) => event.stopPropagation()}
+                  aria-label={t("file.selectFile", {name})}
+                  className="absolute top-2 left-2 z-[1] size-3.5 accent-primary"
+                />
+              )}
+              <div className="bg-muted/40 flex size-[88px] shrink-0 items-center justify-center rounded border border-border/60 p-1">
+                {thumbnails[entry.path] ? (
+                  <img
+                    src={thumbnails[entry.path]}
+                    alt={name}
+                    loading="lazy"
+                    decoding="async"
+                    className="size-full object-contain"
+                  />
+                ) : entry.isDirectory ? (
+                  <Folder className="size-11 text-sky-400" aria-hidden="true" />
+                ) : (
+                  <HardDriveDownload className="text-muted-foreground size-10" aria-hidden="true" />
+                )}
+              </div>
+              <span className="w-full truncate text-xs font-medium" title={name}>{name}</span>
+              <span className="text-muted-foreground w-full truncate text-[10px] tabular-nums">
+                {entry.isDirectory ? t("file.folderLabel") : humanize(entry.size)}
+              </span>
+            </div>
+          )
+          const shouldObserve = !entry.isDirectory && entry.size > 0 && entry.size < IMAGE_THUMBNAIL_LIMIT_BYTES && isThumbnailImage(entry.path)
+          return shouldObserve && onThumbnailVisibility ? (
+            <ThumbnailVisibility key={entry.path} path={entry.path} onVisibilityChange={onThumbnailVisibility}>
+              {card}
+            </ThumbnailVisibility>
+          ) : (
+            <div key={entry.path} className="min-w-0">
+              {card}
+            </div>
+          )
+        })}
+      </div>
+    </ScrollArea>
+  )
+}
+
+function ThumbnailVisibility({
+  path,
+  onVisibilityChange,
+  children,
+}: {
+  path: string
+  onVisibilityChange: (path: string, visible: boolean) => void
+  children: React.ReactNode
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const node = ref.current
+    if (!node) return
+    const observer = new IntersectionObserver(
+      (entries) => onVisibilityChange(path, entries.some((entry) => entry.isIntersecting)),
+      {rootMargin: "240px"},
+    )
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [onVisibilityChange, path])
+
+  return (
+    <div ref={ref} className="min-w-0">
+      {children}
+    </div>
   )
 }
 

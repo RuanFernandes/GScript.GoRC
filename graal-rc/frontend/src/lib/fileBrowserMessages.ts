@@ -9,6 +9,49 @@ type DownloadLogMessage = {
 
 const receivedChunkPattern = /^\s*Received chunk:\s*\d+\s*\/\s*\d+\s+bytes\s+for\s+(.+?)\s*$/i
 const fileDownloadedPattern = /^\s*File downloaded:\s*(.+?)\s*$/i
+const bigfileStartedPattern = /^\s*Bigfile transfer started:\s*(.+?)\s*$/i
+const fileCompletePattern = /^\s*File complete:\s*(.+?)\s*$/i
+
+const transferMessagePatterns = [
+  receivedChunkPattern,
+  fileDownloadedPattern,
+  bigfileStartedPattern,
+  fileCompletePattern,
+]
+
+function normalizeTransferPath(path: string): string {
+  return path.trim().replaceAll("\\", "/").replace(/^\/+|\/+$/g, "").toLocaleLowerCase()
+}
+
+function extractTransferPath(message: string): string | null {
+  for (const pattern of transferMessagePatterns) {
+    const match = pattern.exec(message)
+    if (match) return normalizeTransferPath(match[1])
+  }
+  return null
+}
+
+function transferPathsMatch(receivedPath: string, previewPath: string): boolean {
+  if (!receivedPath || !previewPath) return false
+  return (
+    receivedPath === previewPath ||
+    receivedPath.endsWith(`/${previewPath}`) ||
+    previewPath.endsWith(`/${receivedPath}`)
+  )
+}
+
+// Thumbnail previews use the same native transfer channel as user downloads.
+// The reference client hides protocol messages for those known preview paths,
+// while keeping messages for explicit downloads visible.
+export function isPreviewTransferMessage(message: string, previewPaths: Iterable<string>): boolean {
+  const receivedPath = extractTransferPath(message)
+  if (!receivedPath) return false
+
+  for (const previewPath of previewPaths) {
+    if (transferPathsMatch(receivedPath, normalizeTransferPath(previewPath))) return true
+  }
+  return false
+}
 
 function parseDownloadMessage(message: string): DownloadLogMessage | null {
   const progress = receivedChunkPattern.exec(message)

@@ -14,7 +14,7 @@ import {toast} from "sonner"
 import type {RcService} from "@/services/rcService"
 import type {FileBrowserConfig, FileBrowserEntry, FileBrowserFolder} from "@/types"
 import {useLanguage} from "@/hooks/useLanguage"
-import {mergeFileBrowserMessage} from "@/lib/fileBrowserMessages"
+import {isPreviewTransferMessage, mergeFileBrowserMessage} from "@/lib/fileBrowserMessages"
 
 type Evt = {seq: number; name: string; data: unknown[]}
 
@@ -35,6 +35,7 @@ export interface UseFileBrowserResult {
   rename: (entry: FileBrowserEntry, newName: string) => Promise<void>
   remove: (entry: FileBrowserEntry) => Promise<void>
   move: (entry: FileBrowserEntry, destFolder: string, newName?: string) => Promise<boolean>
+  setThumbnailPreviewPaths: (paths: readonly string[]) => void
 }
 
 function normalizeFileBrowserConfig(config?: Partial<FileBrowserConfig> | null): FileBrowserConfig {
@@ -98,8 +99,22 @@ export function useFileBrowser(service: RcService): UseFileBrowserResult {
   // (registered once) always reloads the LATEST folder, not a stale closure.
   const currentFolderRef = useRef("")
   currentFolderRef.current = currentFolder
+  // Thumbnail downloads share the native File Browser transfer channel with
+  // explicit user downloads. Keep their paths in a ref so the event listener
+  // can hide only preview protocol messages without stale closures.
+  const thumbnailPreviewPathsRef = useRef<readonly string[]>([])
+
+  const setThumbnailPreviewPaths = useCallback((paths: readonly string[]) => {
+    const nextPaths = [...paths]
+    thumbnailPreviewPathsRef.current = nextPaths
+    setMessages((previous) => {
+      const next = previous.filter((message) => !isPreviewTransferMessage(message, nextPaths))
+      return next.length === previous.length ? previous : next
+    })
+  }, [])
 
   const pushMessage = useCallback((msg: string) => {
+    if (isPreviewTransferMessage(msg, thumbnailPreviewPathsRef.current)) return
     setMessages((prev) => mergeFileBrowserMessage(prev, msg))
   }, [])
 
@@ -263,6 +278,7 @@ export function useFileBrowser(service: RcService): UseFileBrowserResult {
           const folder = typeof m.data?.[0] === "string" ? (m.data[0] as string) : ""
           snapshotFiles(folder)
         } else if (m.name === "rc:fbReset") {
+          thumbnailPreviewPathsRef.current = []
           foldersRef.current = []
           currentFolderRef.current = ""
           setFolders([])
@@ -324,5 +340,6 @@ export function useFileBrowser(service: RcService): UseFileBrowserResult {
     rename,
     remove,
     move,
+    setThumbnailPreviewPaths,
   }
 }

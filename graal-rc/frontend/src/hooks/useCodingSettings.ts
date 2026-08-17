@@ -10,7 +10,7 @@ import {rcService} from "@/services/rcService"
 import type {CodingSettings} from "@/types"
 
 export const DEFAULT_CODING_SETTINGS: CodingSettings = {
-  theme: "vs-dark",
+  theme: "gs-default-dark",
   fontFamily: "Consolas, 'Courier New', monospace",
   fontSize: 14,
   tabSize: 2,

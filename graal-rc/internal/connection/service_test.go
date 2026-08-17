@@ -21,6 +21,68 @@ func (s *Service) snapshotLockedForTest() []string {
 // force a deferred leave to be committable by settleChannelLeaves.
 func leaveDeadlinePassed() time.Time { return time.Now().Add(-time.Second) }
 
+func TestScriptListsRequestsAreCoalescedAcrossFilters(t *testing.T) {
+	s := NewService()
+	const callers = 32
+	type result struct {
+		request *scriptListsRequest
+		owner   bool
+	}
+	start := make(chan struct{})
+	results := make(chan result, callers)
+	for range callers {
+		go func() {
+			<-start
+			request, owner := s.beginScriptListsRequest()
+			results <- result{request: request, owner: owner}
+		}()
+	}
+	close(start)
+
+	var owner *scriptListsRequest
+	owners := 0
+	requests := make([]*scriptListsRequest, 0, callers)
+	for range callers {
+		got := <-results
+		requests = append(requests, got.request)
+		if got.owner {
+			owner = got.request
+			owners++
+		}
+	}
+	if owners != 1 {
+		t.Fatalf("concurrent callers elected %d owners, want exactly 1", owners)
+	}
+	for _, request := range requests {
+		if request != owner {
+			t.Fatalf("concurrent callers did not share the owner request")
+		}
+	}
+
+	want := ScriptLists{
+		Weapons: []rclib.Weapon{{Name: "Sword"}},
+		Classes: []rclib.Class{{Name: "Warrior"}},
+		NPCs:    []rclib.NPC{{ID: 7, Name: "Guard"}},
+	}
+	s.completeScriptListsRequest(owner, want, nil)
+
+	for _, request := range requests {
+		select {
+		case <-request.done:
+		case <-time.After(time.Second):
+			t.Fatal("joined script-list request was not released")
+		}
+	}
+	if len(owner.lists.Weapons) != 1 || owner.lists.Weapons[0].Name != "Sword" {
+		t.Fatalf("joined request received %+v, want the completed snapshot", owner.lists)
+	}
+
+	next, owns := s.beginScriptListsRequest()
+	if !owns || next == owner {
+		t.Fatal("a completed request should allow a new snapshot")
+	}
+}
+
 // TestApplyChannelDelta_LoginBurst proves the reported bug stays fixed: the
 // login burst sends Left then Joined for a channel we were never in. The Left
 // is ignored so the following Joined keeps the channel.
@@ -38,6 +100,41 @@ func TestApplyChannelDelta_LoginBurst(t *testing.T) {
 	// Duplicate Joined is idempotent: no snapshot.
 	if s.applyChannelDelta("#a", "* Joined #a") != nil {
 		t.Fatalf("duplicate Join should not emit snapshot")
+	}
+}
+
+func TestFileBrowserPathsMatchCurrentFolderPrefixes(t *testing.T) {
+	for _, test := range []struct {
+		requested string
+		received  string
+		want      bool
+	}{
+		{requested: "emoticon_conf.png", received: "world/images/emoticons/emoticon_conf.png", want: true},
+		{requested: "world/images/emoticons/emoticon_conf.png", received: "emoticon_conf.png", want: true},
+		{requested: `folder\photo.png`, received: "folder/photo.png", want: true},
+		{requested: "folder/photo.png", received: "other/photo.png", want: false},
+		{requested: "photo.png", received: "photo.jpg", want: false},
+	} {
+		if got := fileBrowserPathsMatch(test.requested, test.received); got != test.want {
+			t.Fatalf("fileBrowserPathsMatch(%q, %q) = %v, want %v", test.requested, test.received, got, test.want)
+		}
+	}
+}
+
+func TestResolveFileMatchesNativeFolderPrefix(t *testing.T) {
+	s := NewService()
+	waiter := &fileWait{done: make(chan struct{})}
+	s.pendingFiles = map[string]*fileWait{"emoticon_conf.png": waiter}
+
+	s.resolveFile("world/images/emoticons/emoticon_conf.png", []byte("png"))
+
+	select {
+	case <-waiter.done:
+		if string(waiter.content) != "png" || waiter.err != nil {
+			t.Fatalf("resolved file = %q, err = %v", waiter.content, waiter.err)
+		}
+	default:
+		t.Fatal("native path with folder prefix did not resolve the download")
 	}
 }
 

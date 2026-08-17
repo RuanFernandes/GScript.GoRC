@@ -180,6 +180,15 @@ type App struct {
 	dbHeaders         map[string][]byte
 	textWindows       map[string]*application.WebviewWindow
 	sqliteWindows     map[string]*application.WebviewWindow
+
+	// externalFiles keeps the stable local copies opened through the operating
+	// system for editable remote .nw/.gmap files. The watcher uses this map to
+	// upload local changes back to the same remote path until the server session
+	// is closed or changed.
+	externalFilesMu            sync.Mutex
+	externalFiles              map[string]externalFileSession
+	externalFileSequence       uint64
+	externalFileWatcherStarted bool
 }
 
 // NewApp creates a new App with a fresh connection service and an encrypted
@@ -214,6 +223,7 @@ func NewApp() *App {
 		dbHeaders:             map[string][]byte{},
 		textWindows:           map[string]*application.WebviewWindow{},
 		sqliteWindows:         map[string]*application.WebviewWindow{},
+		externalFiles:         map[string]externalFileSession{},
 		pluginFileOpenWaiters: map[string]pluginFileOpenRequest{},
 		pluginMonacoWaiters:   map[string]pluginMonacoRequest{},
 		pluginMonacoLanguages: map[string]PluginMonacoLanguage{},
@@ -1861,6 +1871,10 @@ func (a *App) DownloadFile(remotePath string, saveAs bool) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return a.saveDownloadedContent(remotePath, content, saveAs)
+}
+
+func (a *App) saveDownloadedContent(remotePath string, content []byte, saveAs bool) (string, error) {
 	name := filepath.Base(remotePath)
 	if name == "" || name == "." || name == string(filepath.Separator) {
 		name = "download"
@@ -2008,7 +2022,7 @@ func extOf(path string) string {
 func osOpenPath(path string) error {
 	switch runtime.GOOS {
 	case "windows":
-		return exec.Command("cmd", "/c", "start", "", path).Start()
+		return exec.Command("rundll32.exe", "url.dll,FileProtocolHandler", path).Start()
 	case "darwin":
 		return exec.Command("open", path).Start()
 	default:
@@ -2035,6 +2049,12 @@ func (a *App) OpenRemoteFile(remotePath string) (string, error) {
 	name := filepath.Base(remotePath)
 	ext := extOf(remotePath)
 	switch {
+	case isExternalRemoteFile(remotePath):
+		if _, err := a.openExternalRemoteFile(remotePath, content); err != nil {
+			return "", err
+		}
+		a.emitPluginEvent("filebrowser.file.opened", pluginFileEvent{Path: remotePath, Name: name, Extension: "." + ext, Size: int64(len(content)), Kind: "external"})
+		return "external", nil
 	case mediaExts[ext]:
 		dir, err := fileCacheDir()
 		if err != nil {
@@ -2083,12 +2103,14 @@ func (a *App) OpenRemoteFile(remotePath string) (string, error) {
 		return "text", nil
 	default:
 		// Unknown binary → plain download to the configured folder.
-		saved, err := a.DownloadFile(remotePath, false)
+		saved, err := a.saveDownloadedContent(remotePath, content, false)
 		if err != nil {
 			return "", err
 		}
 		if saved != "" {
-			osOpenPath(saved)
+			if err := osOpenPath(saved); err != nil {
+				return "", err
+			}
 		}
 		a.emitPluginEvent("filebrowser.file.opened", pluginFileEvent{Path: remotePath, Name: name, Extension: "." + ext, Size: int64(len(content)), Kind: "download"})
 		return "download", nil
@@ -3359,7 +3381,7 @@ func loadLanguage() string {
 
 // DefaultCodingSettings are the first-run defaults.
 var DefaultCodingSettings = CodingSettings{
-	Theme:          "vs-dark",
+	Theme:          "gs-default-dark",
 	FontFamily:     "Consolas, 'Courier New', monospace",
 	FontSize:       14,
 	TabSize:        2,

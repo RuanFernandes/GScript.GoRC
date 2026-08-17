@@ -65,6 +65,12 @@ type Service struct {
 	lastNCAttempt   time.Time  // last ConnectToNCServer attempt; throttles retries
 	lastNCKeepalive time.Time  // last silent NC keepalive (weapon-list ping)
 	ncRequestMu     sync.Mutex // serializes brief NC sends and synchronous mutations
+	// scriptListsMu coalesces concurrent reads of the native NC script caches.
+	// GetScriptLists can be called from more than one Wails window and from
+	// several cache-change events at once, while grclib exposes one shared
+	// native call path. Only one base snapshot may be in flight at a time.
+	scriptListsMu       sync.Mutex
+	scriptListsInFlight *scriptListsRequest
 	// weaponListGeneration advances only after grclib has rebuilt its complete
 	// weapon cache from a list response. Sync waits for the next generation
 	// before reading the cache, rather than racing the asynchronous NC packet.
@@ -111,6 +117,11 @@ type Service struct {
 
 	// pendingFiles correlates a file download request (by remote path) to its
 	// content bytes, delivered asynchronously via the FileReceived callback.
+	// grclib has one active File Browser transfer slot: starting another request
+	// clears the native transfer state for the previous one. fileDownloadMu is
+	// held from request dispatch until the matching callback arrives so normal
+	// downloads and thumbnail previews cannot overwrite each other.
+	fileDownloadMu sync.Mutex
 	pendingFilesMu sync.Mutex
 	pendingFiles   map[string]*fileWait
 	// channels is the authoritative set of joined IRC channels, derived from the
@@ -173,6 +184,12 @@ type ScriptLists struct {
 	Weapons []rclib.Weapon `json:"weapons"`
 	Classes []rclib.Class  `json:"classes"`
 	NPCs    []rclib.NPC    `json:"npcs"`
+}
+
+type scriptListsRequest struct {
+	done  chan struct{}
+	lists ScriptLists
+	err   error
 }
 
 type scriptFetchJob struct {
@@ -479,12 +496,42 @@ func (s *Service) registerFile(path string) (*fileWait, bool) {
 // drops it. Called from the pump-goroutine FileReceived callback; non-blocking.
 func (s *Service) resolveFile(path string, content []byte) {
 	s.pendingFilesMu.Lock()
+	matchedPath := path
 	w, ok := s.pendingFiles[path]
+	if !ok {
+		for requestedPath, waiter := range s.pendingFiles {
+			if fileBrowserPathsMatch(requestedPath, path) {
+				matchedPath = requestedPath
+				w = waiter
+				ok = true
+				break
+			}
+		}
+	}
 	if ok {
-		delete(s.pendingFiles, path)
+		delete(s.pendingFiles, matchedPath)
 		w.finish(content, nil)
 	}
 	s.pendingFilesMu.Unlock()
+}
+
+// fileBrowserPathsMatch mirrors the native client's transfer correlation. The
+// server may report a completed path with or without the current-folder
+// prefix, while the request uses the path returned by the file listing.
+func fileBrowserPathsMatch(requested, received string) bool {
+	requested = normalizeFileBrowserTransferPath(requested)
+	received = normalizeFileBrowserTransferPath(received)
+	if requested == "" || received == "" {
+		return requested == received
+	}
+	return requested == received ||
+		strings.HasSuffix(received, "/"+requested) ||
+		strings.HasSuffix(requested, "/"+received)
+}
+
+func normalizeFileBrowserTransferPath(path string) string {
+	path = strings.ReplaceAll(strings.TrimSpace(path), "\\", "/")
+	return strings.Trim(path, "/")
 }
 
 func (s *Service) cancelFile(path string, waiter *fileWait, err error) {
@@ -2329,6 +2376,102 @@ func (s *Service) GetNPCs() ([]rclib.NPC, error) {
 	return rclib.GetNPCs(h)
 }
 
+// beginScriptListsRequest joins an existing native cache read or becomes its
+// owner. The request is intentionally shared between readable and unfiltered
+// callers: permission filtering is cheap and happens after the base snapshot,
+// while the native cache read is the expensive, globally serialized operation.
+func (s *Service) beginScriptListsRequest() (*scriptListsRequest, bool) {
+	s.scriptListsMu.Lock()
+	defer s.scriptListsMu.Unlock()
+	if s.scriptListsInFlight != nil {
+		return s.scriptListsInFlight, false
+	}
+	request := &scriptListsRequest{done: make(chan struct{})}
+	s.scriptListsInFlight = request
+	return request, true
+}
+
+func (s *Service) completeScriptListsRequest(request *scriptListsRequest, lists ScriptLists, err error) {
+	s.scriptListsMu.Lock()
+	defer s.scriptListsMu.Unlock()
+	if s.scriptListsInFlight != request {
+		return
+	}
+	request.lists = lists
+	request.err = err
+	s.scriptListsInFlight = nil
+	close(request.done)
+}
+
+// getScriptListsSnapshot reads the native NC caches once and shares that
+// result with all callers that arrive while the read is in progress. This
+// prevents Wails request storms from piling up behind rclib's global DLL
+// mutex when the main window and Script Manager refresh together.
+func (s *Service) getScriptListsSnapshot() (lists ScriptLists, err error) {
+	request, owner := s.beginScriptListsRequest()
+	if !owner {
+		<-request.done
+		return cloneScriptLists(request.lists), request.err
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			s.completeScriptListsRequest(request, ScriptLists{}, fmt.Errorf("get script lists panic: %v", recovered))
+			panic(recovered)
+		}
+		s.completeScriptListsRequest(request, lists, err)
+	}()
+
+	weapons, err := s.GetWeapons()
+	if err != nil {
+		return ScriptLists{}, err
+	}
+	classes, err := s.GetClasses()
+	if err != nil {
+		return ScriptLists{}, err
+	}
+	npcs, err := s.GetNPCs()
+	if err != nil {
+		return ScriptLists{}, err
+	}
+	return ScriptLists{Weapons: weapons, Classes: classes, NPCs: npcs}, nil
+}
+
+func cloneScriptLists(lists ScriptLists) ScriptLists {
+	clone := ScriptLists{}
+	if lists.Weapons != nil {
+		clone.Weapons = append([]rclib.Weapon(nil), lists.Weapons...)
+	}
+	if lists.Classes != nil {
+		clone.Classes = append([]rclib.Class(nil), lists.Classes...)
+	}
+	if lists.NPCs != nil {
+		clone.NPCs = append([]rclib.NPC(nil), lists.NPCs...)
+	}
+	return clone
+}
+
+func filterReadableScriptLists(lists ScriptLists, access folderrights.Access) ScriptLists {
+	filteredWeapons := make([]rclib.Weapon, 0, len(lists.Weapons))
+	for _, weapon := range lists.Weapons {
+		if access.CanRead("weapon", weapon.Name) {
+			filteredWeapons = append(filteredWeapons, weapon)
+		}
+	}
+	filteredClasses := make([]rclib.Class, 0, len(lists.Classes))
+	for _, class := range lists.Classes {
+		if access.CanRead("class", class.Name) {
+			filteredClasses = append(filteredClasses, class)
+		}
+	}
+	filteredNPCs := make([]rclib.NPC, 0, len(lists.NPCs))
+	for _, npc := range lists.NPCs {
+		if access.CanRead("npc", npc.Name) {
+			filteredNPCs = append(filteredNPCs, npc)
+		}
+	}
+	return ScriptLists{Weapons: filteredWeapons, Classes: filteredClasses, NPCs: filteredNPCs}
+}
+
 // GetScriptLists returns the NC script index. When onlyReadable is true, the
 // lists are filtered using the cached self folder rights; the cache is loaded
 // on demand if this is the first permission-aware request in the session.
@@ -2345,41 +2488,14 @@ func (s *Service) GetScriptLists(onlyReadable bool) (ScriptLists, error) {
 		}
 	}
 
-	weapons, err := s.GetWeapons()
-	if err != nil {
-		return ScriptLists{}, err
-	}
-	classes, err := s.GetClasses()
-	if err != nil {
-		return ScriptLists{}, err
-	}
-	npcs, err := s.GetNPCs()
+	lists, err := s.getScriptListsSnapshot()
 	if err != nil {
 		return ScriptLists{}, err
 	}
 	if !onlyReadable {
-		return ScriptLists{Weapons: weapons, Classes: classes, NPCs: npcs}, nil
+		return lists, nil
 	}
-
-	filteredWeapons := make([]rclib.Weapon, 0, len(weapons))
-	for _, weapon := range weapons {
-		if access.CanRead("weapon", weapon.Name) {
-			filteredWeapons = append(filteredWeapons, weapon)
-		}
-	}
-	filteredClasses := make([]rclib.Class, 0, len(classes))
-	for _, class := range classes {
-		if access.CanRead("class", class.Name) {
-			filteredClasses = append(filteredClasses, class)
-		}
-	}
-	filteredNPCs := make([]rclib.NPC, 0, len(npcs))
-	for _, npc := range npcs {
-		if access.CanRead("npc", npc.Name) {
-			filteredNPCs = append(filteredNPCs, npc)
-		}
-	}
-	return ScriptLists{Weapons: filteredWeapons, Classes: filteredClasses, NPCs: filteredNPCs}, nil
+	return filterReadableScriptLists(lists, access), nil
 }
 
 // IsNCConnected reports whether the NC (script) socket is up. Used by the sync
@@ -3148,6 +3264,12 @@ func (s *Service) MaxUploadFileSize() int64 {
 // DownloadFile requests a file and waits for its content via the FileReceived
 // callback (correlated by remote path). Returns the raw bytes.
 func (s *Service) DownloadFile(path string) ([]byte, error) {
+	// The native reference client is single-transfer. Keep this lock across the
+	// asynchronous wait, not only around FileBrowserDownload, because the native
+	// request resets its pending path whenever a new transfer starts.
+	s.fileDownloadMu.Lock()
+	defer s.fileDownloadMu.Unlock()
+
 	h, err := s.requireHandle()
 	if err != nil {
 		return nil, err
