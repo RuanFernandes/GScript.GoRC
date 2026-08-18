@@ -1,16 +1,22 @@
-import {useCallback, useEffect, useMemo, useState} from "react"
+import {useCallback, useEffect, useMemo, useRef, useState} from "react"
+import {DiffEditor, type BeforeMount} from "@monaco-editor/react"
 import {Events} from "@wailsio/runtime"
-import {ArchiveRestore, CheckCircle2, ClipboardList, Filter, History, RefreshCw, RotateCcw, Save, Search, Settings2, ShieldAlert, Trash2, XCircle} from "lucide-react"
+import {ArchiveRestore, CheckCircle2, ClipboardList, Diff, Filter, GitCompare, History, Loader2, RefreshCw, RotateCcw, Save, Search, Settings2, ShieldAlert, Trash2, XCircle} from "lucide-react"
 import {toast} from "sonner"
 
 import {ConfirmDialog} from "@/components/ConfirmDialog"
+import {AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogHeader, AlertDialogTitle} from "@/components/ui/alert-dialog"
 import {Badge} from "@/components/ui/badge"
 import {Button} from "@/components/ui/button"
 import {Input} from "@/components/ui/input"
 import {ScrollArea} from "@/components/ui/scroll-area"
 import {Tabs, TabsContent, TabsList, TabsTrigger} from "@/components/ui/tabs"
+import {useCodingSettings} from "@/hooks/useCodingSettings"
+import {registerGraalScript} from "@/lib/monacoGraalScript"
+import {ensureTheme} from "@/lib/monacoThemes"
+import {registerServerConfig} from "@/lib/monacoServerConfig"
 import {rcService} from "@/services/rcService"
-import type {AuditEntry, ChangeRetentionSettings, DeploymentBackup} from "@/types"
+import type {AuditEntry, ChangeRetentionSettings, DeploymentBackup, DeploymentBackupDiff} from "@/types"
 import {useLanguage} from "@/hooks/useLanguage"
 
 const DEFAULT_BACKUP_COUNT = 3
@@ -31,6 +37,7 @@ function formatBytes(size: number): string {
 
 export function DeploymentCenterWindowScreen() {
   const {t} = useLanguage()
+  const {settings} = useCodingSettings()
   const [audit, setAudit] = useState<AuditEntry[]>([])
   const [backups, setBackups] = useState<DeploymentBackup[]>([])
   const [query, setQuery] = useState("")
@@ -38,6 +45,11 @@ export function DeploymentCenterWindowScreen() {
   const [refreshing, setRefreshing] = useState(false)
   const [pendingRollback, setPendingRollback] = useState<DeploymentBackup | null>(null)
   const [pendingDelete, setPendingDelete] = useState<DeploymentBackup | null>(null)
+  const [diffBackup, setDiffBackup] = useState<DeploymentBackup | null>(null)
+  const [backupDiff, setBackupDiff] = useState<DeploymentBackupDiff | null>(null)
+  const [diffLoading, setDiffLoading] = useState(false)
+  const [diffError, setDiffError] = useState<string | null>(null)
+  const diffRequestRef = useRef(0)
   const [clearOpen, setClearOpen] = useState(false)
   const [activeTab, setActiveTab] = useState("audit")
   const [retention, setRetention] = useState<ChangeRetentionSettings>(DEFAULT_RETENTION)
@@ -118,6 +130,43 @@ export function DeploymentCenterWindowScreen() {
       toast.error(t("deploy.rollbackFailed"), {description: err instanceof Error ? err.message : String(err)})
     }
   }
+
+  const closeBackupDiff = useCallback(() => {
+    diffRequestRef.current += 1
+    setDiffBackup(null)
+    setBackupDiff(null)
+    setDiffError(null)
+    setDiffLoading(false)
+  }, [])
+
+  const openBackupDiff = useCallback((backup: DeploymentBackup) => {
+    const requestID = ++diffRequestRef.current
+    setDiffBackup(backup)
+    setBackupDiff(null)
+    setDiffError(null)
+    setDiffLoading(true)
+    void rcService.getDeploymentBackupDiff(backup.id)
+      .then((diff) => {
+        if (requestID !== diffRequestRef.current) return
+        setBackupDiff(diff)
+      })
+      .catch((err: unknown) => {
+        if (requestID !== diffRequestRef.current) return
+        setDiffError(err instanceof Error ? err.message : String(err))
+      })
+      .finally(() => {
+        if (requestID === diffRequestRef.current) setDiffLoading(false)
+      })
+  }, [])
+
+  const handleDiffBeforeMount = useCallback<BeforeMount>((monaco) => {
+    if (backupDiff?.language === "graalscript") {
+      registerGraalScript(monaco as Parameters<typeof registerGraalScript>[0])
+    } else if (backupDiff?.language === "serverconfig") {
+      registerServerConfig(monaco as Parameters<typeof registerServerConfig>[0])
+    }
+    ensureTheme(monaco as Parameters<typeof ensureTheme>[0], settings.theme)
+  }, [backupDiff?.language, settings.theme])
 
   const clearAudit = async () => {
     setClearOpen(false)
@@ -242,7 +291,7 @@ export function DeploymentCenterWindowScreen() {
                       </div>
                       <code className="text-muted-foreground hidden max-w-52 truncate sm:block">{backup.sha256.slice(0, 16)}…</code>
                       <div className="flex items-center gap-1.5">
-                        <Button variant="outline" size="sm" onClick={() => setPendingRollback(backup)}><RotateCcw className="size-4" />{t("deploy.rollback")}</Button>
+                        <Button variant="outline" size="sm" onClick={() => openBackupDiff(backup)}><GitCompare className="size-4" />{t("deploy.viewDiff")}</Button>
                         <Button variant="ghost" size="icon" onClick={() => setPendingDelete(backup)} title={t("deploy.deleteBackup")} aria-label={t("deploy.deleteBackup")}><Trash2 className="text-muted-foreground size-4" /></Button>
                       </div>
                     </div>
@@ -322,6 +371,94 @@ export function DeploymentCenterWindowScreen() {
           </TabsContent>
         </Tabs>
       </div>
+
+      <AlertDialog
+        open={diffBackup !== null}
+        onOpenChange={(open) => {
+          if (!open) closeBackupDiff()
+        }}
+      >
+        <AlertDialogContent className="flex h-[min(86svh,780px)] max-w-6xl flex-col gap-3">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <GitCompare className="text-primary size-4" />
+              {diffBackup ? t("deploy.diffTitle", {target: diffBackup.target}) : t("deploy.diffTitleFallback")}
+            </AlertDialogTitle>
+            <AlertDialogDescription>{t("deploy.diffDescription")}</AlertDialogDescription>
+          </AlertDialogHeader>
+
+          <div className="min-h-0 flex-1">
+            {diffLoading ? (
+              <div className="text-muted-foreground flex h-full items-center justify-center gap-2 text-sm">
+                <Loader2 className="size-4 animate-spin" />{t("deploy.diffLoading")}
+              </div>
+            ) : diffError ? (
+              <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center text-sm">
+                <p className="text-destructive font-medium">{t("deploy.diffLoadFailed")}</p>
+                <p className="text-muted-foreground max-w-xl">{diffError}</p>
+              </div>
+            ) : backupDiff ? (
+              <div className="flex h-full min-h-0 flex-col gap-3">
+                <div className="grid shrink-0 gap-2 text-xs sm:grid-cols-2">
+                  <div className="rounded-md border p-2">
+                    <p className="font-medium">{t("deploy.backupVersion")}</p>
+                    <p className="text-muted-foreground mt-1">{formatDate(backupDiff.backup.timestamp)} · {formatBytes(backupDiff.backup.size)}</p>
+                    <p className="text-muted-foreground mt-1 truncate font-mono text-[10px]">{backupDiff.backup.sha256}</p>
+                  </div>
+                  <div className="rounded-md border p-2">
+                    <p className="font-medium">{t("deploy.serverVersion")}</p>
+                    <p className="text-muted-foreground mt-1">{backupDiff.currentExists ? formatBytes(backupDiff.currentSize) : t("deploy.serverVersionUnavailable")}</p>
+                    <p className="text-muted-foreground mt-1 truncate font-mono text-[10px]">{backupDiff.currentSha256 || "—"}</p>
+                  </div>
+                </div>
+
+                {backupDiff.diffable ? (
+                  <div className="flex min-h-0 flex-1 flex-col gap-1">
+                    <div className="text-muted-foreground flex shrink-0 justify-between px-2 text-[11px]">
+                      <span>{t("deploy.backupVersion")}</span>
+                      <span>{t("deploy.serverVersion")}</span>
+                    </div>
+                    <div className="min-h-0 flex-1 overflow-hidden rounded-md border">
+                      <DiffEditor
+                        height="100%"
+                        original={backupDiff.backupContent}
+                        modified={backupDiff.currentContent}
+                        language={backupDiff.language}
+                        theme={settings.theme === "remoteTheme" ? "vs-dark" : settings.theme}
+                        beforeMount={handleDiffBeforeMount}
+                        options={{readOnly: true, renderSideBySide: true, minimap: {enabled: false}, scrollBeyondLastLine: false, automaticLayout: true}}
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="bg-muted/20 flex min-h-0 flex-1 flex-col items-center justify-center gap-3 rounded-md border p-6 text-center">
+                    <Diff className="text-muted-foreground size-8" />
+                    <p className="text-sm font-medium">
+                      {backupDiff.diffReason === "too_large" ? t("deploy.diffTooLarge") : t("deploy.diffBinary")}
+                    </p>
+                    <p className="text-muted-foreground max-w-xl text-xs">{t("deploy.diffMetadataHint")}</p>
+                  </div>
+                )}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="flex shrink-0 flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <Button variant="outline" onClick={closeBackupDiff}>{t("common.cancel")}</Button>
+            <Button
+              onClick={() => {
+                if (!backupDiff) return
+                const backup = backupDiff.backup
+                closeBackupDiff()
+                setPendingRollback(backup)
+              }}
+              disabled={!backupDiff || diffLoading}
+            >
+              <RotateCcw className="size-4" />{t("deploy.rollback")}
+            </Button>
+          </div>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <ConfirmDialog
         open={pendingRollback !== null}

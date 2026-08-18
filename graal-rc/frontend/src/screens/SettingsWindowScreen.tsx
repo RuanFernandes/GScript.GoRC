@@ -1,7 +1,8 @@
 // SettingsWindowScreen is the content of the external Settings window (opened
 // via App.OpenSettings, URL "/#settings"). Two sections: Coding (Monaco theme,
 // font family, font size) and Chat (the existing color/log settings via
-// ChatSettingsFields). Both persist to localStorage.
+// ChatSettingsFields). Both persist through the Go backend so all Wails
+// windows stay synchronized.
 import {useCallback, useEffect, useRef, useState} from "react"
 import {Events} from "@wailsio/runtime"
 import {BookOpen, Bot, Check, ChevronDown, Code2, FolderDown, Languages, MessageSquareText, Palette, Puzzle} from "lucide-react"

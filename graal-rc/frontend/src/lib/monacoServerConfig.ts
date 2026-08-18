@@ -16,6 +16,11 @@ interface MonacoLanguageAPI {
 
 let registered = false
 
+// Server option names may contain spaces (for example, "guild_Global Admin").
+// Keep the complete key together so the folder-config rule does not mistake
+// the first word for a type token.
+export const SERVER_CONFIG_KEY_PATTERN = /[A-Za-z0-9_.\-]+(?:[ \t]+[A-Za-z0-9_.\-]+)*(?=\s*=)/
+
 // registerServerConfig registers the serverconfig language + Monarch tokenizer
 // once per monaco instance. Idempotent. Wrapped so a monarch compile hiccup can
 // never crash the editor mount (the editor would silently fall back to plain
@@ -36,9 +41,9 @@ export function registerServerConfig(monaco: MonacoLanguageAPI): void {
             [/#.*$/, "comment"],
             // [Header] sections (Server Options).
             [/\[[^\]]*\]/, "type.identifier"],
-            // k=v key: identifier immediately before an = (dots/dashes allowed,
-            // e.g. server.bodyss).
-            [/[A-Za-z0-9_.\-]+(?=\s*=)/, "keyword"],
+            // k=v key: identifiers and spaces immediately before an = (dots/
+            // dashes allowed, e.g. guild_Global Admin).
+            [SERVER_CONFIG_KEY_PATTERN, "keyword"],
             // Folder-config type: a leading word followed by whitespace then a
             // path (file/body/head/sword/shield/...).
             [/[A-Za-z0-9_.\-]+(?=\s+[^#\n])/, "type.identifier"],
@@ -58,4 +63,3 @@ export function registerServerConfig(monaco: MonacoLanguageAPI): void {
   }
   registered = true
 }
-

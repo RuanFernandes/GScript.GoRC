@@ -33,7 +33,7 @@ export interface UseFileBrowserResult {
   uploadFiles: (files: FileList | File[]) => Promise<void>
   uploadViaDialog: () => Promise<void>
   rename: (entry: FileBrowserEntry, newName: string) => Promise<void>
-  remove: (entry: FileBrowserEntry) => Promise<void>
+  remove: (entry: FileBrowserEntry) => Promise<boolean>
   move: (entry: FileBrowserEntry, destFolder: string, newName?: string) => Promise<boolean>
   setThumbnailPreviewPaths: (paths: readonly string[]) => void
 }
@@ -226,8 +226,10 @@ export function useFileBrowser(service: RcService): UseFileBrowserResult {
     async (entry: FileBrowserEntry) => {
       try {
         await service.fileBrowserDelete(entry.path)
+        return true
       } catch (err) {
         toast.error(t("file.deleteFailed"), {description: String(err)})
+        return false
       }
     },
     [service, t],

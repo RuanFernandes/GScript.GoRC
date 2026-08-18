@@ -129,9 +129,13 @@ type App struct {
 	editorCache   map[string]rclib.ScriptReply
 	editorDirty   map[string]bool
 
-	codingMu       sync.Mutex
-	codingSettings CodingSettings
-	appThemeMu     sync.Mutex
+	codingMu           sync.Mutex
+	codingSettings     CodingSettings
+	chatSettingsMu     sync.Mutex
+	chatSettings       ChatSettings
+	chatSettingsLoaded bool
+	chatSettingsExists bool
+	appThemeMu         sync.Mutex
 
 	graalScriptLSP *graalscript.LanguageServer
 	plugins        *pluginlib.Manager
@@ -3261,6 +3265,30 @@ type CodingSettings struct {
 	ExternalEditor string `json:"externalEditor"`
 }
 
+// ChatSettings are the chat colors and local logging preferences shared by
+// every Wails window. They live in the backend because each window has its own
+// webview and localStorage is not reliably shared between those windows.
+type ChatSettings struct {
+	Timestamp string `json:"timestamp"`
+	RCPrefix  string `json:"rcPrefix"`
+	NCPrefix  string `json:"ncPrefix"`
+	IRCPrefix string `json:"ircPrefix"`
+	Speaker   string `json:"speaker"`
+	Content   string `json:"content"`
+	LogChat   bool   `json:"logChat"`
+	LogDir    string `json:"logDir"`
+	PMLog     bool   `json:"pmLog"`
+	PMLogDir  string `json:"pmLogDir"`
+}
+
+// ChatSettingsState tells the frontend whether the backend has a persisted
+// value, so the first version using backend storage can migrate old
+// localStorage preferences without overwriting them with defaults.
+type ChatSettingsState struct {
+	Settings ChatSettings `json:"settings"`
+	Exists   bool         `json:"exists"`
+}
+
 const (
 	externalEditorVSCode      = "vscode"
 	externalEditorSublime     = "sublime"
@@ -3386,6 +3414,129 @@ var DefaultCodingSettings = CodingSettings{
 	FontSize:       14,
 	TabSize:        2,
 	ExternalEditor: externalEditorVSCode,
+}
+
+// DefaultChatSettings are the first-run chat appearance and logging values.
+var DefaultChatSettings = ChatSettings{
+	Timestamp: "#22c55e",
+	RCPrefix:  "#22c55e",
+	NCPrefix:  "#38bdf8",
+	IRCPrefix: "#a78bfa",
+	Speaker:   "#facc15",
+	Content:   "#e5e7eb",
+}
+
+func normalizeChatColor(value, fallback string) string {
+	value = strings.TrimSpace(value)
+	if len(value) != 7 || value[0] != '#' {
+		return fallback
+	}
+	for _, r := range value[1:] {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			return fallback
+		}
+	}
+	return strings.ToUpper(value)
+}
+
+func normalizeChatSettings(settings ChatSettings) ChatSettings {
+	defaults := DefaultChatSettings
+	settings.Timestamp = normalizeChatColor(settings.Timestamp, defaults.Timestamp)
+	settings.RCPrefix = normalizeChatColor(settings.RCPrefix, defaults.RCPrefix)
+	settings.NCPrefix = normalizeChatColor(settings.NCPrefix, defaults.NCPrefix)
+	settings.IRCPrefix = normalizeChatColor(settings.IRCPrefix, defaults.IRCPrefix)
+	settings.Speaker = normalizeChatColor(settings.Speaker, defaults.Speaker)
+	settings.Content = normalizeChatColor(settings.Content, defaults.Content)
+	settings.LogDir = strings.TrimSpace(settings.LogDir)
+	settings.PMLogDir = strings.TrimSpace(settings.PMLogDir)
+	return settings
+}
+
+func chatSettingsPath() (string, error) {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "graal-rc", "chat.json"), nil
+}
+
+// loadChatSettingsLocked reads chat settings from the per-user backend file.
+// Caller must hold a.chatSettingsMu.
+func (a *App) loadChatSettingsLocked() ChatSettings {
+	a.chatSettings = normalizeChatSettings(DefaultChatSettings)
+	a.chatSettingsLoaded = true
+	a.chatSettingsExists = false
+	path, err := chatSettingsPath()
+	if err != nil {
+		return a.chatSettings
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return a.chatSettings
+	}
+	var settings ChatSettings
+	if err := json.Unmarshal(b, &settings); err == nil {
+		a.chatSettings = normalizeChatSettings(settings)
+		a.chatSettingsExists = true
+	}
+	return a.chatSettings
+}
+
+// GetChatSettings returns the shared chat preferences.
+func (a *App) GetChatSettings() ChatSettingsState {
+	a.chatSettingsMu.Lock()
+	defer a.chatSettingsMu.Unlock()
+	if !a.chatSettingsLoaded {
+		a.loadChatSettingsLocked()
+	}
+	return ChatSettingsState{Settings: a.chatSettings, Exists: a.chatSettingsExists}
+}
+
+// SetChatSettings persists chat preferences and broadcasts them to every open
+// Wails window so the RC chat updates immediately after editing Settings.
+func (a *App) SetChatSettings(settings ChatSettings) error {
+	settings = normalizeChatSettings(settings)
+
+	a.chatSettingsMu.Lock()
+	if !a.chatSettingsLoaded {
+		a.loadChatSettingsLocked()
+	}
+	a.chatSettings = settings
+	a.chatSettingsExists = true
+	err := a.persistChatSettingsLocked(settings)
+	a.chatSettingsMu.Unlock()
+	if err != nil {
+		return err
+	}
+
+	a.logMu.Lock()
+	a.logEnabled = settings.LogChat
+	a.logDir = settings.LogDir
+	a.pmLogEnabled = settings.PMLog
+	a.pmLogDir = settings.PMLogDir
+	a.logMu.Unlock()
+	return nil
+}
+
+func (a *App) persistChatSettingsLocked(settings ChatSettings) error {
+	path, err := chatSettingsPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	b, err := json.Marshal(settings)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		return err
+	}
+	if a.app != nil {
+		a.app.Event.Emit("rc:chatSettings", string(b))
+	}
+	return nil
 }
 
 // codingPath returns the coding-settings file location.

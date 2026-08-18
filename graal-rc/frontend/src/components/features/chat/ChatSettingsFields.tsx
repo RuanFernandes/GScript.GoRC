@@ -1,6 +1,6 @@
 // ChatSettingsFields: the editable chat-color + logging controls, shared by the
 // ChatSettingsDialog (RcScreen header) and the Settings window's Chat section.
-// Driven by useChatSettings (persisted to localStorage). No action buttons — the
+// Driven by useChatSettings (persisted by the Go backend). No action buttons — the
 // caller renders Reset/Done as fits its container.
 import {Input} from "@/components/ui/input"
 import {Button} from "@/components/ui/button"

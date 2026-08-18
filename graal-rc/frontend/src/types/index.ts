@@ -17,6 +17,8 @@ export type {
 } from "../../bindings/graal-rc/internal/sqlite/models"
 export type {
   CodingSettings,
+  ChatSettings,
+  ChatSettingsState,
   AppTheme,
   AppThemeStore,
   RemoteTheme,
@@ -38,7 +40,7 @@ export type {
   State as SyncState,
 } from "../../bindings/graal-rc/internal/sync/models"
 export type {Entry as AuditEntry} from "../../bindings/graal-rc/internal/audit/models"
-export type {Backup as DeploymentBackup} from "../../bindings/graal-rc/internal/deploy/models"
+export type {Backup as DeploymentBackup, BackupDiff as DeploymentBackupDiff} from "../../bindings/graal-rc/internal/deploy/models"
 export type {ChangeRetentionSettings} from "../../bindings/graal-rc/models"
 import type {GsFunction} from "@/lib/gscriptApi"
 export type {GsFunction}
@@ -99,20 +101,6 @@ export interface ChatTab {
   channel: string
   label: string
   messages: ChatMessage[]
-}
-
-// User-configurable chat colors + optional logging (persisted in localStorage).
-export interface ChatSettings {
-  timestamp: string
-  rcPrefix: string
-  ncPrefix: string
-  ircPrefix: string
-  speaker: string
-  content: string
-  logChat: boolean
-  logDir: string
-  pmLog: boolean
-  pmLogDir: string
 }
 
 // Finite set of top-level views the shell can render. Centralized so the

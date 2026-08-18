@@ -24,6 +24,7 @@ import {
   List,
   RefreshCw,
   Search,
+  Trash2,
   Upload,
 } from "lucide-react"
 import {toast} from "sonner"
@@ -188,10 +189,13 @@ export function FileBrowserWindowScreen() {
   // Files window does not expand the entire folder tree.
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
 
-  // Dialog state for rename / delete / move.
+  // Dialog state for rename / delete / move, including the two-step bulk
+  // delete confirmation.
   const [renameTarget, setRenameTarget] = useState<FileBrowserEntry | null>(null)
   const [renameValue, setRenameValue] = useState("")
   const [deleteTarget, setDeleteTarget] = useState<FileBrowserEntry | null>(null)
+  const [bulkDeleteTargets, setBulkDeleteTargets] = useState<FileBrowserEntry[]>([])
+  const [bulkDeleteConfirmTargets, setBulkDeleteConfirmTargets] = useState<FileBrowserEntry[]>([])
   const [moveTargets, setMoveTargets] = useState<FileBrowserEntry[]>([])
   const [moveDest, setMoveDest] = useState("")
   const [moveName, setMoveName] = useState("")
@@ -476,6 +480,17 @@ export function FileBrowserWindowScreen() {
     setMoveName("")
   }
 
+  const openBulkDelete = () => {
+    if (selectedFileEntries.length === 0 || bulkBusy) return
+    setBulkDeleteTargets([...selectedFileEntries])
+  }
+
+  const continueBulkDelete = () => {
+    if (bulkDeleteTargets.length === 0 || bulkBusy) return
+    setBulkDeleteConfirmTargets(bulkDeleteTargets)
+    setBulkDeleteTargets([])
+  }
+
   const downloadSelected = async () => {
     if (!hasDownloadDir || selectedFileEntries.length === 0 || bulkBusy) return
     const targets = [...selectedFileEntries]
@@ -545,6 +560,29 @@ export function FileBrowserWindowScreen() {
     if (!target) return
     setDeleteTarget(null)
     await fb.remove(target)
+  }
+
+  const doBulkDelete = async () => {
+    const targets = bulkDeleteConfirmTargets
+    if (targets.length === 0 || bulkBusy) return
+    setBulkDeleteConfirmTargets([])
+    setBulkBusy(true)
+    const succeeded = new Set<string>()
+    try {
+      for (const entry of targets) {
+        if (await fb.remove(entry)) succeeded.add(entry.path)
+      }
+    } finally {
+      setBulkBusy(false)
+    }
+    if (succeeded.size > 0) {
+      toast.success(t("file.deletedCount", {count: succeeded.size}))
+      setSelectedPaths((previous) => {
+        const next = new Set(previous)
+        succeeded.forEach((path) => next.delete(path))
+        return next
+      })
+    }
   }
 
   // Double-click a file: download + open by type (media / text / db / download).
@@ -790,6 +828,15 @@ export function FileBrowserWindowScreen() {
                 >
                   <FolderOpen />{t("file.moveSelected")}
                 </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={bulkBusy}
+                  className="text-destructive hover:text-destructive"
+                  onClick={openBulkDelete}
+                >
+                  <Trash2 />{t("file.deleteSelected")}
+                </Button>
                 <Button variant="ghost" size="sm" disabled={bulkBusy} onClick={clearSelection}>
                   {t("file.clearSelection")}
                 </Button>
@@ -937,6 +984,51 @@ export function FileBrowserWindowScreen() {
             <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction onClick={doMove} disabled={!moveValid}>
               {t("file.move")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* First bulk-delete confirmation: show the exact remote paths. */}
+      <AlertDialog open={bulkDeleteTargets.length > 0} onOpenChange={(v) => !v && setBulkDeleteTargets([])}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("file.bulkDeleteTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>{t("file.bulkDeleteDescription")}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <ul className="max-h-64 list-disc space-y-1 overflow-y-auto rounded-md border p-3 pl-7 text-sm text-foreground">
+            {bulkDeleteTargets.map((entry) => (
+              <li key={entry.path} className="break-all underline">
+                {entry.path}
+              </li>
+            ))}
+          </ul>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction onClick={continueBulkDelete} disabled={bulkBusy}>
+              {t("file.continue")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Second bulk-delete confirmation: only this step starts mutations. */}
+      <AlertDialog open={bulkDeleteConfirmTargets.length > 0} onOpenChange={(v) => !v && setBulkDeleteConfirmTargets([])}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t("file.bulkDeleteConfirmTitle", {count: bulkDeleteConfirmTargets.length})}
+            </AlertDialogTitle>
+            <AlertDialogDescription>{t("file.bulkDeleteConfirmDescription")}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={bulkBusy}>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={doBulkDelete}
+              disabled={bulkBusy}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {t("file.delete")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
