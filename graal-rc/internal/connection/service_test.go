@@ -2,6 +2,8 @@ package connection
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -80,6 +82,60 @@ func TestScriptListsRequestsAreCoalescedAcrossFilters(t *testing.T) {
 	next, owns := s.beginScriptListsRequest()
 	if !owns || next == owner {
 		t.Fatal("a completed request should allow a new snapshot")
+	}
+}
+
+func TestExecuteRejectsAStoppedEventPump(t *testing.T) {
+	s := NewService()
+	s.mu.Lock()
+	s.handle = 1
+	s.mu.Unlock()
+	s.pumpMu.Lock()
+	s.pumpErr = errors.New("callback fault")
+	s.pumpMu.Unlock()
+
+	err := s.Execute("/test")
+	if err == nil || !strings.Contains(err.Error(), "event pump unavailable") {
+		t.Fatalf("Execute() error = %v, want the event-pump failure", err)
+	}
+}
+
+func TestFailPumpClearsServerAndPublishesFailure(t *testing.T) {
+	s := NewService()
+	s.mu.Lock()
+	s.handle = 1
+	s.serverName = "Testbed3d"
+	s.mu.Unlock()
+	done := make(chan struct{})
+	s.pumpMu.Lock()
+	s.pumpDone = done
+	s.pumpMu.Unlock()
+
+	type event struct {
+		name string
+		data []any
+	}
+	var events []event
+	s.SetEmitter(func(name string, data ...any) {
+		events = append(events, event{name: name, data: data})
+	})
+	s.failPump(1, done, errors.New("callback fault"))
+
+	status := s.Status()
+	if status.ServerName != "" || status.Connected || status.Authenticated {
+		t.Fatalf("failed session status = %+v, want no active server", status)
+	}
+	if len(events) != 1 || events[0].name != "rc:pumpError" {
+		t.Fatalf("pump events = %+v, want one rc:pumpError event", events)
+	}
+	if len(events[0].data) != 1 || !strings.Contains(events[0].data[0].(string), "callback fault") {
+		t.Fatalf("pump event data = %#v, want callback fault", events[0].data)
+	}
+}
+
+func TestSyncScriptFetchUsesReferenceClientConcurrency(t *testing.T) {
+	if ncFetchConcurrency != 1 {
+		t.Fatalf("ncFetchConcurrency = %d, want serialized NC requests", ncFetchConcurrency)
 	}
 }
 

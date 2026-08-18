@@ -1301,7 +1301,7 @@ func ConnectToServer(h Handle, index int) error {
 	}
 	r1, _, _ := procConnectToServer.Call(uintptr(h), serverIndex)
 	if r1 == 0 {
-		return errors.New(LastError(h))
+		return surfaceError(h, "rc_connect_to_server failed")
 	}
 	return nil
 }
@@ -1381,7 +1381,7 @@ func ConnectToNCServer(h Handle) error {
 	}
 	r1, _, _ := procConnectToNcServer.Call(uintptr(h))
 	if r1 == 0 {
-		return errors.New(LastError(h))
+		return surfaceError(h, "rc_connect_to_nc_server failed")
 	}
 	return nil
 }
@@ -1393,7 +1393,7 @@ func DisconnectNC(h Handle) error {
 	}
 	r1, _, _ := procDisconnectNc.Call(uintptr(h))
 	if r1 == 0 {
-		return errors.New(LastError(h))
+		return surfaceError(h, "rc_disconnect_nc failed")
 	}
 	return nil
 }
@@ -1405,7 +1405,7 @@ func IrcLogin(h Handle) error {
 	}
 	r1, _, _ := procIrcLogin.Call(uintptr(h))
 	if r1 == 0 {
-		return errors.New(LastError(h))
+		return surfaceError(h, "rc_irc_login failed")
 	}
 	return nil
 }
@@ -1443,7 +1443,7 @@ func SendIrcText(h Handle, command, p1, p2, p3 string) error {
 	runtime.KeepAlive(a2)
 	runtime.KeepAlive(a3)
 	if r1 == 0 {
-		return errors.New(LastError(h))
+		return surfaceError(h, "rc_send_irc_text failed")
 	}
 	return nil
 }
@@ -1460,7 +1460,7 @@ func Execute(h Handle, message string) error {
 	r1, _, _ := procExecute.Call(uintptr(h), uintptr(unsafe.Pointer(msg)))
 	runtime.KeepAlive(msg)
 	if r1 == 0 {
-		return errors.New(LastError(h))
+		return surfaceError(h, "rc_execute failed: server is not authenticated or the socket rejected the packet")
 	}
 	return nil
 }
@@ -1477,7 +1477,7 @@ func SetNickname(h Handle, nickname string) error {
 	r1, _, _ := procSetNickname.Call(uintptr(h), uintptr(unsafe.Pointer(nick)))
 	runtime.KeepAlive(nick)
 	if r1 == 0 {
-		return errors.New(LastError(h))
+		return surfaceError(h, "rc_set_nickname failed")
 	}
 	return nil
 }
@@ -2367,6 +2367,14 @@ func CopyFileBrowserFiles(h Handle) ([]FileBrowserEntry, error) {
 }
 
 // callStr1 calls a (handle, const char*) DLL function returning int (0 = error).
+func nativeCallError(h Handle, p *proc) error {
+	defaultMessage := "native operation failed"
+	if p != nil && p.name != "" {
+		defaultMessage = p.name + " failed"
+	}
+	return surfaceError(h, defaultMessage)
+}
+
 func callStr1(h Handle, p *proc, a string) error {
 	if err := load(); err != nil {
 		return err
@@ -2378,7 +2386,7 @@ func callStr1(h Handle, p *proc, a string) error {
 	r1, _, _ := p.Call(uintptr(h), uintptr(unsafe.Pointer(ptr)))
 	runtime.KeepAlive(ptr)
 	if r1 == 0 {
-		return errors.New(LastError(h))
+		return nativeCallError(h, p)
 	}
 	return nil
 }
@@ -2400,7 +2408,7 @@ func callStr2(h Handle, p *proc, a, b string) error {
 	runtime.KeepAlive(pa)
 	runtime.KeepAlive(pb)
 	if r1 == 0 {
-		return errors.New(LastError(h))
+		return nativeCallError(h, p)
 	}
 	return nil
 }
@@ -2427,7 +2435,7 @@ func callStr3(h Handle, p *proc, a, b, c string) error {
 	runtime.KeepAlive(pb)
 	runtime.KeepAlive(pc)
 	if r1 == 0 {
-		return errors.New(LastError(h))
+		return nativeCallError(h, p)
 	}
 	return nil
 }
@@ -2440,7 +2448,7 @@ func callHandle(h Handle, p *proc) error {
 	}
 	r1, _, _ := p.Call(uintptr(h))
 	if r1 == 0 {
-		return errors.New(LastError(h))
+		return nativeCallError(h, p)
 	}
 	return nil
 }
@@ -2462,7 +2470,7 @@ func callHandleIDStr(h Handle, p *proc, playerID int, a string) error {
 	r1, _, _ := p.Call(uintptr(h), nativePlayerID, uintptr(unsafe.Pointer(ptr)))
 	runtime.KeepAlive(ptr)
 	if r1 == 0 {
-		return errors.New(LastError(h))
+		return nativeCallError(h, p)
 	}
 	return nil
 }
@@ -2480,7 +2488,7 @@ func callHandleStr(h Handle, p *proc, content string) error {
 	r1, _, _ := p.Call(uintptr(h), uintptr(unsafe.Pointer(c)))
 	runtime.KeepAlive(c)
 	if r1 == 0 {
-		return errors.New(LastError(h))
+		return nativeCallError(h, p)
 	}
 	return nil
 }

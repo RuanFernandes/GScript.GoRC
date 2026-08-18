@@ -423,6 +423,7 @@ func (a *App) startSyncEngine() {
 				a.app.Event.Emit("rc:syncConfig", string(b))
 			}
 		}
+		a.emitSyncStatus()
 		return
 	}
 	if a.graalScriptLSP != nil {
@@ -471,6 +472,7 @@ func (a *App) startSyncEngine() {
 			a.app.Event.Emit("rc:syncConfig", string(b))
 		}
 	}
+	a.emitSyncStatus()
 }
 
 // stopSyncEngine tears the engine down.
@@ -582,6 +584,15 @@ func (a *App) decorateSyncStatus(status sync.SyncStatus) sync.SyncStatus {
 		return status
 	}
 	session := a.sessions.Status()
+	if strings.TrimSpace(session.ServerName) == "" || !session.Connected || !session.Authenticated {
+		// A failed event pump clears the service server name while the native
+		// handle is still waiting for orderly logout. Do not expose the old
+		// engine/config as if it belonged to a live server; the persisted config
+		// remains keyed by the server and is restored after the next connection.
+		status.Enabled = false
+		status.InitialSync = false
+		status.Server = ""
+	}
 	status.ScriptRightsReady = session.RightsReady
 	status.ScriptWriteAccess = session.ScriptWriteAccess
 	status.SyncRequired = session.RightsReady && session.ScriptWriteAccess

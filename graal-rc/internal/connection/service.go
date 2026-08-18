@@ -1045,11 +1045,12 @@ const ncReconnectInterval = 2 * time.Second
 const ncKeepaliveInterval = 3 * time.Minute
 
 // ncFetchConcurrency bounds the number of in-flight OpenScript requests during
-// a bulk fetch. The send is serialized on dllMu, but the wait for the reply is
-// not, so pipelining many requests is much faster than strict serial fetches.
-// 16 keeps the server from being flooded while still saturating the round-trip
-// pipeline.
-const ncFetchConcurrency = 16
+// a bulk fetch. The reference C++ client performs NC calls from one UI/event
+// loop, and grclib's request callbacks do not carry request IDs. Serializing
+// the request/response stream is therefore intentional: dllMu protects entry
+// into the DLL, but it cannot make several outstanding protocol requests safe
+// when a server returns them out of order or closes the NC socket mid-burst.
+const ncFetchConcurrency = 1
 
 // maybeConnectNC opens the NC socket when the server exposes one to this
 // account (HasNCServer) and it is not yet connected. Unlike a one-shot latch,
@@ -1633,11 +1634,9 @@ func (s *Service) SendIrcText(command, p1, p2, p3 string) error {
 
 // Execute sends a chat line or slash command to the active server.
 func (s *Service) Execute(message string) error {
-	s.mu.Lock()
-	h := s.handle
-	s.mu.Unlock()
-	if h == 0 {
-		return errors.New("not connected: log in first")
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
 	}
 	return rclib.Execute(h, message)
 }
@@ -2316,6 +2315,9 @@ func (s *Service) requireHandle() (rclib.Handle, error) {
 	s.pumpMu.Unlock()
 	if pumpErr != nil {
 		return 0, fmt.Errorf("connection event pump unavailable: %w", pumpErr)
+	}
+	if !rclib.IsConnected(h) || !rclib.IsAuthenticated(h) {
+		return 0, errors.New("server connection is no longer authenticated")
 	}
 	return h, nil
 }
@@ -3346,6 +3348,10 @@ func (s *Service) logout() {
 
 // Status returns a snapshot of the current session state.
 func (s *Service) Status() Status {
+	s.pumpMu.Lock()
+	pumpFailed := s.pumpErr != nil
+	s.pumpMu.Unlock()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -3358,7 +3364,7 @@ func (s *Service) Status() Status {
 		st.Loaded = true
 		st.DLLPath = dllPath
 	}
-	if s.handle != 0 {
+	if s.handle != 0 && !pumpFailed {
 		st.Connected = rclib.IsConnected(s.handle)
 		st.Authenticated = rclib.IsAuthenticated(s.handle)
 	}

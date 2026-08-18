@@ -299,8 +299,15 @@ func (a *App) attach(app *application.App) {
 		// A disconnect can arrive without a user clicking the logout button. Tear
 		// down every server-scoped window before forwarding the event so the login
 		// screen can never coexist with stale editor/file-browser context.
-		if name == "rc:disconnected" {
+		if name == "rc:disconnected" || name == "rc:pumpError" {
 			a.closeSessionWindows()
+			if name == "rc:pumpError" {
+				// Stop server-scoped sync work independently of the frontend. The
+				// native pump can fail while a secondary window is open or while
+				// the webview is still transitioning, and no background worker
+				// should keep issuing requests against that handle.
+				go a.stopSyncEngine()
+			}
 		}
 		if name == "rc:pm" && len(data) >= 4 {
 			id, idOK := data[0].(int)
