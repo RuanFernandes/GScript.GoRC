@@ -2,6 +2,8 @@ package connection
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -80,6 +82,114 @@ func TestScriptListsRequestsAreCoalescedAcrossFilters(t *testing.T) {
 	next, owns := s.beginScriptListsRequest()
 	if !owns || next == owner {
 		t.Fatal("a completed request should allow a new snapshot")
+	}
+}
+
+func TestExecuteRejectsAStoppedEventPump(t *testing.T) {
+	s := NewService()
+	s.mu.Lock()
+	s.handle = 1
+	s.mu.Unlock()
+	s.pumpMu.Lock()
+	s.pumpErr = errors.New("callback fault")
+	s.pumpMu.Unlock()
+
+	err := s.Execute("/test")
+	if err == nil || !strings.Contains(err.Error(), "event pump unavailable") {
+		t.Fatalf("Execute() error = %v, want the event-pump failure", err)
+	}
+}
+
+func TestResolveEditorForAccountAcceptsCanonicalSelfWithEmptyComments(t *testing.T) {
+	s := NewService()
+	waiter, isNew := s.registerEditor(editorSelfKey("comments"))
+	if !isNew {
+		t.Fatal("self comments waiter was not newly registered")
+	}
+
+	if !s.resolveEditorForAccount("comments", "Graal5766947", CommentsData{
+		Account: "Graal5766947",
+		Content: "",
+	}) {
+		t.Fatal("canonical comments callback did not resolve the self waiter")
+	}
+
+	select {
+	case <-waiter.done:
+	case <-time.After(time.Second):
+		t.Fatal("comments waiter was not released")
+	}
+	data, ok := waiter.reply.(CommentsData)
+	if !ok || data.Account != "Graal5766947" || data.Content != "" {
+		t.Fatalf("comments reply = %#v, want canonical account with empty content", waiter.reply)
+	}
+}
+
+func TestResolveEditorForAccountNormalizesCaseAndFailsClosedWhenAmbiguous(t *testing.T) {
+	s := NewService()
+	waiter, isNew := s.registerEditor(editorKey("attrs", "Alias"))
+	if !isNew {
+		t.Fatal("attributes waiter was not newly registered")
+	}
+	if !s.resolveEditorForAccount("attrs", "alias", AttrsData{Account: "alias"}) {
+		t.Fatal("case-insensitive attributes callback did not resolve")
+	}
+	select {
+	case <-waiter.done:
+	case <-time.After(time.Second):
+		t.Fatal("attributes waiter was not released")
+	}
+
+	first, _ := s.registerEditor(editorKey("comments", "one"))
+	second, _ := s.registerEditor(editorKey("comments", "two"))
+	if s.resolveEditorForAccount("comments", "canonical", CommentsData{Account: "canonical"}) {
+		t.Fatal("ambiguous callback should not resolve an arbitrary comments waiter")
+	}
+	for name, pending := range map[string]*editorWait{"one": first, "two": second} {
+		select {
+		case <-pending.done:
+			t.Fatalf("ambiguous callback released %s waiter", name)
+		default:
+		}
+	}
+}
+
+func TestFailPumpClearsServerAndPublishesFailure(t *testing.T) {
+	s := NewService()
+	s.mu.Lock()
+	s.handle = 1
+	s.serverName = "Testbed3d"
+	s.mu.Unlock()
+	done := make(chan struct{})
+	s.pumpMu.Lock()
+	s.pumpDone = done
+	s.pumpMu.Unlock()
+
+	type event struct {
+		name string
+		data []any
+	}
+	var events []event
+	s.SetEmitter(func(name string, data ...any) {
+		events = append(events, event{name: name, data: data})
+	})
+	s.failPump(1, done, errors.New("callback fault"))
+
+	status := s.Status()
+	if status.ServerName != "" || status.Connected || status.Authenticated {
+		t.Fatalf("failed session status = %+v, want no active server", status)
+	}
+	if len(events) != 1 || events[0].name != "rc:pumpError" {
+		t.Fatalf("pump events = %+v, want one rc:pumpError event", events)
+	}
+	if len(events[0].data) != 1 || !strings.Contains(events[0].data[0].(string), "callback fault") {
+		t.Fatalf("pump event data = %#v, want callback fault", events[0].data)
+	}
+}
+
+func TestSyncScriptFetchUsesReferenceClientConcurrency(t *testing.T) {
+	if ncFetchConcurrency != 16 {
+		t.Fatalf("ncFetchConcurrency = %d, want bounded pipeline of 16 requests", ncFetchConcurrency)
 	}
 }
 
@@ -467,6 +577,32 @@ func TestReplaceSelfFolderRightsOnlyReportsRealChanges(t *testing.T) {
 	}
 	if stateChanged, permissionChanged := s.replaceSelfFolderRights(readOnly, 0, "Graal123", "Testbed3d"); !stateChanged || !permissionChanged {
 		t.Fatalf("reconnect with changed rights = stateChanged %v permissionChanged %v, want true true", stateChanged, permissionChanged)
+	}
+}
+
+func TestReplaceSelfFolderRightsIfCurrentRejectsStaleResponse(t *testing.T) {
+	access, err := folderrights.Parse("rw WEAPONS/*")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	s := NewService()
+	s.mu.Lock()
+	s.serverEpoch = 7
+	s.serverName = "CurrentServer"
+	s.mu.Unlock()
+
+	if _, _, current := s.replaceSelfFolderRightsIfCurrent(6, access, 0, "Graal123"); current {
+		t.Fatal("stale rights response was accepted for a newer server epoch")
+	}
+	s.rightsMu.RLock()
+	loaded := s.selfRightsLoaded
+	s.rightsMu.RUnlock()
+	if loaded {
+		t.Fatal("stale rights response populated the active permission cache")
+	}
+
+	if _, _, current := s.replaceSelfFolderRightsIfCurrent(7, access, 0, "Graal123"); !current {
+		t.Fatal("current rights response was rejected")
 	}
 }
 

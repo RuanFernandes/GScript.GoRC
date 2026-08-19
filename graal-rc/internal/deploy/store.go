@@ -28,6 +28,21 @@ type Backup struct {
 	SHA256    string `json:"sha256"`
 }
 
+// BackupDiff contains the snapshot and the current remote version for the
+// restore review screen. Binary or oversized content is represented by the
+// metadata fields only and leaves the text payloads empty.
+type BackupDiff struct {
+	Backup         Backup `json:"backup"`
+	BackupContent  string `json:"backupContent,omitempty"`
+	CurrentContent string `json:"currentContent,omitempty"`
+	Language       string `json:"language"`
+	Diffable       bool   `json:"diffable"`
+	DiffReason     string `json:"diffReason,omitempty"`
+	CurrentExists  bool   `json:"currentExists"`
+	CurrentSize    int64  `json:"currentSize"`
+	CurrentSHA256  string `json:"currentSha256,omitempty"`
+}
+
 type Store struct {
 	mu   sync.Mutex
 	root string

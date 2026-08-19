@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -8,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
@@ -219,6 +222,132 @@ func (a *App) GetDeploymentBackups(limit int) ([]DeploymentBackup, error) {
 	return a.backups.List(limit)
 }
 
+const maxDeploymentDiffTextBytes = 8 * 1024 * 1024
+
+func (a *App) validateDeploymentBackupServer(meta deploylib.Backup) error {
+	status := a.sessions.Status()
+	if meta.Server != "" && meta.Server != status.ServerName {
+		return fmt.Errorf("backup belongs to server %q, but the current server is %q", meta.Server, status.ServerName)
+	}
+	return nil
+}
+
+func (a *App) readCurrentDeploymentContent(meta deploylib.Backup) ([]byte, error) {
+	switch meta.Resource {
+	case "script":
+		kind, key, ok := strings.Cut(meta.Target, ":")
+		if !ok || kind == "" || key == "" {
+			return nil, errors.New("invalid script backup target")
+		}
+		switch kind {
+		case "weapon", "class", "npc":
+		default:
+			return nil, fmt.Errorf("unsupported script type %q", kind)
+		}
+		reply, err := a.sessions.OpenScript(kind, key)
+		if err != nil {
+			return nil, err
+		}
+		return []byte(reply.Script), nil
+	case "npcflags":
+		id, err := strconv.Atoi(meta.Target)
+		if err != nil {
+			return nil, err
+		}
+		reply, err := a.sessions.OpenNPCFlags(id)
+		if err != nil {
+			return nil, err
+		}
+		return []byte(reply.Script), nil
+	case "servertext":
+		reply, err := a.sessions.OpenServerText(meta.Target)
+		if err != nil {
+			return nil, err
+		}
+		return []byte(reply.Script), nil
+	case "textfile", "file", "sqlite":
+		return a.sessions.DownloadFile(meta.Target)
+	default:
+		return nil, fmt.Errorf("unsupported backup resource %q", meta.Resource)
+	}
+}
+
+func deploymentBackupLanguage(meta deploylib.Backup) string {
+	switch meta.Resource {
+	case "script":
+		return "graalscript"
+	case "npcflags", "servertext":
+		return "serverconfig"
+	}
+
+	switch strings.ToLower(strings.TrimPrefix(filepath.Ext(meta.Target), ".")) {
+	case "json":
+		return "json"
+	case "js":
+		return "javascript"
+	case "ts":
+		return "typescript"
+	case "html":
+		return "html"
+	case "css":
+		return "css"
+	case "xml":
+		return "xml"
+	case "md":
+		return "markdown"
+	case "yaml", "yml":
+		return "yaml"
+	default:
+		return "plaintext"
+	}
+}
+
+func newDeploymentBackupDiff(meta deploylib.Backup, backupContent, currentContent []byte) deploylib.BackupDiff {
+	diff := deploylib.BackupDiff{
+		Backup:        meta,
+		Language:      deploymentBackupLanguage(meta),
+		CurrentExists: true,
+		CurrentSize:   int64(len(currentContent)),
+	}
+	currentDigest := sha256.Sum256(currentContent)
+	diff.CurrentSHA256 = hex.EncodeToString(currentDigest[:])
+
+	if len(backupContent) > maxDeploymentDiffTextBytes || len(currentContent) > maxDeploymentDiffTextBytes {
+		diff.DiffReason = "too_large"
+		return diff
+	}
+	if !utf8.Valid(backupContent) || !utf8.Valid(currentContent) {
+		diff.DiffReason = "binary"
+		return diff
+	}
+
+	diff.BackupContent = string(backupContent)
+	diff.CurrentContent = string(currentContent)
+	diff.Diffable = true
+	return diff
+}
+
+// GetDeploymentBackupDiff reads a saved snapshot and fetches the current
+// remote version without changing either one. Restore remains a separate
+// operation so the review screen can be opened safely before confirmation.
+func (a *App) GetDeploymentBackupDiff(backupID string) (deploylib.BackupDiff, error) {
+	if a == nil || a.backups == nil {
+		return deploylib.BackupDiff{}, errors.New("backup store is unavailable")
+	}
+	meta, backupContent, err := a.backups.Read(backupID)
+	if err != nil {
+		return deploylib.BackupDiff{}, err
+	}
+	if err := a.validateDeploymentBackupServer(meta); err != nil {
+		return deploylib.BackupDiff{}, err
+	}
+	currentContent, err := a.readCurrentDeploymentContent(meta)
+	if err != nil {
+		return deploylib.BackupDiff{}, fmt.Errorf("read current server version: %w", err)
+	}
+	return newDeploymentBackupDiff(meta, backupContent, currentContent), nil
+}
+
 func (a *App) DeleteDeploymentBackup(backupID string) error {
 	if a == nil || a.backups == nil {
 		return errors.New("backup store is unavailable")
@@ -275,9 +404,8 @@ func (a *App) RollbackDeployment(backupID string) error {
 	if err != nil {
 		return err
 	}
-	status := a.sessions.Status()
-	if meta.Server != "" && meta.Server != status.ServerName {
-		return fmt.Errorf("backup belongs to server %q, but the current server is %q", meta.Server, status.ServerName)
+	if err := a.validateDeploymentBackupServer(meta); err != nil {
+		return err
 	}
 
 	var rollbackErr error

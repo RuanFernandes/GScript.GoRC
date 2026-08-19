@@ -44,7 +44,10 @@ import type {
   AppTheme,
   AppThemeStore,
   DeploymentBackup,
+  DeploymentBackupDiff,
   ChangeRetentionSettings,
+  ChatSettings,
+  ChatSettingsState,
 } from "@/types"
 import type {PluginBuildResult, PluginFile, PluginInfo, PluginLogEntry, PluginMonacoLanguage, PluginUIWindowInfo} from "@/plugins/types"
 
@@ -148,6 +151,8 @@ export interface RcService {
   listFonts(): Promise<string[] | null>
   getCodingSettings(): Promise<CodingSettings>
   setCodingSettings(theme: string, fontFamily: string, fontSize: number, tabSize: number): Promise<void>
+  getChatSettings(): Promise<ChatSettingsState>
+  setChatSettings(settings: ChatSettings): Promise<void>
   setExternalEditor(editor: string): Promise<void>
   getAppThemeStore(): Promise<AppThemeStore | null>
   saveAppTheme(theme: AppTheme): Promise<void>
@@ -260,6 +265,7 @@ export interface RcService {
   getAuditEntries(limit: number): Promise<AuditEntry[] | null>
   clearAuditEntries(): Promise<void>
   getDeploymentBackups(limit: number): Promise<DeploymentBackup[] | null>
+  getDeploymentBackupDiff(backupID: string): Promise<DeploymentBackupDiff>
   deleteDeploymentBackup(backupID: string): Promise<void>
   rollbackDeployment(backupID: string): Promise<void>
   getChangeRetention(): Promise<ChangeRetentionSettings>
@@ -372,6 +378,8 @@ export const rcService: RcService = {
   listFonts: () => App.ListFonts(),
   getCodingSettings: () => App.GetCodingSettings(),
   setCodingSettings: (theme, fontFamily, fontSize, tabSize) => App.SetCodingSettings(theme, fontFamily, fontSize, tabSize),
+  getChatSettings: () => App.GetChatSettings(),
+  setChatSettings: (settings) => App.SetChatSettings(settings),
   setExternalEditor: (editor) => App.SetExternalEditor(editor),
   getAppThemeStore: () => App.GetAppThemeStore(),
   saveAppTheme: (theme) => App.SaveAppTheme(theme),
@@ -580,6 +588,7 @@ export const rcService: RcService = {
   getAuditEntries: (limit) => App.GetAuditEntries(limit),
   clearAuditEntries: () => App.ClearAuditEntries(),
   getDeploymentBackups: (limit) => App.GetDeploymentBackups(limit),
+  getDeploymentBackupDiff: (backupID) => App.GetDeploymentBackupDiff(backupID),
   deleteDeploymentBackup: (backupID) => App.DeleteDeploymentBackup(backupID),
   rollbackDeployment: (backupID) => App.RollbackDeployment(backupID),
   getChangeRetention: () => App.GetChangeRetention(),

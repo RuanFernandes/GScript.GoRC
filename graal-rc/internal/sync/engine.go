@@ -111,6 +111,11 @@ type Engine struct {
 	running           bool
 	stop              chan struct{}
 	stopped           chan struct{}
+	// startupDone tracks the asynchronous initial bootstrap started by
+	// StartAsync. Stop cancels and waits for it before the shared connection is
+	// reused by another server.
+	startupDone       chan struct{}
+	startupCancel     context.CancelFunc
 	watcher           *fsnotify.Watcher
 	emit              func(string, ...any)
 	now               func() time.Time
@@ -271,7 +276,24 @@ func (e *Engine) SetPaused(until int64) {
 	e.emitStatus()
 }
 
+// Start runs the initial bootstrap synchronously. It is kept for callers that
+// explicitly need to know when the first sync pass has completed.
 func (e *Engine) Start(ctx context.Context) {
+	e.start(ctx, false)
+}
+
+// StartAsync starts the engine without making the caller wait for the initial
+// script bootstrap. This is used by the desktop connection path: server login
+// must be reported to the UI as soon as the main RC socket is authenticated,
+// while the potentially long initial sync continues in the background.
+func (e *Engine) StartAsync(ctx context.Context) {
+	e.start(ctx, true)
+}
+
+func (e *Engine) start(ctx context.Context, async bool) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	e.mu.Lock()
 	if e.running {
 		e.mu.Unlock()
@@ -295,7 +317,38 @@ func (e *Engine) Start(ctx context.Context) {
 	stop, stopped, cfg := e.stop, e.stopped, e.cfg
 	e.nextSyncAt = 0
 	e.initialSyncActive = !e.initialSyncDone
+	var startupDone chan struct{}
+	var startupCtx context.Context
+	var startupCancel context.CancelFunc
+	if async {
+		startupCtx, startupCancel = context.WithCancel(ctx)
+		startupDone = make(chan struct{})
+		e.startupDone = startupDone
+		e.startupCancel = startupCancel
+	}
 	e.mu.Unlock()
+
+	if async {
+		if err := e.startWatcher(cfg.OutputDir); err != nil {
+			log.Printf("sync watcher: %v", err)
+		}
+		go e.loop(ctx, stop, stopped)
+		go func() {
+			defer e.finishAsyncStartup(startupDone, startupCancel)
+			initialErr := e.bootstrap(startupCtx, cfg.OutputDir)
+			if initialErr != nil {
+				log.Printf("sync bootstrap: %v", initialErr)
+				// Keep retrying until the NC socket is ready or the engine is
+				// stopped. Keeping this worker alive lets Stop wait for any
+				// in-flight bootstrap before the handle changes servers.
+				e.retryBootstrap(startupCtx, cfg.OutputDir, stop)
+			} else {
+				e.setNextSyncAt(e.now().Add(pollDuration(cfg)))
+			}
+		}()
+		return
+	}
+
 	// NC connects asynchronously after the main server login. The first
 	// bootstrap therefore cannot assume the NC socket is ready yet; retrying
 	// here makes a configured sync start immediately when NC becomes available
@@ -311,6 +364,17 @@ func (e *Engine) Start(ctx context.Context) {
 		log.Printf("sync watcher: %v", err)
 	}
 	go e.loop(ctx, stop, stopped)
+}
+
+func (e *Engine) finishAsyncStartup(done chan struct{}, cancel context.CancelFunc) {
+	cancel()
+	e.mu.Lock()
+	if e.startupDone == done {
+		e.startupDone = nil
+		e.startupCancel = nil
+	}
+	e.mu.Unlock()
+	close(done)
 }
 
 func (e *Engine) retryBootstrap(ctx context.Context, dir string, stop <-chan struct{}) {
@@ -355,12 +419,20 @@ func (e *Engine) Stop() {
 	}
 	w := e.watcher
 	stopped := e.stopped
+	startupDone := e.startupDone
+	startupCancel := e.startupCancel
 	e.mu.Unlock()
+	if startupCancel != nil {
+		startupCancel()
+	}
 	if w != nil {
 		_ = w.Close()
 	}
 	if stopped != nil {
 		<-stopped
+	}
+	if startupDone != nil {
+		<-startupDone
 	}
 	// Polls, chat activity and list-change reconciles are serialized by
 	// workMu, but they may be running outside the loop goroutine. Wait for the

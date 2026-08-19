@@ -11,6 +11,35 @@ export interface ChangelogEntry {
 // the visible history from nullborne.com when the release service is reachable.
 const CHANGELOG_PT_BR: ChangelogEntry[] = [
   {
+    version: "3.3.0",
+    date: "19/08/2026",
+    title: "Conexão e editores de jogadores mais confiáveis",
+    summary: "Alinha as ações de jogador ao fluxo nativo do C++ e evita travamentos ao conectar e carregar comentários.",
+    current: true,
+    changes: [
+      "As ações do próprio usuário em Open, Open Rights, Open Access e Open Comments agora seguem os mesmos comandos do servidor usados pelo cliente C++, enquanto jogadores específicos continuam usando as requisições tipadas.",
+      "Comentários vazios agora são aceitos e propagados como resposta válida, sem aguardar indefinidamente ou provocar timeout.",
+      "Contas e aliases são normalizados de forma consistente; respostas canônicas do servidor são resolvidas com segurança e alvos ambíguos não são associados por engano.",
+      "A tela de seleção de servidor entra no RC assim que a autenticação termina; o primeiro Sync continua em segundo plano e é cancelado com segurança ao trocar de servidor.",
+    ],
+  },
+  {
+    version: "3.2.2",
+    date: "18/08/2026",
+    title: "Internal API bug fix",
+    summary: "Internal API bug fix.",
+    current: true,
+    changes: ["Internal API bug fix."],
+  },
+  {
+    version: "3.2.1",
+    date: "18/08/2026",
+    title: "Internal API bug fix",
+    summary: "Internal API bug fix.",
+    current: true,
+    changes: ["Internal API bug fix."],
+  },
+  {
     version: "3.2.0",
     date: "17/08/2026",
     title: "Cross-platform File Browser and external editing",
@@ -216,6 +245,26 @@ const CHANGELOG_PT_BR: ChangelogEntry[] = [
 
 const CHANGELOG_EN: ChangelogEntry[] = [
   {
+    version: "3.3.0", date: "2026-08-19", title: "More reliable connection and player editors",
+    summary: "Aligns player actions with the native C++ flow and prevents hangs while connecting or loading comments.", current: true,
+    changes: [
+      "Actions for the logged-in user in Open, Open Rights, Open Access and Open Comments now follow the same server commands used by the native C++ client, while specific players continue to use typed requests.",
+      "Empty comments are now accepted and propagated as a valid response instead of waiting indefinitely or timing out.",
+      "Accounts and aliases are normalized consistently; canonical server responses are resolved safely and ambiguous targets are never associated by guesswork.",
+      "The server selector enters the RC as soon as authentication completes; the first Sync continues in the background and is cancelled safely when switching servers.",
+    ],
+  },
+  {
+    version: "3.2.2", date: "2026-08-18", title: "Internal API bug fix",
+    summary: "Internal API bug fix.", current: true,
+    changes: ["Internal API bug fix."],
+  },
+  {
+    version: "3.2.1", date: "2026-08-18", title: "Internal API bug fix",
+    summary: "Internal API bug fix.", current: true,
+    changes: ["Internal API bug fix."],
+  },
+  {
     version: "3.2.0", date: "2026-08-17", title: "Cross-platform File Browser and external editing",
     summary: "Completes the File Browser workflow, adds native .nw/.gmap editing and makes GraalScript highlighting follow RC themes.", current: true,
     changes: [
@@ -375,6 +424,26 @@ const CHANGELOG_EN: ChangelogEntry[] = [
 ]
 
 const CHANGELOG_ES: ChangelogEntry[] = [
+  {
+    version: "3.3.0", date: "2026-08-19", title: "Conexión y editores de jugadores más fiables",
+    summary: "Alinea las acciones de jugadores con el flujo nativo de C++ y evita bloqueos al conectar o cargar comentarios.", current: true,
+    changes: [
+      "Las acciones del usuario conectado en Open, Open Rights, Open Access y Open Comments ahora siguen los mismos comandos del servidor que usa el cliente nativo de C++, mientras que los jugadores específicos continúan usando solicitudes tipadas.",
+      "Los comentarios vacíos ahora se aceptan y se propagan como una respuesta válida, sin esperar indefinidamente ni provocar un timeout.",
+      "Las cuentas y los alias se normalizan de forma consistente; las respuestas canónicas del servidor se resuelven de forma segura y los objetivos ambiguos nunca se asocian por suposición.",
+      "La pantalla de selección de servidores entra al RC en cuanto termina la autenticación; el primer Sync continúa en segundo plano y se cancela de forma segura al cambiar de servidor.",
+    ],
+  },
+  {
+    version: "3.2.2", date: "2026-08-18", title: "Internal API bug fix",
+    summary: "Internal API bug fix.", current: true,
+    changes: ["Internal API bug fix."],
+  },
+  {
+    version: "3.2.1", date: "2026-08-18", title: "Internal API bug fix",
+    summary: "Internal API bug fix.", current: true,
+    changes: ["Internal API bug fix."],
+  },
   {
     version: "3.2.0", date: "2026-08-17", title: "Cross-platform File Browser and external editing",
     summary: "Completes the File Browser workflow, adds native .nw/.gmap editing and makes GraalScript highlighting follow RC themes.", current: true,

@@ -129,8 +129,9 @@ export function ChatLine({message, settings, repeatLabel, onOpenLink}: ChatLineP
       {split ? (
         <>
           <span style={{color: settings.speaker}}>{split.speaker}</span>
-          <span style={{color: settings.content}}>:</span>
-          <LinkifiedText text={split.content} onOpenLink={onOpenLink} />
+          <span style={{color: settings.content}}>
+            :<LinkifiedText text={split.content} onOpenLink={onOpenLink} />
+          </span>
         </>
       ) : (
         <span style={{color: settings.content}}><LinkifiedText text={message.text} onOpenLink={onOpenLink} /></span>

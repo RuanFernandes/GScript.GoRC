@@ -129,9 +129,13 @@ type App struct {
 	editorCache   map[string]rclib.ScriptReply
 	editorDirty   map[string]bool
 
-	codingMu       sync.Mutex
-	codingSettings CodingSettings
-	appThemeMu     sync.Mutex
+	codingMu           sync.Mutex
+	codingSettings     CodingSettings
+	chatSettingsMu     sync.Mutex
+	chatSettings       ChatSettings
+	chatSettingsLoaded bool
+	chatSettingsExists bool
+	appThemeMu         sync.Mutex
 
 	graalScriptLSP *graalscript.LanguageServer
 	plugins        *pluginlib.Manager
@@ -295,8 +299,15 @@ func (a *App) attach(app *application.App) {
 		// A disconnect can arrive without a user clicking the logout button. Tear
 		// down every server-scoped window before forwarding the event so the login
 		// screen can never coexist with stale editor/file-browser context.
-		if name == "rc:disconnected" {
+		if name == "rc:disconnected" || name == "rc:pumpError" {
 			a.closeSessionWindows()
+			if name == "rc:pumpError" {
+				// Stop server-scoped sync work independently of the frontend. The
+				// native pump can fail while a secondary window is open or while
+				// the webview is still transitioning, and no background worker
+				// should keep issuing requests against that handle.
+				go a.stopSyncEngine()
+			}
 		}
 		if name == "rc:pm" && len(data) >= 4 {
 			id, idOK := data[0].(int)
@@ -1267,7 +1278,11 @@ func (a *App) ConnectToServer(index int) error {
 	a.stopSyncEngine()
 	a.closeSessionWindows()
 	err := a.sessions.ConnectToServer(index)
-	a.refreshServerChrome()
+	// Do not query the native player cache on the Wails connection path. The
+	// server socket is already authenticated here, and a native cache read can
+	// wait for the first player snapshot on slower servers. The tray refresh
+	// loop will populate the live count shortly after the RC screen opens.
+	a.refreshServerChromeFast()
 	if err == nil {
 		a.startSyncEngine()
 	}
@@ -2480,10 +2495,21 @@ func (a *App) Status() connection.Status { return a.sessions.Status() }
 // refreshServerChrome reconciles the main/players/scripts/settings window titles
 // and the tray tooltip with the current session state. Connected windows use
 // the shared "<resource> - <server>" title format; disconnected windows return
-// to their generic labels. Called on connect/logout and by the tray refresh
-// loop so a server-side disconnect (Status flips to !Connected) resets the
-// chrome without a frontend round-trip.
+// to their generic labels. Called on logout and by the tray refresh loop so a
+// server-side disconnect (Status flips to !Connected) resets the chrome without
+// a frontend round-trip.
 func (a *App) refreshServerChrome() {
+	a.refreshServerChromeWithPlayerCount(true)
+}
+
+// refreshServerChromeFast updates only metadata that is already available in
+// the session snapshot. It is used immediately after authentication so a
+// potentially delayed native player-cache read cannot hold ConnectToServer.
+func (a *App) refreshServerChromeFast() {
+	a.refreshServerChromeWithPlayerCount(false)
+}
+
+func (a *App) refreshServerChromeWithPlayerCount(loadPlayerCount bool) {
 	st := a.sessions.Status()
 	connected := st.Connected && st.Authenticated && st.ServerName != ""
 
@@ -2499,11 +2525,15 @@ func (a *App) refreshServerChrome() {
 		scriptsTitle = serverWindowTitle(st.ServerName, "Script Manager")
 		settingsTitle = serverWindowTitle(st.ServerName, "Settings")
 		filesTitle = serverWindowTitle(st.ServerName, "File Browser")
-		count := 0
-		if players, err := a.sessions.GetPlayers(); err == nil {
-			count = len(players)
+		if loadPlayerCount {
+			count := 0
+			if players, err := a.sessions.GetPlayers(); err == nil {
+				count = len(players)
+			}
+			tooltip = st.ServerName + ":" + strconv.Itoa(count)
+		} else {
+			tooltip = st.ServerName
 		}
-		tooltip = st.ServerName + ":" + strconv.Itoa(count)
 	}
 	if a.mainWindow != nil {
 		a.mainWindow.SetTitle(mainTitle)
@@ -3261,6 +3291,30 @@ type CodingSettings struct {
 	ExternalEditor string `json:"externalEditor"`
 }
 
+// ChatSettings are the chat colors and local logging preferences shared by
+// every Wails window. They live in the backend because each window has its own
+// webview and localStorage is not reliably shared between those windows.
+type ChatSettings struct {
+	Timestamp string `json:"timestamp"`
+	RCPrefix  string `json:"rcPrefix"`
+	NCPrefix  string `json:"ncPrefix"`
+	IRCPrefix string `json:"ircPrefix"`
+	Speaker   string `json:"speaker"`
+	Content   string `json:"content"`
+	LogChat   bool   `json:"logChat"`
+	LogDir    string `json:"logDir"`
+	PMLog     bool   `json:"pmLog"`
+	PMLogDir  string `json:"pmLogDir"`
+}
+
+// ChatSettingsState tells the frontend whether the backend has a persisted
+// value, so the first version using backend storage can migrate old
+// localStorage preferences without overwriting them with defaults.
+type ChatSettingsState struct {
+	Settings ChatSettings `json:"settings"`
+	Exists   bool         `json:"exists"`
+}
+
 const (
 	externalEditorVSCode      = "vscode"
 	externalEditorSublime     = "sublime"
@@ -3386,6 +3440,129 @@ var DefaultCodingSettings = CodingSettings{
 	FontSize:       14,
 	TabSize:        2,
 	ExternalEditor: externalEditorVSCode,
+}
+
+// DefaultChatSettings are the first-run chat appearance and logging values.
+var DefaultChatSettings = ChatSettings{
+	Timestamp: "#22c55e",
+	RCPrefix:  "#22c55e",
+	NCPrefix:  "#38bdf8",
+	IRCPrefix: "#a78bfa",
+	Speaker:   "#facc15",
+	Content:   "#e5e7eb",
+}
+
+func normalizeChatColor(value, fallback string) string {
+	value = strings.TrimSpace(value)
+	if len(value) != 7 || value[0] != '#' {
+		return fallback
+	}
+	for _, r := range value[1:] {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			return fallback
+		}
+	}
+	return strings.ToUpper(value)
+}
+
+func normalizeChatSettings(settings ChatSettings) ChatSettings {
+	defaults := DefaultChatSettings
+	settings.Timestamp = normalizeChatColor(settings.Timestamp, defaults.Timestamp)
+	settings.RCPrefix = normalizeChatColor(settings.RCPrefix, defaults.RCPrefix)
+	settings.NCPrefix = normalizeChatColor(settings.NCPrefix, defaults.NCPrefix)
+	settings.IRCPrefix = normalizeChatColor(settings.IRCPrefix, defaults.IRCPrefix)
+	settings.Speaker = normalizeChatColor(settings.Speaker, defaults.Speaker)
+	settings.Content = normalizeChatColor(settings.Content, defaults.Content)
+	settings.LogDir = strings.TrimSpace(settings.LogDir)
+	settings.PMLogDir = strings.TrimSpace(settings.PMLogDir)
+	return settings
+}
+
+func chatSettingsPath() (string, error) {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "graal-rc", "chat.json"), nil
+}
+
+// loadChatSettingsLocked reads chat settings from the per-user backend file.
+// Caller must hold a.chatSettingsMu.
+func (a *App) loadChatSettingsLocked() ChatSettings {
+	a.chatSettings = normalizeChatSettings(DefaultChatSettings)
+	a.chatSettingsLoaded = true
+	a.chatSettingsExists = false
+	path, err := chatSettingsPath()
+	if err != nil {
+		return a.chatSettings
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return a.chatSettings
+	}
+	var settings ChatSettings
+	if err := json.Unmarshal(b, &settings); err == nil {
+		a.chatSettings = normalizeChatSettings(settings)
+		a.chatSettingsExists = true
+	}
+	return a.chatSettings
+}
+
+// GetChatSettings returns the shared chat preferences.
+func (a *App) GetChatSettings() ChatSettingsState {
+	a.chatSettingsMu.Lock()
+	defer a.chatSettingsMu.Unlock()
+	if !a.chatSettingsLoaded {
+		a.loadChatSettingsLocked()
+	}
+	return ChatSettingsState{Settings: a.chatSettings, Exists: a.chatSettingsExists}
+}
+
+// SetChatSettings persists chat preferences and broadcasts them to every open
+// Wails window so the RC chat updates immediately after editing Settings.
+func (a *App) SetChatSettings(settings ChatSettings) error {
+	settings = normalizeChatSettings(settings)
+
+	a.chatSettingsMu.Lock()
+	if !a.chatSettingsLoaded {
+		a.loadChatSettingsLocked()
+	}
+	a.chatSettings = settings
+	a.chatSettingsExists = true
+	err := a.persistChatSettingsLocked(settings)
+	a.chatSettingsMu.Unlock()
+	if err != nil {
+		return err
+	}
+
+	a.logMu.Lock()
+	a.logEnabled = settings.LogChat
+	a.logDir = settings.LogDir
+	a.pmLogEnabled = settings.PMLog
+	a.pmLogDir = settings.PMLogDir
+	a.logMu.Unlock()
+	return nil
+}
+
+func (a *App) persistChatSettingsLocked(settings ChatSettings) error {
+	path, err := chatSettingsPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	b, err := json.Marshal(settings)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		return err
+	}
+	if a.app != nil {
+		a.app.Event.Emit("rc:chatSettings", string(b))
+	}
+	return nil
 }
 
 // codingPath returns the coding-settings file location.

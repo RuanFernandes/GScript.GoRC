@@ -68,6 +68,25 @@ func TestExternalEditorSettingsAcceptOnlySupportedPresets(t *testing.T) {
 	}
 }
 
+func TestChatSettingsNormalizeColorsAndPaths(t *testing.T) {
+	settings := normalizeChatSettings(ChatSettings{
+		Timestamp: " #001eff ",
+		RCPrefix:  "invalid",
+		NCPrefix:  "#38bdf8",
+		LogDir:    "  C:/chat  ",
+		PMLogDir:  "  C:/pm  ",
+	})
+	if settings.Timestamp != "#001EFF" {
+		t.Fatalf("timestamp color = %q, want uppercase normalized hex", settings.Timestamp)
+	}
+	if settings.RCPrefix != DefaultChatSettings.RCPrefix {
+		t.Fatalf("invalid RC prefix color = %q, want default %q", settings.RCPrefix, DefaultChatSettings.RCPrefix)
+	}
+	if settings.LogDir != "C:/chat" || settings.PMLogDir != "C:/pm" {
+		t.Fatalf("log directories were not trimmed: %q / %q", settings.LogDir, settings.PMLogDir)
+	}
+}
+
 func TestImageThumbnailMIMEAcceptsOnlySupportedImageExtensions(t *testing.T) {
 	for _, path := range []string{"preview.png", "folder/photo.JPG", "icon.webp", "favicon.ico"} {
 		if mimeType, ok := imageThumbnailMIME(path); !ok || mimeType == "" {
