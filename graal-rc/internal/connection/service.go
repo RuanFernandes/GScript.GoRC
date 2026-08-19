@@ -1045,10 +1045,11 @@ const ncReconnectInterval = 2 * time.Second
 const ncKeepaliveInterval = 3 * time.Minute
 
 // ncFetchConcurrency bounds the number of in-flight OpenScript requests during
-// a bulk fetch. Requests are pipelined with a conservative fixed limit so
-// large servers do not spend the entire sync waiting for one script at a time,
-// while the NC send path remains serialized by ncRequestMu/dllMu.
-const ncFetchConcurrency = 10
+// a bulk fetch. Sixteen requests is the highest-throughput setting validated
+// against the reference NC server; lower values can interact badly with its
+// asynchronous response queue and take several minutes for the same snapshot.
+// The NC send path remains serialized by ncRequestMu/dllMu.
+const ncFetchConcurrency = 16
 
 // maybeConnectNC opens the NC socket when the server exposes one to this
 // account (HasNCServer) and it is not yet connected. Unlike a one-shot latch,
