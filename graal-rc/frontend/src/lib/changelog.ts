@@ -11,6 +11,14 @@ export interface ChangelogEntry {
 // the visible history from nullborne.com when the release service is reachable.
 const CHANGELOG_PT_BR: ChangelogEntry[] = [
   {
+    version: "3.2.2",
+    date: "18/08/2026",
+    title: "Internal API bug fix",
+    summary: "Internal API bug fix.",
+    current: true,
+    changes: ["Internal API bug fix."],
+  },
+  {
     version: "3.2.1",
     date: "18/08/2026",
     title: "Internal API bug fix",
@@ -224,6 +232,11 @@ const CHANGELOG_PT_BR: ChangelogEntry[] = [
 
 const CHANGELOG_EN: ChangelogEntry[] = [
   {
+    version: "3.2.2", date: "2026-08-18", title: "Internal API bug fix",
+    summary: "Internal API bug fix.", current: true,
+    changes: ["Internal API bug fix."],
+  },
+  {
     version: "3.2.1", date: "2026-08-18", title: "Internal API bug fix",
     summary: "Internal API bug fix.", current: true,
     changes: ["Internal API bug fix."],
@@ -388,6 +401,11 @@ const CHANGELOG_EN: ChangelogEntry[] = [
 ]
 
 const CHANGELOG_ES: ChangelogEntry[] = [
+  {
+    version: "3.2.2", date: "2026-08-18", title: "Internal API bug fix",
+    summary: "Internal API bug fix.", current: true,
+    changes: ["Internal API bug fix."],
+  },
   {
     version: "3.2.1", date: "2026-08-18", title: "Internal API bug fix",
     summary: "Internal API bug fix.", current: true,
