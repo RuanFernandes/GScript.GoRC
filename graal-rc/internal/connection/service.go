@@ -1045,12 +1045,10 @@ const ncReconnectInterval = 2 * time.Second
 const ncKeepaliveInterval = 3 * time.Minute
 
 // ncFetchConcurrency bounds the number of in-flight OpenScript requests during
-// a bulk fetch. The reference C++ client performs NC calls from one UI/event
-// loop, and grclib's request callbacks do not carry request IDs. Serializing
-// the request/response stream is therefore intentional: dllMu protects entry
-// into the DLL, but it cannot make several outstanding protocol requests safe
-// when a server returns them out of order or closes the NC socket mid-burst.
-const ncFetchConcurrency = 1
+// a bulk fetch. Requests are pipelined with a conservative fixed limit so
+// large servers do not spend the entire sync waiting for one script at a time,
+// while the NC send path remains serialized by ncRequestMu/dllMu.
+const ncFetchConcurrency = 10
 
 // maybeConnectNC opens the NC socket when the server exposes one to this
 // account (HasNCServer) and it is not yet connected. Unlike a one-shot latch,

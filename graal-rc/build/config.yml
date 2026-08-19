@@ -11,7 +11,7 @@ info:
   description: "Graal Remote Control client" # The application description
   copyright: "© 2026, RuanFernandes" # Copyright text
   comments: "Graal Remote Control client" # Comments
-  version: "3.2.2" # The application version
+  version: "3.2.3" # The application version
   # macOS release bundles use build/darwin/icons.icns, generated from
   # build/appicon.png. Do not set cfBundleIconName unless an Assets.car catalog
   # is intentionally shipped with the application.

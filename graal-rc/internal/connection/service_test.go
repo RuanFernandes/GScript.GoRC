@@ -134,8 +134,8 @@ func TestFailPumpClearsServerAndPublishesFailure(t *testing.T) {
 }
 
 func TestSyncScriptFetchUsesReferenceClientConcurrency(t *testing.T) {
-	if ncFetchConcurrency != 1 {
-		t.Fatalf("ncFetchConcurrency = %d, want serialized NC requests", ncFetchConcurrency)
+	if ncFetchConcurrency != 10 {
+		t.Fatalf("ncFetchConcurrency = %d, want bounded pipeline of 10 requests", ncFetchConcurrency)
 	}
 }
 
