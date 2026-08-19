@@ -466,7 +466,11 @@ func (a *App) startSyncEngine() {
 	if cfg.PanicMode {
 		eng.SetPanicState(true, cfg.PanicReason, cfg.PanicAt)
 	}
-	eng.Start(ctx)
+	// Do not hold the ConnectToServer Wails call while the first script
+	// snapshot is downloaded. The main RC connection is already authenticated
+	// at this point, so the frontend must be allowed to enter the RC screen
+	// while sync continues in the background.
+	eng.StartAsync(ctx)
 	if a.app != nil {
 		if b, marshalErr := json.Marshal(cfg); marshalErr == nil {
 			a.app.Event.Emit("rc:syncConfig", string(b))

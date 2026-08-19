@@ -26,6 +26,11 @@ type blockingFetchBackend struct {
 	release chan struct{}
 }
 
+type cancelableFetchBackend struct {
+	permissionBackendStub
+	started chan struct{}
+}
+
 type blockingSaveBackend struct {
 	permissionBackendStub
 	started chan struct{}
@@ -45,6 +50,57 @@ func (b *blockingFetchBackend) FetchAllScripts(context.Context, func(string, str
 	close(b.started)
 	<-b.release
 	return b.fetchReplies, nil
+}
+
+func (b *cancelableFetchBackend) FetchAllScripts(ctx context.Context, _ func(string, string) bool, _ func(int, int)) ([]rclib.ScriptReply, error) {
+	close(b.started)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestStartAsyncReturnsBeforeInitialSyncCompletes(t *testing.T) {
+	backend := &cancelableFetchBackend{started: make(chan struct{})}
+	engine := NewEngine(backend, "TestServer", nil)
+	engine.ApplyConfig(SyncConfig{Enabled: true, OutputDir: t.TempDir(), PollingMinutes: 1})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	returned := make(chan struct{})
+	go func() {
+		engine.StartAsync(ctx)
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		cancel()
+		select {
+		case <-returned:
+		case <-time.After(time.Second):
+			t.Fatal("StartAsync remained blocked on the initial sync")
+		}
+		t.Fatal("StartAsync blocked on the initial sync")
+	}
+
+	select {
+	case <-backend.started:
+	case <-time.After(time.Second):
+		t.Fatal("asynchronous initial sync did not start")
+	}
+	if !engine.Status().InitialSync {
+		t.Fatal("initial sync should be active while the bootstrap is blocked")
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		engine.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not cancel the asynchronous initial sync")
+	}
 }
 
 func TestInitialSyncStateAndCompletionGeneration(t *testing.T) {

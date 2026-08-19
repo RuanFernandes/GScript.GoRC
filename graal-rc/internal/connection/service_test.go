@@ -100,6 +100,60 @@ func TestExecuteRejectsAStoppedEventPump(t *testing.T) {
 	}
 }
 
+func TestResolveEditorForAccountAcceptsCanonicalSelfWithEmptyComments(t *testing.T) {
+	s := NewService()
+	waiter, isNew := s.registerEditor(editorSelfKey("comments"))
+	if !isNew {
+		t.Fatal("self comments waiter was not newly registered")
+	}
+
+	if !s.resolveEditorForAccount("comments", "Graal5766947", CommentsData{
+		Account: "Graal5766947",
+		Content: "",
+	}) {
+		t.Fatal("canonical comments callback did not resolve the self waiter")
+	}
+
+	select {
+	case <-waiter.done:
+	case <-time.After(time.Second):
+		t.Fatal("comments waiter was not released")
+	}
+	data, ok := waiter.reply.(CommentsData)
+	if !ok || data.Account != "Graal5766947" || data.Content != "" {
+		t.Fatalf("comments reply = %#v, want canonical account with empty content", waiter.reply)
+	}
+}
+
+func TestResolveEditorForAccountNormalizesCaseAndFailsClosedWhenAmbiguous(t *testing.T) {
+	s := NewService()
+	waiter, isNew := s.registerEditor(editorKey("attrs", "Alias"))
+	if !isNew {
+		t.Fatal("attributes waiter was not newly registered")
+	}
+	if !s.resolveEditorForAccount("attrs", "alias", AttrsData{Account: "alias"}) {
+		t.Fatal("case-insensitive attributes callback did not resolve")
+	}
+	select {
+	case <-waiter.done:
+	case <-time.After(time.Second):
+		t.Fatal("attributes waiter was not released")
+	}
+
+	first, _ := s.registerEditor(editorKey("comments", "one"))
+	second, _ := s.registerEditor(editorKey("comments", "two"))
+	if s.resolveEditorForAccount("comments", "canonical", CommentsData{Account: "canonical"}) {
+		t.Fatal("ambiguous callback should not resolve an arbitrary comments waiter")
+	}
+	for name, pending := range map[string]*editorWait{"one": first, "two": second} {
+		select {
+		case <-pending.done:
+			t.Fatalf("ambiguous callback released %s waiter", name)
+		default:
+		}
+	}
+}
+
 func TestFailPumpClearsServerAndPublishesFailure(t *testing.T) {
 	s := NewService()
 	s.mu.Lock()
