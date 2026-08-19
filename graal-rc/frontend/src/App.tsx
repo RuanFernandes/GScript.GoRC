@@ -188,6 +188,14 @@ function Shell() {
     const off = Events.On("rc:evt", (event: {data: string}) => {
       try {
         const payload = JSON.parse(event.data) as {name?: string; data?: unknown[]}
+        if (payload.name === "rc:connected") {
+          // The native connection callback is emitted as soon as the main RC
+          // socket authenticates. Do not keep the server picker waiting for
+          // secondary rights/player-cache requests to finish.
+          session.markConnected(session.selectedIndex)
+          setView("rc")
+          return
+        }
         if (payload.name !== "rc:disconnected" && payload.name !== "rc:pumpError") return
         const reason = typeof payload.data?.[0] === "string" ? payload.data[0] : language.t("toast.disconnectedByServer")
         void (async () => {
@@ -199,7 +207,7 @@ function Shell() {
       }
     })
     return off
-  }, [returnToLogin, language.t])
+  }, [language.t, returnToLogin, session.markConnected, session.selectedIndex])
 
   // State-driven safety net: the moment a server is connected (connectedServer
   // becomes non-empty), ensure we are on the RC screen regardless of which code

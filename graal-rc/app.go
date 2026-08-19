@@ -1278,7 +1278,11 @@ func (a *App) ConnectToServer(index int) error {
 	a.stopSyncEngine()
 	a.closeSessionWindows()
 	err := a.sessions.ConnectToServer(index)
-	a.refreshServerChrome()
+	// Do not query the native player cache on the Wails connection path. The
+	// server socket is already authenticated here, and a native cache read can
+	// wait for the first player snapshot on slower servers. The tray refresh
+	// loop will populate the live count shortly after the RC screen opens.
+	a.refreshServerChromeFast()
 	if err == nil {
 		a.startSyncEngine()
 	}
@@ -2491,10 +2495,21 @@ func (a *App) Status() connection.Status { return a.sessions.Status() }
 // refreshServerChrome reconciles the main/players/scripts/settings window titles
 // and the tray tooltip with the current session state. Connected windows use
 // the shared "<resource> - <server>" title format; disconnected windows return
-// to their generic labels. Called on connect/logout and by the tray refresh
-// loop so a server-side disconnect (Status flips to !Connected) resets the
-// chrome without a frontend round-trip.
+// to their generic labels. Called on logout and by the tray refresh loop so a
+// server-side disconnect (Status flips to !Connected) resets the chrome without
+// a frontend round-trip.
 func (a *App) refreshServerChrome() {
+	a.refreshServerChromeWithPlayerCount(true)
+}
+
+// refreshServerChromeFast updates only metadata that is already available in
+// the session snapshot. It is used immediately after authentication so a
+// potentially delayed native player-cache read cannot hold ConnectToServer.
+func (a *App) refreshServerChromeFast() {
+	a.refreshServerChromeWithPlayerCount(false)
+}
+
+func (a *App) refreshServerChromeWithPlayerCount(loadPlayerCount bool) {
 	st := a.sessions.Status()
 	connected := st.Connected && st.Authenticated && st.ServerName != ""
 
@@ -2510,11 +2525,15 @@ func (a *App) refreshServerChrome() {
 		scriptsTitle = serverWindowTitle(st.ServerName, "Script Manager")
 		settingsTitle = serverWindowTitle(st.ServerName, "Settings")
 		filesTitle = serverWindowTitle(st.ServerName, "File Browser")
-		count := 0
-		if players, err := a.sessions.GetPlayers(); err == nil {
-			count = len(players)
+		if loadPlayerCount {
+			count := 0
+			if players, err := a.sessions.GetPlayers(); err == nil {
+				count = len(players)
+			}
+			tooltip = st.ServerName + ":" + strconv.Itoa(count)
+		} else {
+			tooltip = st.ServerName
 		}
-		tooltip = st.ServerName + ":" + strconv.Itoa(count)
 	}
 	if a.mainWindow != nil {
 		a.mainWindow.SetTitle(mainTitle)

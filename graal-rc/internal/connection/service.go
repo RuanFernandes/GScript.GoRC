@@ -1570,14 +1570,17 @@ func (s *Service) connectToServer(ctx context.Context, index int) error {
 		s.mu.Lock()
 		s.serverName = serverName
 		s.mu.Unlock()
-		// Always warm the current server's openrights snapshot. Sync also calls
-		// this before its own work, but player moderation and chat commands must
-		// have the same fail-closed permission state even when sync is disabled.
-		// Keep this synchronous so the caller can decide whether script editing
-		// must be gated before the first post-login window is opened.
-		if err := s.RefreshSelfFolderRights(); err != nil {
-			log.Printf("[rights] login refresh failed: %v", err)
-		}
+		// Warm the current server's openrights snapshot after the authenticated
+		// connection has been handed back to the caller. The request is a
+		// callback-based round trip and can take up to scriptTimeout; keeping it
+		// on this path leaves the frontend in "Connecting" even though the RC
+		// socket is already authenticated. Sync and permission-gated operations
+		// remain fail-closed until this background refresh completes.
+		go func(expectedEpoch uint64) {
+			if err := s.refreshSelfFolderRightsForEpoch(expectedEpoch); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("[rights] login refresh failed: %v", err)
+			}
+		}(epoch)
 		go s.refreshServerTextCache(h, epoch, serverName)
 		return nil
 	case reason := <-disconnected:
@@ -1984,13 +1987,44 @@ func (s *Service) replaceSelfFolderRights(access folderrights.Access, staffRight
 	return stateChanged, permissionChanged
 }
 
+func (s *Service) isCurrentServerEpoch(expectedEpoch uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.serverEpoch == expectedEpoch && strings.TrimSpace(s.serverName) != ""
+}
+
+// replaceSelfFolderRightsIfCurrent atomically checks the active server epoch
+// before committing a background login response. Without this guard, a late
+// /openrights callback from the previous server could populate the permission
+// cache of the newly selected server.
+func (s *Service) replaceSelfFolderRightsIfCurrent(expectedEpoch uint64, access folderrights.Access, staffRights int, account string) (stateChanged, permissionChanged, current bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.serverEpoch != expectedEpoch || strings.TrimSpace(s.serverName) == "" {
+		return false, false, false
+	}
+	stateChanged, permissionChanged = s.replaceSelfFolderRights(access, staffRights, account, s.serverName)
+	return stateChanged, permissionChanged, true
+}
+
 // RefreshSelfFolderRights explicitly asks the current server for this
 // account's folder access and replaces the local snapshot. Sync calls this at
 // bootstrap and before every polling pass.
 func (s *Service) RefreshSelfFolderRights() error {
+	return s.refreshSelfFolderRights(nil)
+}
+
+func (s *Service) refreshSelfFolderRightsForEpoch(expectedEpoch uint64) error {
+	return s.refreshSelfFolderRights(&expectedEpoch)
+}
+
+func (s *Service) refreshSelfFolderRights(expectedEpoch *uint64) error {
 	s.rightsRefreshMu.Lock()
 	defer s.rightsRefreshMu.Unlock()
 
+	if expectedEpoch != nil && !s.isCurrentServerEpoch(*expectedEpoch) {
+		return errConnectionSessionChanged
+	}
 	account := strings.TrimSpace(s.SelfAccount())
 	started := time.Now()
 	log.Printf("[rights] refresh start account=%q", account)
@@ -2006,6 +2040,9 @@ func (s *Service) RefreshSelfFolderRights() error {
 	// differs from the server session's accountName.
 	data, err := s.OpenRights("")
 	if err != nil {
+		if expectedEpoch != nil && !s.isCurrentServerEpoch(*expectedEpoch) {
+			return errConnectionSessionChanged
+		}
 		err = fmt.Errorf("openrights for %q: %w", account, err)
 		log.Printf("[rights] refresh failed after %s: %v", time.Since(started), err)
 		s.invalidateSelfFolderRights(err)
@@ -2014,6 +2051,9 @@ func (s *Service) RefreshSelfFolderRights() error {
 	log.Printf("[rights] openrights completed account=%q folderAccessLen=%d", data.Account, len(data.FolderAccess))
 	returnedAccount := strings.TrimSpace(data.Account)
 	if returnedAccount == "" {
+		if expectedEpoch != nil && !s.isCurrentServerEpoch(*expectedEpoch) {
+			return errConnectionSessionChanged
+		}
 		err = fmt.Errorf("openrights returned an empty account, expected the current server account")
 		log.Printf("[rights] refresh failed after %s: %v", time.Since(started), err)
 		s.invalidateSelfFolderRights(err)
@@ -2021,16 +2061,28 @@ func (s *Service) RefreshSelfFolderRights() error {
 	}
 	access, err := folderrights.Parse(data.FolderAccess)
 	if err != nil {
+		if expectedEpoch != nil && !s.isCurrentServerEpoch(*expectedEpoch) {
+			return errConnectionSessionChanged
+		}
 		err = fmt.Errorf("parse folder access for %q: %w", account, err)
 		log.Printf("[rights] refresh failed after %s: %v", time.Since(started), err)
 		s.invalidateSelfFolderRights(err)
 		return err
 	}
 
-	s.mu.Lock()
-	server := s.serverName
-	s.mu.Unlock()
-	stateChanged, permissionChanged := s.replaceSelfFolderRights(access, data.Rights, returnedAccount, server)
+	var stateChanged, permissionChanged bool
+	if expectedEpoch != nil {
+		var current bool
+		stateChanged, permissionChanged, current = s.replaceSelfFolderRightsIfCurrent(*expectedEpoch, access, data.Rights, returnedAccount)
+		if !current {
+			return errConnectionSessionChanged
+		}
+	} else {
+		s.mu.Lock()
+		server := s.serverName
+		s.mu.Unlock()
+		stateChanged, permissionChanged = s.replaceSelfFolderRights(access, data.Rights, returnedAccount, server)
+	}
 	log.Printf("[rights] refresh success localAccount=%q serverAccount=%q folderAccessLen=%d elapsed=%s", account, returnedAccount, len(data.FolderAccess), time.Since(started))
 	if stateChanged {
 		s.emitScriptPermissionsEvent(permissionChanged)

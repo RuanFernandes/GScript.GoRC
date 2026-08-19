@@ -580,6 +580,32 @@ func TestReplaceSelfFolderRightsOnlyReportsRealChanges(t *testing.T) {
 	}
 }
 
+func TestReplaceSelfFolderRightsIfCurrentRejectsStaleResponse(t *testing.T) {
+	access, err := folderrights.Parse("rw WEAPONS/*")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	s := NewService()
+	s.mu.Lock()
+	s.serverEpoch = 7
+	s.serverName = "CurrentServer"
+	s.mu.Unlock()
+
+	if _, _, current := s.replaceSelfFolderRightsIfCurrent(6, access, 0, "Graal123"); current {
+		t.Fatal("stale rights response was accepted for a newer server epoch")
+	}
+	s.rightsMu.RLock()
+	loaded := s.selfRightsLoaded
+	s.rightsMu.RUnlock()
+	if loaded {
+		t.Fatal("stale rights response populated the active permission cache")
+	}
+
+	if _, _, current := s.replaceSelfFolderRightsIfCurrent(7, access, 0, "Graal123"); !current {
+		t.Fatal("current rights response was rejected")
+	}
+}
+
 func eq(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

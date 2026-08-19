@@ -25,6 +25,7 @@ export interface UseSessionResult {
   addAccount: (req: LoginRequest, nickname: string) => Promise<boolean>
   refresh: () => Promise<void>
   connect: (index: number) => Promise<boolean>
+  markConnected: (index: number) => void
   logout: () => Promise<void>
 }
 
@@ -98,6 +99,14 @@ export function useSession(service: RcService): UseSessionResult {
     toast.success(t("session.serverListRefreshed"))
   }, [run, service, t])
 
+  const markConnected = useCallback((index: number): void => {
+    const server = servers[index]
+    const label = server ? serverDisplay(server.name).label : t("session.serverFallback", {index})
+    setConnectedServer(label)
+    setStatusText(t("session.connectedTo", {server: label}))
+    setBusy(false)
+  }, [servers, t])
+
   const connect = useCallback(
     async (index: number): Promise<boolean> => {
       const server = servers[index]
@@ -110,8 +119,7 @@ export function useSession(service: RcService): UseSessionResult {
       setBusy(true)
       try {
         await service.connectToServer(index)
-        setConnectedServer(label)
-        setStatusText(t("session.connectedTo", {server: label}))
+        markConnected(index)
         toast.success(t("session.connectedTo", {server: label}))
         return true
       } catch (err) {
@@ -123,7 +131,7 @@ export function useSession(service: RcService): UseSessionResult {
         setBusy(false)
       }
     },
-    [service, servers, t]
+    [markConnected, service, servers, t]
   )
 
   const logout = useCallback(async (): Promise<void> => {
@@ -152,8 +160,9 @@ export function useSession(service: RcService): UseSessionResult {
       addAccount,
       refresh,
       connect,
+      markConnected,
       logout,
     }),
-    [phase, servers, selectedIndex, statusText, busy, connectedServer, activeAccount, select, loginWithAccount, addAccount, refresh, connect, logout]
+    [phase, servers, selectedIndex, statusText, busy, connectedServer, activeAccount, select, loginWithAccount, addAccount, refresh, connect, markConnected, logout]
   )
 }
