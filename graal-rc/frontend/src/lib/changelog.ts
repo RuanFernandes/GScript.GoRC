@@ -11,11 +11,24 @@ export interface ChangelogEntry {
 // the visible history from nullborne.com when the release service is reachable.
 const CHANGELOG_PT_BR: ChangelogEntry[] = [
   {
+    version: "3.3.1",
+    date: "19/08/2026",
+    title: "Conexão de servidor sem travamentos",
+    summary: "Corrige o estado infinito de conexão quando a autenticação já foi concluída no backend.",
+    current: true,
+    changes: [
+      "A tela de seleção de servidor agora entra no RC assim que o socket confirma a autenticação, mesmo quando a atualização de direitos ou da lista de jogadores demora.",
+      "A atualização de direitos do usuário roda em segundo plano e respostas antigas de uma sessão anterior não podem sobrescrever a conexão atual.",
+      "A contagem inicial de jogadores deixou de bloquear a transição para o RC, evitando que o frontend permaneça em Connecting enquanto o servidor já registrou o login.",
+      "Mantém as correções de Open, Open Rights, Open Access e Open Comments, incluindo respostas vazias de comentários, alinhadas ao fluxo nativo do cliente C++.",
+    ],
+  },
+  {
     version: "3.3.0",
     date: "19/08/2026",
     title: "Conexão e editores de jogadores mais confiáveis",
     summary: "Alinha as ações de jogador ao fluxo nativo do C++ e evita travamentos ao conectar e carregar comentários.",
-    current: true,
+    current: false,
     changes: [
       "As ações do próprio usuário em Open, Open Rights, Open Access e Open Comments agora seguem os mesmos comandos do servidor usados pelo cliente C++, enquanto jogadores específicos continuam usando as requisições tipadas.",
       "Comentários vazios agora são aceitos e propagados como resposta válida, sem aguardar indefinidamente ou provocar timeout.",
@@ -245,8 +258,18 @@ const CHANGELOG_PT_BR: ChangelogEntry[] = [
 
 const CHANGELOG_EN: ChangelogEntry[] = [
   {
+    version: "3.3.1", date: "2026-08-19", title: "Server connections without hangs",
+    summary: "Fixes the infinite connection state when backend authentication has already completed.", current: true,
+    changes: [
+      "The server selector now enters the RC as soon as the socket confirms authentication, even when rights or the player list take longer to refresh.",
+      "The user's rights refresh runs in the background, and stale responses from a previous session cannot overwrite the active connection.",
+      "The initial player-count refresh no longer blocks the transition into the RC, preventing the frontend from staying on Connecting after the server has logged in.",
+      "Keeps Open, Open Rights, Open Access and Open Comments aligned with the native C++ client flow, including empty comment responses.",
+    ],
+  },
+  {
     version: "3.3.0", date: "2026-08-19", title: "More reliable connection and player editors",
-    summary: "Aligns player actions with the native C++ flow and prevents hangs while connecting or loading comments.", current: true,
+    summary: "Aligns player actions with the native C++ flow and prevents hangs while connecting or loading comments.", current: false,
     changes: [
       "Actions for the logged-in user in Open, Open Rights, Open Access and Open Comments now follow the same server commands used by the native C++ client, while specific players continue to use typed requests.",
       "Empty comments are now accepted and propagated as a valid response instead of waiting indefinitely or timing out.",
@@ -425,8 +448,18 @@ const CHANGELOG_EN: ChangelogEntry[] = [
 
 const CHANGELOG_ES: ChangelogEntry[] = [
   {
+    version: "3.3.1", date: "2026-08-19", title: "Conexiones de servidor sin bloqueos",
+    summary: "Corrige el estado de conexión infinito cuando la autenticación del backend ya terminó.", current: true,
+    changes: [
+      "La pantalla de selección de servidores entra al RC en cuanto el socket confirma la autenticación, aunque los derechos o la lista de jugadores tarden más en actualizarse.",
+      "La actualización de derechos del usuario se ejecuta en segundo plano y las respuestas antiguas de una sesión anterior no pueden sobrescribir la conexión activa.",
+      "La actualización inicial del número de jugadores ya no bloquea la entrada al RC, evitando que el frontend permanezca en Connecting después de que el servidor haya registrado el inicio de sesión.",
+      "Mantiene Open, Open Rights, Open Access y Open Comments alineados con el flujo nativo del cliente C++, incluidas las respuestas de comentarios vacíos.",
+    ],
+  },
+  {
     version: "3.3.0", date: "2026-08-19", title: "Conexión y editores de jugadores más fiables",
-    summary: "Alinea las acciones de jugadores con el flujo nativo de C++ y evita bloqueos al conectar o cargar comentarios.", current: true,
+    summary: "Alinea las acciones de jugadores con el flujo nativo de C++ y evita bloqueos al conectar o cargar comentarios.", current: false,
     changes: [
       "Las acciones del usuario conectado en Open, Open Rights, Open Access y Open Comments ahora siguen los mismos comandos del servidor que usa el cliente nativo de C++, mientras que los jugadores específicos continúan usando solicitudes tipadas.",
       "Los comentarios vacíos ahora se aceptan y se propagan como una respuesta válida, sin esperar indefinidamente ni provocar un timeout.",

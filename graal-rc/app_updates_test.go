@@ -39,8 +39,13 @@ func TestDownloadInstallerRejectsUntrustedRoutesBeforeNetworkAccess(t *testing.T
 }
 
 func TestAppVersionIsReleaseVersion(t *testing.T) {
-	if (&App{}).GetAppVersion() != "3.3.0" {
-		t.Fatalf("GetAppVersion() = %q, want 3.3.0", (&App{}).GetAppVersion())
+	versionFile, err := os.ReadFile("VERSION")
+	if err != nil {
+		t.Fatalf("read VERSION: %v", err)
+	}
+	expected := strings.TrimSpace(string(versionFile))
+	if got := (&App{}).GetAppVersion(); got != expected {
+		t.Fatalf("GetAppVersion() = %q, want %q", got, expected)
 	}
 }
 
