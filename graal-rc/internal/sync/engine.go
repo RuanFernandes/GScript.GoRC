@@ -461,7 +461,7 @@ func (e *Engine) bootstrap(ctx context.Context, dir string) error {
 	// arrived. Refreshing the weapon list here gives the first bootstrap a
 	// chance to populate those caches instead of treating 0/0 as success.
 	log.Printf("[sync bootstrap] fetching readable scripts after openrights")
-	replies, err := e.fetchScripts(ctx, func(done, total int) {
+	replies, err := e.fetchScripts(ctx, true, func(done, total int) {
 		e.setProgress("Downloading", done, total, "")
 	})
 	log.Printf("[sync bootstrap] readable script fetch finished replies=%d err=%v", len(replies), err)
@@ -811,8 +811,12 @@ func (e *Engine) pollLocked(ctx context.Context, refreshRights bool) {
 	}
 	e.setNextSyncAt(e.now().Add(pollDuration(cfg)))
 	e.setProgress("Downloading", 0, 0, "")
-	log.Printf("[sync poll] fetching readable scripts after openrights")
-	replies, err := e.fetchScripts(ctx, func(done, total int) {
+	// The NC authentication path already populated the native script lists, and
+	// subsequent add/delete packets keep them current. Do not send another
+	// PLI_NC_WEAPONLISTGET during scheduled polling: some NC servers disconnect
+	// when the full weapon list is requested again after the initial sync.
+	log.Printf("[sync poll] fetching readable scripts from cached NC lists")
+	replies, err := e.fetchScripts(ctx, refreshRights, func(done, total int) {
 		e.setProgress("Downloading", done, total, "")
 	})
 	log.Printf("[sync poll] readable script fetch finished replies=%d err=%v", len(replies), err)
@@ -902,14 +906,17 @@ const (
 	scriptListWarmupDelay    = 250 * time.Millisecond
 )
 
-// fetchScripts gives the NC server a short warm-up window after authentication.
-// The socket can be authenticated before the initial weapon/class/NPC lists
-// have been copied into grclib's caches; treating that first empty snapshot as
-// a successful sync loses the initial bootstrap until the next poll.
-func (e *Engine) fetchScripts(ctx context.Context, progress func(done, total int)) ([]rclib.ScriptReply, error) {
+// fetchScripts gives the NC server a short warm-up window after authentication
+// when refreshWeaponList is requested. Scheduled polls reuse the lists already
+// maintained by grclib instead of sending another full weapon-list request.
+func (e *Engine) fetchScripts(ctx context.Context, refreshWeaponList bool, progress func(done, total int)) ([]rclib.ScriptReply, error) {
 	var replies []rclib.ScriptReply
 	var err error
-	for attempt := 1; attempt <= scriptListWarmupAttempts; attempt++ {
+	attempts := 1
+	if refreshWeaponList {
+		attempts = scriptListWarmupAttempts
+	}
+	for attempt := 1; attempt <= attempts; attempt++ {
 		if attempt > 1 {
 			timer := time.NewTimer(scriptListWarmupDelay)
 			select {
@@ -921,16 +928,18 @@ func (e *Engine) fetchScripts(ctx context.Context, progress func(done, total int
 			case <-timer.C:
 			}
 		}
-		if refreshErr := e.backend.RefreshWeapons(); refreshErr != nil {
-			// Never continue with a partial cache: a classes/NPC-only snapshot
-			// would make reconciliation remove valid local weapons.
-			return replies, fmt.Errorf("refresh weapons attempt=%d/%d: %w", attempt, scriptListWarmupAttempts, refreshErr)
+		if refreshWeaponList {
+			if refreshErr := e.backend.RefreshWeapons(); refreshErr != nil {
+				// Never continue with a partial cache: a classes/NPC-only snapshot
+				// would make reconciliation remove valid local weapons.
+				return replies, fmt.Errorf("refresh weapons attempt=%d/%d: %w", attempt, attempts, refreshErr)
+			}
 		}
 		replies, err = e.backend.FetchAllScripts(ctx, e.backend.CanReadScript, progress)
-		if err != nil || len(replies) > 0 || attempt == scriptListWarmupAttempts {
+		if err != nil || len(replies) > 0 || attempt == attempts {
 			return replies, err
 		}
-		log.Printf("[sync fetch] script lists returned no readable replies; warming up attempt=%d/%d", attempt, scriptListWarmupAttempts)
+		log.Printf("[sync fetch] script lists returned no readable replies; warming up attempt=%d/%d", attempt, attempts)
 	}
 	return replies, err
 }

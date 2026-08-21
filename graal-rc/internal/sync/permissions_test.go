@@ -10,6 +10,7 @@ import (
 
 type permissionBackendStub struct {
 	permissionRefreshes int
+	weaponRefreshes     int
 	fetches             int
 	fetchErr            error
 	fetchReplies        []rclib.ScriptReply
@@ -44,7 +45,10 @@ func (b *permissionBackendStub) CreateNPC(string, int, string, string, string, s
 	return nil
 }
 
-func (b *permissionBackendStub) RefreshWeapons() error { return nil }
+func (b *permissionBackendStub) RefreshWeapons() error {
+	b.weaponRefreshes++
+	return nil
+}
 
 func (b *permissionBackendStub) FetchAllScripts(context.Context, func(string, string) bool, func(int, int)) ([]rclib.ScriptReply, error) {
 	b.fetches++
@@ -126,5 +130,8 @@ func TestScheduledPollReusesLoadedPermissions(t *testing.T) {
 	}
 	if backend.fetches != 2 {
 		t.Fatalf("script fetches = %d, want 2 across manual sync + scheduled poll", backend.fetches)
+	}
+	if backend.weaponRefreshes != 1 {
+		t.Fatalf("weapon list refreshes = %d, want 1 from the initial manual sync only", backend.weaponRefreshes)
 	}
 }
