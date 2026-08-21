@@ -11,11 +11,24 @@ export interface ChangelogEntry {
 // the visible history from nullborne.com when the release service is reachable.
 const CHANGELOG_PT_BR: ChangelogEntry[] = [
   {
+    version: "4.0.2",
+    date: "21/08/2026",
+    title: "Galeria de Scripts em formato de projetos",
+    summary: "Deixa a galeria mais clara, remove o editor duplicado e preserva os dados entre reinícios da API.",
+    current: true,
+    changes: [
+      "A galeria agora apresenta projetos em cards, com resumo de visibilidade, dono, quantidade de scripts e seleção de um único script para consultar.",
+      "As ações agora são Copiar no script atual, Atualizar com script atual e Adicionar script atual; todas pedem confirmação antes de alterar o editor ou a galeria, com textos traduzidos.",
+      "O editor Monaco permanece somente na janela do script atual; a galeria não mantém mais uma segunda área de edição de código.",
+      "A API fecha o SQLite de forma graciosa e mantém o banco existente no volume de dados durante reinícios e atualizações.",
+    ],
+  },
+  {
     version: "4.0.1",
     date: "21/08/2026",
     title: "Correção da Galeria de Scripts",
     summary: "Corrige o carregamento dos projetos da galeria quando o filtro de tipo está ativo.",
-    current: true,
+    current: false,
     changes: [
       "Corrige a montagem das URLs da Galeria de Scripts para manter caminho e parâmetros de busca separados, evitando erro ao carregar projetos de weapons, classes ou NPCs.",
     ],
@@ -281,8 +294,18 @@ const CHANGELOG_PT_BR: ChangelogEntry[] = [
 
 const CHANGELOG_EN: ChangelogEntry[] = [
   {
+    version: "4.0.2", date: "2026-08-21", title: "Project-based Script Gallery",
+    summary: "Makes the gallery clearer, removes the duplicate editor and preserves API data across restarts.", current: true,
+    changes: [
+      "The gallery now presents projects as cards with visibility, owner, script counts and a focused script selection view.",
+      "Actions are now Copy to current script, Update with current script and Add current script; each asks for confirmation before changing the editor or gallery, with translated copy.",
+      "The Monaco editor remains only in the current script window; the gallery no longer contains a second code editing surface.",
+      "The API closes SQLite gracefully and keeps the existing database on the data volume across restarts and updates.",
+    ],
+  },
+  {
     version: "4.0.1", date: "2026-08-21", title: "Script Gallery bug fix",
-    summary: "Fixes loading gallery projects when a script-type filter is active.", current: true,
+    summary: "Fixes loading gallery projects when a script-type filter is active.", current: false,
     changes: [
       "Fixes Script Gallery URL construction by keeping the request path and query parameters separate, preventing project loading errors for weapons, classes or NPCs.",
     ],
@@ -488,8 +511,18 @@ const CHANGELOG_EN: ChangelogEntry[] = [
 
 const CHANGELOG_ES: ChangelogEntry[] = [
   {
+    version: "4.0.2", date: "2026-08-21", title: "Galería de scripts basada en proyectos",
+    summary: "Hace la galería más clara, elimina el editor duplicado y conserva los datos de la API entre reinicios.", current: true,
+    changes: [
+      "La galería ahora presenta los proyectos como tarjetas, con visibilidad, propietario, cantidad de scripts y una vista centrada en el script seleccionado.",
+      "Las acciones ahora son Copiar en el script actual, Actualizar con script actual y Añadir script actual; todas piden confirmación antes de cambiar el editor o la galería, con textos traducidos.",
+      "El editor Monaco permanece únicamente en la ventana del script actual; la galería ya no contiene una segunda superficie para editar código.",
+      "La API cierra SQLite de forma ordenada y conserva la base de datos existente en el volumen de datos entre reinicios y actualizaciones.",
+    ],
+  },
+  {
     version: "4.0.1", date: "2026-08-21", title: "Corrección de la Galería de scripts",
-    summary: "Corrige la carga de proyectos cuando hay un filtro de tipo de script activo.", current: true,
+    summary: "Corrige la carga de proyectos cuando hay un filtro de tipo de script activo.", current: false,
     changes: [
       "Corrige la construcción de las URLs de la Galería de scripts separando la ruta de los parámetros de búsqueda, evitando errores al cargar proyectos de weapons, clases o NPCs.",
     ],

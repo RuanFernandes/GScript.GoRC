@@ -10,7 +10,6 @@ import {Events} from "@wailsio/runtime"
 import {toast} from "sonner"
 
 import {BookOpen, GitCompare, Loader2, X} from "lucide-react"
-import {ConfirmDialog} from "@/components/ConfirmDialog"
 import {AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogHeader, AlertDialogTitle} from "@/components/ui/alert-dialog"
 import {Button} from "@/components/ui/button"
 import {ScriptGalleryDialog, type ScriptGalleryType} from "@/components/ScriptGalleryDialog"
@@ -115,8 +114,6 @@ export function ScriptEditorWindowScreen() {
   const [closingAfterSave, setClosingAfterSave] = useState(false)
   const [showChanges, setShowChanges] = useState(false)
   const [galleryOpen, setGalleryOpen] = useState(false)
-  const [pendingGalleryInsert, setPendingGalleryInsert] = useState<string | null>(null)
-  const [confirmGalleryReplace, setConfirmGalleryReplace] = useState(false)
   const pluginLanguage = kind === "options" || kind === "folder_config" || kind === "flags" || kind === "npcflags"
     ? "serverconfig"
     : kind === "npcattr" ? "ini" : "graalscript"
@@ -555,20 +552,8 @@ export function ScriptEditorWindowScreen() {
     contentRef.current = nextContent
     setContent(nextContent)
     setDirty(nextContent !== original)
-    setPendingGalleryInsert(null)
-    setConfirmGalleryReplace(false)
     setGalleryOpen(false)
-    toast.success(t("gallery.inserted"))
-  }, [original, t])
-
-  const handleGalleryInsert = useCallback((nextContent: string) => {
-    if (dirty && nextContent !== contentRef.current) {
-      setPendingGalleryInsert(nextContent)
-      setConfirmGalleryReplace(true)
-      return
-    }
-    applyGalleryInsert(nextContent)
-  }, [applyGalleryInsert, dirty])
+  }, [original])
 
   return (
     <div className="bg-background flex h-svh flex-col">
@@ -760,24 +745,9 @@ export function ScriptEditorWindowScreen() {
           currentName={scriptName || key}
           currentContent={contentRef.current}
           onClose={() => setGalleryOpen(false)}
-          onInsert={handleGalleryInsert}
+          onInsert={applyGalleryInsert}
         />
       )}
-
-      <ConfirmDialog
-        open={confirmGalleryReplace}
-        title={t("gallery.replaceUnsavedTitle")}
-        description={t("gallery.replaceUnsavedDescription")}
-        confirmLabel={t("gallery.replaceUnsavedConfirm")}
-        destructive
-        onCancel={() => {
-          setConfirmGalleryReplace(false)
-          setPendingGalleryInsert(null)
-        }}
-        onConfirm={() => {
-          if (pendingGalleryInsert !== null) applyGalleryInsert(pendingGalleryInsert)
-        }}
-      />
     </div>
   )
 }
