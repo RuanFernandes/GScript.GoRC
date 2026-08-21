@@ -30,6 +30,10 @@ export type {
   SqliteTable,
   MCPAgentStatus,
   MCPSetupResult,
+  ScriptGalleryProject,
+  ScriptGalleryScript,
+  ScriptGalleryIdentity,
+  ScriptGalleryAuthState,
 } from "../../bindings/graal-rc/models"
 export type {
   SyncConfig,

@@ -48,6 +48,9 @@ import type {
   ChangeRetentionSettings,
   ChatSettings,
   ChatSettingsState,
+  ScriptGalleryProject,
+  ScriptGalleryScript,
+  ScriptGalleryAuthState,
 } from "@/types"
 import type {PluginBuildResult, PluginFile, PluginInfo, PluginLogEntry, PluginMonacoLanguage, PluginUIWindowInfo} from "@/plugins/types"
 
@@ -146,6 +149,18 @@ export interface RcService {
   getLoadedScript(scriptType: string, key: string): Promise<ScriptReply | null>
   setEditorDirty(scriptType: string, key: string, dirty: boolean): Promise<void>
   closeScriptEditor(scriptType: string, key: string): Promise<void>
+  getScriptGalleryAuthState(): Promise<ScriptGalleryAuthState>
+  registerScriptGallery(password: string): Promise<ScriptGalleryAuthState>
+  loginScriptGallery(password: string): Promise<ScriptGalleryAuthState>
+  logoutScriptGallery(): Promise<void>
+  getScriptGalleryProjects(scriptType: string, query: string): Promise<ScriptGalleryProject[] | null>
+  createScriptGalleryProject(name: string, description: string, visibility: string): Promise<ScriptGalleryProject>
+  updateScriptGalleryProject(id: string, name: string, description: string, visibility: string): Promise<ScriptGalleryProject>
+  deleteScriptGalleryProject(id: string): Promise<void>
+  getScriptGalleryScript(id: string): Promise<ScriptGalleryScript>
+  uploadScriptGalleryScript(projectID: string, scriptType: string, name: string, content: string): Promise<ScriptGalleryScript>
+  updateScriptGalleryScript(id: string, name: string, content: string): Promise<ScriptGalleryScript>
+  deleteScriptGalleryScript(id: string): Promise<void>
   graalScriptLspRequest(message: string): Promise<string>
   refreshGraalScriptDocApi(): Promise<void>
   listFonts(): Promise<string[] | null>
@@ -373,6 +388,19 @@ export const rcService: RcService = {
   getLoadedScript: (scriptType, key) => App.GetLoadedScript(scriptType, key),
   setEditorDirty: (scriptType, key, dirty) => App.SetEditorDirty(scriptType, key, dirty),
   closeScriptEditor: (scriptType, key) => App.CloseScriptEditor(scriptType, key),
+  getScriptGalleryAuthState: () => App.GetScriptGalleryAuthState(),
+  registerScriptGallery: (password) => App.RegisterScriptGallery(password),
+  loginScriptGallery: (password) => App.LoginScriptGallery(password),
+  logoutScriptGallery: () => App.LogoutScriptGallery(),
+  getScriptGalleryProjects: (scriptType, query) => App.GetScriptGalleryProjects(scriptType, query),
+  createScriptGalleryProject: (name, description, visibility) => App.CreateScriptGalleryProject(name, description, visibility),
+  updateScriptGalleryProject: (id, name, description, visibility) => App.UpdateScriptGalleryProject(id, name, description, visibility),
+  deleteScriptGalleryProject: (id) => App.DeleteScriptGalleryProject(id),
+  getScriptGalleryScript: (id) => App.GetScriptGalleryScript(id),
+  uploadScriptGalleryScript: (projectID, scriptType, name, content) =>
+    App.UploadScriptGalleryScript(projectID, scriptType, name, content),
+  updateScriptGalleryScript: (id, name, content) => App.UpdateScriptGalleryScript(id, name, content),
+  deleteScriptGalleryScript: (id) => App.DeleteScriptGalleryScript(id),
   graalScriptLspRequest: (message) => App.GraalScriptLSPRequest(message),
   refreshGraalScriptDocApi: () => App.RefreshGraalScriptDocAPI(),
   listFonts: () => App.ListFonts(),

@@ -3,6 +3,8 @@ package main
 import (
 	"testing"
 	"time"
+
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 func TestShutdownStopsRegisteredBackgroundWork(t *testing.T) {
@@ -61,4 +63,21 @@ func TestApplicationOptionsConfigureWailsLifecycle(t *testing.T) {
 		t.Fatal("OnShutdown did not enter stopping state")
 	}
 	options.PostShutdown()
+}
+
+func TestHardenedWebviewWindowOptionsDisableInspection(t *testing.T) {
+	options := hardenedWebviewWindowOptions(application.WebviewWindowOptions{
+		DevToolsEnabled:            true,
+		DefaultContextMenuDisabled: false,
+		OpenInspectorOnStartup:     true,
+	})
+	if options.DevToolsEnabled {
+		t.Fatal("devtools must remain disabled for every window")
+	}
+	if !options.DefaultContextMenuDisabled {
+		t.Fatal("the native context menu must remain disabled")
+	}
+	if options.OpenInspectorOnStartup {
+		t.Fatal("the inspector must not open at startup")
+	}
 }

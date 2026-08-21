@@ -27,6 +27,7 @@ import (
 	"graal-rc/internal/connection"
 	"graal-rc/internal/credentials"
 	deploylib "graal-rc/internal/deploy"
+	gallerylib "graal-rc/internal/gallery"
 	"graal-rc/internal/graalscript"
 	pluginlib "graal-rc/internal/plugins"
 	"graal-rc/internal/sqlite"
@@ -98,6 +99,18 @@ type App struct {
 	chatLinkMu      sync.Mutex
 	chatLinkWindows map[string]*application.WebviewWindow
 	chatLinkSeq     uint64
+
+	// Script Gallery authentication is deliberately native-only. The token is
+	// held in memory for the current RC session and is never exposed to React
+	// or persisted alongside game credentials.
+	galleryMu             sync.Mutex
+	galleryClient         *gallerylib.Client
+	gallerySessionStore   *gallerylib.SessionStore
+	galleryToken          string
+	gallerySubject        string
+	galleryUser           gallerylib.User
+	galleryTokenExpiresAt int64
+	gallerySessionVersion uint64
 
 	pluginFileOpenMu      sync.Mutex
 	pluginFileOpenWaiters map[string]pluginFileOpenRequest
@@ -205,6 +218,10 @@ func NewApp() *App {
 	} else {
 		migrateLegacyCredentials(vault)
 	}
+	gallerySessionStore, gallerySessionErr := gallerylib.NewSessionStore()
+	if gallerySessionErr != nil {
+		log.Printf("Script Gallery session store: %v", gallerySessionErr)
+	}
 	lsp := graalscript.NewLanguageServer()
 	// The embedded server is usable as a standalone package in tests, but the
 	// desktop integration starts locked until the current server has a local
@@ -218,6 +235,7 @@ func NewApp() *App {
 	app := &App{
 		sessions:              connection.NewService(),
 		vault:                 vault,
+		gallerySessionStore:   gallerySessionStore,
 		editorWindows:         map[string]*application.WebviewWindow{},
 		editorCache:           map[string]rclib.ScriptReply{},
 		editorDirty:           map[string]bool{},
@@ -256,6 +274,7 @@ func NewApp() *App {
 // contains the main window. If the monitor cannot be resolved, Wails keeps its
 // default placement behavior.
 func (a *App) newWebviewWindow(options application.WebviewWindowOptions) *application.WebviewWindow {
+	options = hardenedWebviewWindowOptions(options)
 	if a.mainWindow != nil {
 		if screen, err := a.mainWindow.GetScreen(); err == nil && screen != nil {
 			options.Screen = screen
@@ -263,6 +282,17 @@ func (a *App) newWebviewWindow(options application.WebviewWindowOptions) *applic
 		}
 	}
 	return a.app.Window.NewWithOptions(options)
+}
+
+// hardenedWebviewWindowOptions keeps release windows from exposing the
+// browser inspector or its native context menu. The production Wails build
+// also compiles out the platform devtools handlers; setting the options here
+// protects every secondary window from accidentally opting back in.
+func hardenedWebviewWindowOptions(options application.WebviewWindowOptions) application.WebviewWindowOptions {
+	options.DevToolsEnabled = false
+	options.DefaultContextMenuDisabled = true
+	options.OpenInspectorOnStartup = false
+	return options
 }
 
 func (a *App) dialogParentWindow() application.Window {
@@ -1215,7 +1245,15 @@ func (a *App) RemoveAccount(accountName string) error {
 	if a.vault == nil {
 		return nil
 	}
-	return a.vault.Remove(accountName)
+	if err := a.vault.Remove(accountName); err != nil {
+		return err
+	}
+	if a.gallerySessionStore != nil {
+		if err := a.gallerySessionStore.Delete(accountName); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // RenameAccount sets the client-only display label for a saved account (does
@@ -1277,6 +1315,7 @@ func (a *App) ConnectToServer(index int) error {
 	// newly selected server.
 	a.stopSyncEngine()
 	a.closeSessionWindows()
+	a.clearGallerySession()
 	err := a.sessions.ConnectToServer(index)
 	// Do not query the native player cache on the Wails connection path. The
 	// server socket is already authenticated here, and a native cache read can
@@ -1296,6 +1335,7 @@ func (a *App) SetNewProtocol(enable bool) error { return a.sessions.SetNewProtoc
 func (a *App) Logout() {
 	a.stopSyncEngine()
 	a.closeSessionWindows()
+	a.clearGallerySession()
 	a.sessions.Logout()
 	a.clearPMState()
 	a.refreshServerChrome()

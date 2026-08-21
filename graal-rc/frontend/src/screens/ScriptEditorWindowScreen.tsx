@@ -9,9 +9,11 @@ import Editor, {DiffEditor, type BeforeMount, type OnMount} from "@monaco-editor
 import {Events} from "@wailsio/runtime"
 import {toast} from "sonner"
 
-import {GitCompare, Loader2, X} from "lucide-react"
+import {BookOpen, GitCompare, Loader2, X} from "lucide-react"
+import {ConfirmDialog} from "@/components/ConfirmDialog"
 import {AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogHeader, AlertDialogTitle} from "@/components/ui/alert-dialog"
 import {Button} from "@/components/ui/button"
+import {ScriptGalleryDialog, type ScriptGalleryType} from "@/components/ScriptGalleryDialog"
 import {useCodingSettings} from "@/hooks/useCodingSettings"
 import {ensureTheme, toMonacoThemeName} from "@/lib/monacoThemes"
 import {registerGraalScript} from "@/lib/monacoGraalScript"
@@ -112,9 +114,13 @@ export function ScriptEditorWindowScreen() {
   const [saveDiagnostics, setSaveDiagnostics] = useState<GraalScriptDiagnostic[]>([])
   const [closingAfterSave, setClosingAfterSave] = useState(false)
   const [showChanges, setShowChanges] = useState(false)
+  const [galleryOpen, setGalleryOpen] = useState(false)
+  const [pendingGalleryInsert, setPendingGalleryInsert] = useState<string | null>(null)
+  const [confirmGalleryReplace, setConfirmGalleryReplace] = useState(false)
   const pluginLanguage = kind === "options" || kind === "folder_config" || kind === "flags" || kind === "npcflags"
     ? "serverconfig"
     : kind === "npcattr" ? "ini" : "graalscript"
+  const galleryType: ScriptGalleryType | null = kind === "weapon" || kind === "class" || kind === "npc" ? kind : null
 
   const requestPluginDiagnostics = useCallback(async () => {
     const model = editorRef.current?.getModel()
@@ -544,6 +550,26 @@ export function ScriptEditorWindowScreen() {
     rcService.closeScriptEditor(kind, key).catch(() => {})
   }, [kind, key])
 
+  const applyGalleryInsert = useCallback((nextContent: string) => {
+    editorRef.current?.setValue(nextContent)
+    contentRef.current = nextContent
+    setContent(nextContent)
+    setDirty(nextContent !== original)
+    setPendingGalleryInsert(null)
+    setConfirmGalleryReplace(false)
+    setGalleryOpen(false)
+    toast.success(t("gallery.inserted"))
+  }, [original, t])
+
+  const handleGalleryInsert = useCallback((nextContent: string) => {
+    if (dirty && nextContent !== contentRef.current) {
+      setPendingGalleryInsert(nextContent)
+      setConfirmGalleryReplace(true)
+      return
+    }
+    applyGalleryInsert(nextContent)
+  }, [applyGalleryInsert, dirty])
+
   return (
     <div className="bg-background flex h-svh flex-col">
       <header className="flex items-center gap-2 border-b px-4 py-2">
@@ -553,12 +579,21 @@ export function ScriptEditorWindowScreen() {
         {readOnly && <span className="text-muted-foreground text-xs">{t("editor.readOnly")}</span>}
         {dirty && !readOnly && <span className="text-amber-500 text-xs">{t("editor.unsaved")}</span>}
         {saving && <Loader2 className="text-muted-foreground size-3.5 animate-spin" />}
-        {!readOnly && dirty && (
+        {(galleryType || (!readOnly && dirty)) && (
           <div className="ml-auto flex items-center gap-1.5">
+            {galleryType && (
+              <Button variant="outline" size="sm" onClick={() => setGalleryOpen(true)} disabled={loading || Boolean(loadError)}>
+                <BookOpen className="size-4" />{t("gallery.view")}
+              </Button>
+            )}
+            {!readOnly && dirty && (
+              <>
             <Button variant="outline" size="sm" onClick={() => setShowChanges((value) => !value)}>
               <GitCompare className="size-4" />{t("editor.reviewChanges")}
             </Button>
             <Button size="sm" onClick={() => void doSave()} disabled={saving}>{t("editor.deployChanges")}</Button>
+              </>
+            )}
           </div>
         )}
       </header>
@@ -717,6 +752,32 @@ export function ScriptEditorWindowScreen() {
           </div>
         </AlertDialogContent>
       </AlertDialog>
+
+      {galleryType && (
+        <ScriptGalleryDialog
+          open={galleryOpen}
+          scriptType={galleryType}
+          currentName={scriptName || key}
+          currentContent={contentRef.current}
+          onClose={() => setGalleryOpen(false)}
+          onInsert={handleGalleryInsert}
+        />
+      )}
+
+      <ConfirmDialog
+        open={confirmGalleryReplace}
+        title={t("gallery.replaceUnsavedTitle")}
+        description={t("gallery.replaceUnsavedDescription")}
+        confirmLabel={t("gallery.replaceUnsavedConfirm")}
+        destructive
+        onCancel={() => {
+          setConfirmGalleryReplace(false)
+          setPendingGalleryInsert(null)
+        }}
+        onConfirm={() => {
+          if (pendingGalleryInsert !== null) applyGalleryInsert(pendingGalleryInsert)
+        }}
+      />
     </div>
   )
 }

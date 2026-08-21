@@ -11,11 +11,24 @@ export interface ChangelogEntry {
 // the visible history from nullborne.com when the release service is reachable.
 const CHANGELOG_PT_BR: ChangelogEntry[] = [
   {
+    version: "4.0.0",
+    date: "21/08/2026",
+    title: "Galeria de Scripts com contas e projetos",
+    summary: "Adiciona contas próprias, projetos públicos ou privados e persistência segura por conta do RC.",
+    current: true,
+    changes: [
+      "A Galeria de Scripts agora usa contas próprias com registro e login dentro do RC; o nome de usuário vem do community name e usa o account name apenas como fallback, sem poder ser alterado.",
+      "O login da galeria é salvo separadamente para cada conta do RC. Ruan e Repinho mantêm sessões independentes, e o RC salva somente um token opaco protegido pelo sistema operacional, nunca a senha.",
+      "Projetos podem conter qualquer quantidade de scripts de weapons, classes e NPCs, com visibilidade pública ou privada; somente o dono autenticado pode editar ou excluir seus projetos e scripts.",
+      "A API agora usa SQLite, hash scrypt para senhas e sessões revogáveis, enquanto a galeria continua disponível exclusivamente dentro do RC, sem uma tela de galeria na página web.",
+    ],
+  },
+  {
     version: "3.3.1",
     date: "19/08/2026",
     title: "Conexão de servidor sem travamentos",
     summary: "Corrige o estado infinito de conexão quando a autenticação já foi concluída no backend.",
-    current: true,
+    current: false,
     changes: [
       "A tela de seleção de servidor agora entra no RC assim que o socket confirma a autenticação, mesmo quando a atualização de direitos ou da lista de jogadores demora.",
       "A atualização de direitos do usuário roda em segundo plano e respostas antigas de uma sessão anterior não podem sobrescrever a conexão atual.",
@@ -258,8 +271,18 @@ const CHANGELOG_PT_BR: ChangelogEntry[] = [
 
 const CHANGELOG_EN: ChangelogEntry[] = [
   {
+    version: "4.0.0", date: "2026-08-21", title: "Script Gallery accounts and projects",
+    summary: "Adds first-party accounts, public or private projects and secure per-RC-account persistence.", current: true,
+    changes: [
+      "Script Gallery now has its own registration and login inside the RC; the username comes from the community name and falls back to the account name, and it cannot be edited.",
+      "Gallery login is saved separately for each RC account. Ruan and Repinho keep independent sessions, and the RC stores only an OS-protected opaque token, never the password.",
+      "Projects can contain any number of weapon, class and NPC scripts with public or private visibility; only the authenticated owner can edit or delete their projects and scripts.",
+      "The API now uses SQLite, scrypt password hashes and revocable sessions, while the gallery remains available exclusively inside the RC with no gallery page on the website.",
+    ],
+  },
+  {
     version: "3.3.1", date: "2026-08-19", title: "Server connections without hangs",
-    summary: "Fixes the infinite connection state when backend authentication has already completed.", current: true,
+    summary: "Fixes the infinite connection state when backend authentication has already completed.", current: false,
     changes: [
       "The server selector now enters the RC as soon as the socket confirms authentication, even when rights or the player list take longer to refresh.",
       "The user's rights refresh runs in the background, and stale responses from a previous session cannot overwrite the active connection.",
@@ -448,8 +471,18 @@ const CHANGELOG_EN: ChangelogEntry[] = [
 
 const CHANGELOG_ES: ChangelogEntry[] = [
   {
+    version: "4.0.0", date: "2026-08-21", title: "Cuentas y proyectos de la Galería de scripts",
+    summary: "Añade cuentas propias, proyectos públicos o privados y persistencia segura por cuenta de RC.", current: true,
+    changes: [
+      "La Galería de scripts ahora tiene registro e inicio de sesión propios dentro de RC; el nombre de usuario procede del community name y usa el account name como respaldo, sin permitir editarlo.",
+      "El acceso de la galería se guarda por separado para cada cuenta de RC. Ruan y Repinho mantienen sesiones independientes, y RC solo guarda un token opaco protegido por el sistema operativo, nunca la contraseña.",
+      "Los proyectos pueden contener cualquier cantidad de scripts de weapons, clases y NPCs con visibilidad pública o privada; solo el propietario autenticado puede editar o eliminar sus proyectos y scripts.",
+      "La API ahora usa SQLite, hashes scrypt para contraseñas y sesiones revocables, mientras la galería sigue disponible exclusivamente dentro de RC, sin página de galería en el sitio web.",
+    ],
+  },
+  {
     version: "3.3.1", date: "2026-08-19", title: "Conexiones de servidor sin bloqueos",
-    summary: "Corrige el estado de conexión infinito cuando la autenticación del backend ya terminó.", current: true,
+    summary: "Corrige el estado de conexión infinito cuando la autenticación del backend ya terminó.", current: false,
     changes: [
       "La pantalla de selección de servidores entra al RC en cuanto el socket confirma la autenticación, aunque los derechos o la lista de jugadores tarden más en actualizarse.",
       "La actualización de derechos del usuario se ejecuta en segundo plano y las respuestas antiguas de una sesión anterior no pueden sobrescribir la conexión activa.",
