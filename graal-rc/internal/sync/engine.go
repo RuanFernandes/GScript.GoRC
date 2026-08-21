@@ -41,6 +41,8 @@ type SyncStatus struct {
 	ReviewCount       int          `json:"reviewCount"`
 	Items             []ReviewItem `json:"items"`
 	Progress          SyncProgress `json:"progress"`
+	// NextSyncAt is retained for frontend/API compatibility; automatic server
+	// polling is disabled, so it remains zero.
 	NextSyncAt        int64        `json:"nextSyncAt"`
 	PermissionsReady  bool         `json:"permissionsReady"`
 	PermissionsError  string       `json:"permissionsError,omitempty"`
@@ -342,8 +344,6 @@ func (e *Engine) start(ctx context.Context, async bool) {
 				// stopped. Keeping this worker alive lets Stop wait for any
 				// in-flight bootstrap before the handle changes servers.
 				e.retryBootstrap(startupCtx, cfg.OutputDir, stop)
-			} else {
-				e.setNextSyncAt(e.now().Add(pollDuration(cfg)))
 			}
 		}()
 		return
@@ -351,14 +351,11 @@ func (e *Engine) start(ctx context.Context, async bool) {
 
 	// NC connects asynchronously after the main server login. The first
 	// bootstrap therefore cannot assume the NC socket is ready yet; retrying
-	// here makes a configured sync start immediately when NC becomes available
-	// instead of waiting for the polling interval.
+	// here makes a configured sync start as soon as NC becomes available.
 	initialErr := e.bootstrap(ctx, cfg.OutputDir)
 	if initialErr != nil {
 		log.Printf("sync bootstrap: %v", initialErr)
 		go e.retryBootstrap(ctx, cfg.OutputDir, stop)
-	} else {
-		e.setNextSyncAt(e.now().Add(pollDuration(cfg)))
 	}
 	if err := e.startWatcher(cfg.OutputDir); err != nil {
 		log.Printf("sync watcher: %v", err)
@@ -398,7 +395,6 @@ func (e *Engine) retryBootstrap(ctx context.Context, dir string, stop <-chan str
 				log.Printf("sync bootstrap retry: %v", err)
 				continue
 			}
-			e.setNextSyncAt(e.now().Add(pollDuration(e.config())))
 			return
 		}
 	}
@@ -434,10 +430,10 @@ func (e *Engine) Stop() {
 	if startupDone != nil {
 		<-startupDone
 	}
-	// Polls, chat activity and list-change reconciles are serialized by
-	// workMu, but they may be running outside the loop goroutine. Wait for the
-	// active operation before the shared connection can be switched to another
-	// server, so its late replies cannot be applied to the new session.
+	// Chat activity and explicit reconciles are serialized by workMu, but they
+	// may be running outside the loop goroutine. Wait for the active operation
+	// before the shared connection can be switched to another server, so its
+	// late replies cannot be applied to the new session.
 	e.workMu.Lock()
 	e.workMu.Unlock()
 }
@@ -470,8 +466,8 @@ func (e *Engine) bootstrap(ctx context.Context, dir string) error {
 	}
 	if len(replies) == 0 {
 		// An account may legitimately have no readable scripts. Treat an empty
-		// permission-filtered result as a completed bootstrap; the next regular
-		// poll will pick up lists that were still warming up on the NC socket.
+		// permission-filtered result as a completed bootstrap; the user can use
+		// Re-Sync if the NC lists were still warming up at login.
 		e.removeUnlistedLocalFiles(dir, serverPaths(nil))
 		e.markReconcileCompleted()
 		e.finishProgress(0)
@@ -498,7 +494,7 @@ func (e *Engine) bootstrap(ctx context.Context, dir string) error {
 		if err := e.pullLocalVersion(ref, path, content, HashScript(content), nil); err != nil {
 			// One local path may be removed or temporarily unavailable while a
 			// snapshot is being materialized. Keep processing the rest of the
-			// server snapshot; the next poll can retry this path.
+			// server snapshot; the next Re-Sync can retry this path.
 			log.Printf("sync bootstrap write %s: %v", path, err)
 			if pullErr == nil {
 				pullErr = err
@@ -603,13 +599,7 @@ func (e *Engine) loop(ctx context.Context, stop <-chan struct{}, stopped chan<- 
 	defer close(stopped)
 	e.mu.RLock()
 	w := e.watcher
-	mins := e.cfg.PollingMinutes
 	e.mu.RUnlock()
-	if mins < 1 {
-		mins = DefaultPollingMinutes
-	}
-	ticker := time.NewTicker(time.Duration(mins) * time.Minute)
-	defer ticker.Stop()
 	timers := map[string]*time.Timer{}
 	for {
 		var events <-chan fsnotify.Event
@@ -622,9 +612,6 @@ func (e *Engine) loop(ctx context.Context, stop <-chan struct{}, stopped chan<- 
 			return
 		case <-stop:
 			return
-		case <-ticker.C:
-			e.setNextSyncAt(time.Now().Add(time.Duration(mins) * time.Minute))
-			go e.poll(ctx)
 		case ev, ok := <-events:
 			if ok {
 				e.scheduleLocal(ctx, ev, timers)
@@ -656,7 +643,7 @@ func (e *Engine) scheduleLocal(ctx context.Context, ev fsnotify.Event, timers ma
 }
 
 func (e *Engine) pushLocal(ctx context.Context, path string) {
-	// A watcher callback can run while a scheduled/manual reconcile is
+	// A watcher callback can run while a manual reconcile is
 	// comparing or removing files. Serialize it with the server-side pass so a
 	// newly edited file is not deleted or uploaded from a stale snapshot.
 	e.workMu.Lock()
@@ -767,15 +754,7 @@ func (e *Engine) uploadUnchecked(ref scriptRef, content string) error {
 	return fmt.Errorf("unknown script type %q", ref.kind)
 }
 
-func (e *Engine) poll(ctx context.Context) {
-	e.workMu.Lock()
-	defer e.workMu.Unlock()
-	// Scheduled polling deliberately reuses the permission snapshot. Rights
-	// refreshes are reserved for bootstrap and the explicit Sync Now action.
-	e.pollLocked(ctx, false)
-}
-
-func (e *Engine) pollLocked(ctx context.Context, refreshRights bool) {
+func (e *Engine) reconcileLocked(ctx context.Context, refreshRights bool) {
 	e.mu.RLock()
 	cfg := e.cfg
 	panicMode := e.panicMode
@@ -803,29 +782,28 @@ func (e *Engine) pollLocked(ctx context.Context, refreshRights bool) {
 			return
 		}
 	} else if !e.permissionsReadySnapshot() {
-		log.Printf("[sync poll] skipping: script permissions are not loaded")
+		log.Printf("[sync reconcile] skipping: script permissions are not loaded")
 		e.emitStatus()
 		return
 	} else {
-		log.Printf("[sync poll] using cached script permissions")
+		log.Printf("[sync reconcile] using cached script permissions")
 	}
-	e.setNextSyncAt(e.now().Add(pollDuration(cfg)))
 	e.setProgress("Downloading", 0, 0, "")
 	// The NC authentication path already populated the native script lists, and
 	// subsequent add/delete packets keep them current. Do not send another
-	// PLI_NC_WEAPONLISTGET during scheduled polling: some NC servers disconnect
-	// when the full weapon list is requested again after the initial sync.
-	log.Printf("[sync poll] fetching readable scripts from cached NC lists")
-	replies, err := e.fetchScripts(ctx, refreshRights, func(done, total int) {
+	// PLI_NC_WEAPONLISTGET during a reconcile: some NC servers disconnect when
+	// the full weapon list is requested again after the initial sync.
+	log.Printf("[sync reconcile] fetching readable scripts from cached NC lists")
+	replies, err := e.fetchScripts(ctx, false, func(done, total int) {
 		e.setProgress("Downloading", done, total, "")
 	})
-	log.Printf("[sync poll] readable script fetch finished replies=%d err=%v", len(replies), err)
+	log.Printf("[sync reconcile] readable script fetch finished replies=%d err=%v", len(replies), err)
 	if err != nil && len(replies) == 0 {
-		log.Printf("sync poll: %v", err)
+		log.Printf("sync reconcile: %v", err)
 		return
 	}
 	if len(replies) == 0 {
-		log.Printf("sync poll: script lists are not ready")
+		log.Printf("sync reconcile: script lists are not ready")
 		if err == nil {
 			e.removeUnlistedLocalFiles(cfg.OutputDir, serverPaths(nil))
 		}
@@ -844,23 +822,23 @@ func (e *Engine) pollLocked(ctx context.Context, refreshRights bool) {
 		trace := traceCompareItem(i, len(replies))
 		started := time.Now()
 		if trace {
-			log.Printf("[sync poll compare] start %d/%d kind=%s name=%q bytes=%d", i+1, len(replies), ref.kind, ref.name, len(content))
+			log.Printf("[sync reconcile compare] start %d/%d kind=%s name=%q bytes=%d", i+1, len(replies), ref.kind, ref.name, len(content))
 		}
 		e.setProgress("Comparing", i+1, len(replies), ref.name)
 		serverHash := HashScript(content)
 		e.rememberRef(ref, path)
 		local, exists := readScriptFile(path)
 		if localChangedSince(path, localBaseline) {
-			log.Printf("[sync poll compare] preserving local change made during sync path=%q", path)
+			log.Printf("[sync reconcile compare] preserving local change made during sync path=%q", path)
 			e.preserveLocalChange(path, localBaseline)
 			continue
 		}
 		if !exists {
 			if err := e.pullLocalVersion(ref, path, content, serverHash, nil); err != nil {
-				log.Printf("[sync poll compare] create failed %d/%d path=%q: %v", i+1, len(replies), path, err)
+				log.Printf("[sync reconcile compare] create failed %d/%d path=%q: %v", i+1, len(replies), path, err)
 			}
 			if trace {
-				log.Printf("[sync poll compare] done %d/%d kind=%s name=%q action=created elapsed=%s", i+1, len(replies), ref.kind, ref.name, time.Since(started))
+				log.Printf("[sync reconcile compare] done %d/%d kind=%s name=%q action=created elapsed=%s", i+1, len(replies), ref.kind, ref.name, time.Since(started))
 			}
 			continue
 		}
@@ -869,7 +847,7 @@ func (e *Engine) pollLocked(ctx context.Context, refreshRights bool) {
 			e.hashes[path] = serverHash
 			e.mu.Unlock()
 			if trace {
-				log.Printf("[sync poll compare] done %d/%d kind=%s name=%q action=unchanged elapsed=%s", i+1, len(replies), ref.kind, ref.name, time.Since(started))
+				log.Printf("[sync reconcile compare] done %d/%d kind=%s name=%q action=unchanged elapsed=%s", i+1, len(replies), ref.kind, ref.name, time.Since(started))
 			}
 			continue
 		}
@@ -877,14 +855,14 @@ func (e *Engine) pollLocked(ctx context.Context, refreshRights bool) {
 			if e.editorIsOpen(ref) && !e.isExpectedServerUpdate(ref, serverHash) {
 				e.enqueueReview(ref, path, local, content, "server changed while editing")
 				if trace {
-					log.Printf("[sync poll compare] done %d/%d kind=%s name=%q action=review elapsed=%s", i+1, len(replies), ref.kind, ref.name, time.Since(started))
+					log.Printf("[sync reconcile compare] done %d/%d kind=%s name=%q action=review elapsed=%s", i+1, len(replies), ref.kind, ref.name, time.Since(started))
 				}
 				continue
 			}
 			e.writeServerVersion(ref, path, content, serverHash, &local)
 		}
 		if trace {
-			log.Printf("[sync poll compare] done %d/%d kind=%s name=%q action=changed elapsed=%s", i+1, len(replies), ref.kind, ref.name, time.Since(started))
+			log.Printf("[sync reconcile compare] done %d/%d kind=%s name=%q action=changed elapsed=%s", i+1, len(replies), ref.kind, ref.name, time.Since(started))
 		}
 	}
 	if err == nil {
@@ -907,7 +885,7 @@ const (
 )
 
 // fetchScripts gives the NC server a short warm-up window after authentication
-// when refreshWeaponList is requested. Scheduled polls reuse the lists already
+// when refreshWeaponList is requested. Reconciles reuse the lists already
 // maintained by grclib instead of sending another full weapon-list request.
 func (e *Engine) fetchScripts(ctx context.Context, refreshWeaponList bool, progress func(done, total int)) ([]rclib.ScriptReply, error) {
 	var replies []rclib.ScriptReply
@@ -942,21 +920,6 @@ func (e *Engine) fetchScripts(ctx context.Context, refreshWeaponList bool, progr
 		log.Printf("[sync fetch] script lists returned no readable replies; warming up attempt=%d/%d", attempt, attempts)
 	}
 	return replies, err
-}
-
-func pollDuration(cfg SyncConfig) time.Duration {
-	mins := cfg.PollingMinutes
-	if mins < 1 {
-		mins = DefaultPollingMinutes
-	}
-	return time.Duration(mins) * time.Minute
-}
-
-func (e *Engine) setNextSyncAt(at time.Time) {
-	e.mu.Lock()
-	e.nextSyncAt = at.Unix()
-	e.mu.Unlock()
-	e.emitStatus()
 }
 
 func (e *Engine) setProgress(phase string, completed, total int, current string) {
@@ -1350,15 +1313,19 @@ func (e *Engine) npcIDByName(name string) (int, bool) {
 	}
 	return 0, false
 }
-func (e *Engine) HandleListChanged(_ string) { go e.poll(context.Background()) }
+
+// HandleListChanged is kept for callers compiled against the old event hook.
+// Native NC callbacks already keep the script lists current while RC is open;
+// list changes must not trigger another full network reconcile automatically.
+func (e *Engine) HandleListChanged(_ string) { e.emitStatus() }
 
 // ReconcileAll is the public immediate-sync entry point used by the Wails
-// binding and the Sync Now button. Unlike scheduled polling, it refreshes the
-// self permission snapshot before fetching scripts.
+// binding and the Re-Sync button. It refreshes the self permission snapshot,
+// then fetches scripts from the lists already maintained by the NC session.
 func (e *Engine) ReconcileAll(ctx context.Context) {
 	e.workMu.Lock()
 	defer e.workMu.Unlock()
-	e.pollLocked(ctx, true)
+	e.reconcileLocked(ctx, true)
 }
 
 // PrepareRebuild deletes the contents of the configured Local Sync directory

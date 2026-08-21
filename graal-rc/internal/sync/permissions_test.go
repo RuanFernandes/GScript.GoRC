@@ -83,9 +83,25 @@ func TestBootstrapReusesSessionPermissions(t *testing.T) {
 	if backend.permissionRefreshes != 0 {
 		t.Fatalf("permission refreshes = %d, want 0 when the session snapshot is reused", backend.permissionRefreshes)
 	}
+	if backend.weaponRefreshes != 1 {
+		t.Fatalf("weapon list refreshes = %d, want 1 during login bootstrap", backend.weaponRefreshes)
+	}
 }
 
-func TestReconcileRefreshesSelfPermissionsEveryPoll(t *testing.T) {
+func TestStartLeavesNoAutomaticResyncScheduled(t *testing.T) {
+	backend := &permissionBackendStub{fetchReplies: []rclib.ScriptReply{{Type: "weapon", Name: "Test", Script: ""}}}
+	engine := NewEngine(backend, "TestServer", nil)
+	engine.ApplyConfig(SyncConfig{Enabled: true, OutputDir: t.TempDir(), PollingMinutes: 1})
+
+	engine.Start(context.Background())
+	defer engine.Stop()
+
+	if got := engine.Status().NextSyncAt; got != 0 {
+		t.Fatalf("next sync timestamp = %d, want 0 when automatic re-sync is disabled", got)
+	}
+}
+
+func TestManualResyncRefreshesSelfPermissions(t *testing.T) {
 	backend := &permissionBackendStub{fetchReplies: []rclib.ScriptReply{{Type: "weapon", Name: "Test", Script: ""}}}
 	engine := NewEngine(backend, "TestServer", nil)
 	engine.ApplyConfig(SyncConfig{
@@ -105,14 +121,17 @@ func TestReconcileRefreshesSelfPermissionsEveryPoll(t *testing.T) {
 	if backend.fetches != 2 {
 		t.Fatalf("script fetches = %d, want 2", backend.fetches)
 	}
+	if backend.weaponRefreshes != 0 {
+		t.Fatalf("weapon list refreshes = %d, want 0 after login", backend.weaponRefreshes)
+	}
 	status := engine.Status()
 	if !status.PermissionsReady || status.PermissionsError != "" {
 		t.Fatalf("permission status = ready:%v error:%q", status.PermissionsReady, status.PermissionsError)
 	}
 }
 
-func TestScheduledPollReusesLoadedPermissions(t *testing.T) {
-	backend := &permissionBackendStub{fetchReplies: []rclib.ScriptReply{{Type: "weapon", Name: "Test", Script: ""}}}
+func TestListChangedDoesNotStartResync(t *testing.T) {
+	backend := &permissionBackendStub{}
 	engine := NewEngine(backend, "TestServer", nil)
 	engine.ApplyConfig(SyncConfig{
 		Enabled:        true,
@@ -122,16 +141,15 @@ func TestScheduledPollReusesLoadedPermissions(t *testing.T) {
 		AutoPullServer: true,
 	})
 
-	engine.ReconcileAll(context.Background())
-	engine.poll(context.Background())
+	engine.HandleListChanged("weapon")
 
-	if backend.permissionRefreshes != 1 {
-		t.Fatalf("permission refreshes = %d, want 1 when scheduled poll reuses the cache", backend.permissionRefreshes)
+	if backend.permissionRefreshes != 0 {
+		t.Fatalf("permission refreshes = %d, want 0 for a live list callback", backend.permissionRefreshes)
 	}
-	if backend.fetches != 2 {
-		t.Fatalf("script fetches = %d, want 2 across manual sync + scheduled poll", backend.fetches)
+	if backend.fetches != 0 {
+		t.Fatalf("script fetches = %d, want 0 for a live list callback", backend.fetches)
 	}
-	if backend.weaponRefreshes != 1 {
-		t.Fatalf("weapon list refreshes = %d, want 1 from the initial manual sync only", backend.weaponRefreshes)
+	if backend.weaponRefreshes != 0 {
+		t.Fatalf("weapon list refreshes = %d, want 0 for a live list callback", backend.weaponRefreshes)
 	}
 }

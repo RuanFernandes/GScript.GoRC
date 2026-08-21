@@ -354,7 +354,7 @@ func (a *App) syncEmitter() func(string, ...any) {
 					}
 					a.syncLSPMu.Unlock()
 					// A generation is advanced only after the complete reconcile has
-					// finished. Refresh once per generation so an auto-poll does not
+					// finished. Refresh once per generation so a reconcile does not
 					// repeatedly tear down an already-loaded LSP workspace.
 					if shouldRefresh {
 						go a.refreshGraalScriptWorkspace()
@@ -519,7 +519,10 @@ func (a *App) applySyncConfig(cfg sync.SyncConfig) {
 
 // --- Bound methods exposed to the frontend ---
 
-// SyncNow triggers a full reconcile immediately.
+// SyncNow triggers the user-requested re-sync immediately. The NC session's
+// native callbacks keep NPC/Class/Weapon lists current while RC is open, so
+// this reconcile refreshes permissions and fetches script contents without
+// requesting the full weapon list again.
 func (a *App) SyncNow() error {
 	if err := ensureAppRunning(a); err != nil {
 		return err
@@ -546,9 +549,10 @@ func (a *App) SyncNow() error {
 		}
 		return fmt.Errorf("sync is in panic mode: %s", reason)
 	}
-	// Sync Now runs the full reconcile in the background (refresh weapon list +
-	// pipelined bulk fetch + classify). NC is not reconnected — that drops the
-	// session on old servers; class/npc lists refresh via live *Changed pushes.
+	// Re-Sync runs the reconcile in the background. NC is not reconnected and
+	// the full weapon-list request is not repeated — both can drop the session
+	// on older servers; class/NPC/weapon list callbacks already keep the native
+	// cache current.
 	a.syncEngineMu.Lock()
 	ctx := a.syncCtx
 	a.syncEngineMu.Unlock()

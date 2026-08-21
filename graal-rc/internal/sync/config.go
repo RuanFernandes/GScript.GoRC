@@ -9,7 +9,8 @@ type SyncConfig struct {
 	// OutputDir is the root sync folder; scripts land in
 	// OutputDir/{weapons,classes,npcs}/<name>.gs2. Empty => disabled.
 	OutputDir string `json:"outputDir"`
-	// PollingMinutes is the full-reconcile poll interval (min 1).
+	// PollingMinutes is retained for config compatibility. Full server syncs are
+	// login-only plus the explicit Re-Sync action; this value is no longer used.
 	PollingMinutes int `json:"pollingMinutes"`
 	// AutoPushLocal auto-pushes unilateral local changes to the server.
 	AutoPushLocal bool `json:"autoPushLocal"`
