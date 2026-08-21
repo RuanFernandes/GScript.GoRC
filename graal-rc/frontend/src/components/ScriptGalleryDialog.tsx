@@ -603,7 +603,7 @@ function addScriptToProject(project: ScriptGalleryProject, script: ScriptGallery
 }
 
 function replaceScriptInProject(project: ScriptGalleryProject, script: ScriptGalleryScript): ScriptGalleryProject {
-  const replace = (scripts: ScriptGalleryScript[]) => (scripts ?? []).map((candidate) => candidate.id === script.id ? script : candidate)
+  const replace = (scripts: ScriptGalleryScript[] | null | undefined) => (scripts ?? []).map((candidate) => candidate.id === script.id ? script : candidate)
   return {
     ...project,
     weaponScripts: replace(project.weaponScripts),
