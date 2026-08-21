@@ -243,9 +243,21 @@ func (c *Client) do(ctx context.Context, method, route, token string, payload an
 	if c == nil || c.baseURL == nil || c.httpClient == nil {
 		return errors.New("Script Gallery client is unavailable")
 	}
+	routeURL, err := url.Parse(route)
+	if err != nil {
+		return fmt.Errorf("parse Script Gallery route: %w", err)
+	}
+	if routeURL.IsAbs() || routeURL.Host != "" || routeURL.Fragment != "" || routeURL.Path == "" || !strings.HasPrefix(routeURL.Path, "/") {
+		return errors.New("invalid Script Gallery route")
+	}
 	endpoint := *c.baseURL
-	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + route
-	endpoint.RawQuery = ""
+	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + routeURL.Path
+	if routeURL.RawPath != "" {
+		endpoint.RawPath = strings.TrimRight(endpoint.RawPath, "/") + routeURL.RawPath
+	} else {
+		endpoint.RawPath = ""
+	}
+	endpoint.RawQuery = routeURL.RawQuery
 	endpoint.Fragment = ""
 
 	var body io.Reader

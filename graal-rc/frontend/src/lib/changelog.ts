@@ -11,14 +11,24 @@ export interface ChangelogEntry {
 // the visible history from nullborne.com when the release service is reachable.
 const CHANGELOG_PT_BR: ChangelogEntry[] = [
   {
+    version: "4.0.1",
+    date: "21/08/2026",
+    title: "Correção da Galeria de Scripts",
+    summary: "Corrige o carregamento dos projetos da galeria quando o filtro de tipo está ativo.",
+    current: true,
+    changes: [
+      "Corrige a montagem das URLs da Galeria de Scripts para manter caminho e parâmetros de busca separados, evitando erro ao carregar projetos de weapons, classes ou NPCs.",
+    ],
+  },
+  {
     version: "4.0.0",
     date: "21/08/2026",
     title: "Galeria de Scripts com contas e projetos",
     summary: "Adiciona contas próprias, projetos públicos ou privados e persistência segura por conta do RC.",
-    current: true,
+    current: false,
     changes: [
       "A Galeria de Scripts agora usa contas próprias com registro e login dentro do RC; o nome de usuário vem do community name e usa o account name apenas como fallback, sem poder ser alterado.",
-      "O login da galeria é salvo separadamente para cada conta do RC. Ruan e Repinho mantêm sessões independentes, e o RC salva somente um token opaco protegido pelo sistema operacional, nunca a senha.",
+      "O login da galeria é salvo separadamente para cada conta do RC, e o RC salva somente um token opaco protegido pelo sistema operacional, nunca a senha.",
       "Projetos podem conter qualquer quantidade de scripts de weapons, classes e NPCs, com visibilidade pública ou privada; somente o dono autenticado pode editar ou excluir seus projetos e scripts.",
       "A API agora usa SQLite, hash scrypt para senhas e sessões revogáveis, enquanto a galeria continua disponível exclusivamente dentro do RC, sem uma tela de galeria na página web.",
     ],
@@ -271,11 +281,18 @@ const CHANGELOG_PT_BR: ChangelogEntry[] = [
 
 const CHANGELOG_EN: ChangelogEntry[] = [
   {
+    version: "4.0.1", date: "2026-08-21", title: "Script Gallery bug fix",
+    summary: "Fixes loading gallery projects when a script-type filter is active.", current: true,
+    changes: [
+      "Fixes Script Gallery URL construction by keeping the request path and query parameters separate, preventing project loading errors for weapons, classes or NPCs.",
+    ],
+  },
+  {
     version: "4.0.0", date: "2026-08-21", title: "Script Gallery accounts and projects",
-    summary: "Adds first-party accounts, public or private projects and secure per-RC-account persistence.", current: true,
+    summary: "Adds first-party accounts, public or private projects and secure per-RC-account persistence.", current: false,
     changes: [
       "Script Gallery now has its own registration and login inside the RC; the username comes from the community name and falls back to the account name, and it cannot be edited.",
-      "Gallery login is saved separately for each RC account. Ruan and Repinho keep independent sessions, and the RC stores only an OS-protected opaque token, never the password.",
+      "Gallery login is saved separately for each RC account, and the RC stores only an OS-protected opaque token, never the password.",
       "Projects can contain any number of weapon, class and NPC scripts with public or private visibility; only the authenticated owner can edit or delete their projects and scripts.",
       "The API now uses SQLite, scrypt password hashes and revocable sessions, while the gallery remains available exclusively inside the RC with no gallery page on the website.",
     ],
@@ -471,11 +488,18 @@ const CHANGELOG_EN: ChangelogEntry[] = [
 
 const CHANGELOG_ES: ChangelogEntry[] = [
   {
+    version: "4.0.1", date: "2026-08-21", title: "Corrección de la Galería de scripts",
+    summary: "Corrige la carga de proyectos cuando hay un filtro de tipo de script activo.", current: true,
+    changes: [
+      "Corrige la construcción de las URLs de la Galería de scripts separando la ruta de los parámetros de búsqueda, evitando errores al cargar proyectos de weapons, clases o NPCs.",
+    ],
+  },
+  {
     version: "4.0.0", date: "2026-08-21", title: "Cuentas y proyectos de la Galería de scripts",
-    summary: "Añade cuentas propias, proyectos públicos o privados y persistencia segura por cuenta de RC.", current: true,
+    summary: "Añade cuentas propias, proyectos públicos o privados y persistencia segura por cuenta de RC.", current: false,
     changes: [
       "La Galería de scripts ahora tiene registro e inicio de sesión propios dentro de RC; el nombre de usuario procede del community name y usa el account name como respaldo, sin permitir editarlo.",
-      "El acceso de la galería se guarda por separado para cada cuenta de RC. Ruan y Repinho mantienen sesiones independientes, y RC solo guarda un token opaco protegido por el sistema operativo, nunca la contraseña.",
+      "El acceso de la galería se guarda por separado para cada cuenta de RC, y RC solo guarda un token opaco protegido por el sistema operativo, nunca la contraseña.",
       "Los proyectos pueden contener cualquier cantidad de scripts de weapons, clases y NPCs con visibilidad pública o privada; solo el propietario autenticado puede editar o eliminar sus proyectos y scripts.",
       "La API ahora usa SQLite, hashes scrypt para contraseñas y sesiones revocables, mientras la galería sigue disponible exclusivamente dentro de RC, sin página de galería en el sitio web.",
     ],
