@@ -273,6 +273,16 @@ jobs:
           cp go.sum "$RUNNER_TEMP/go-386.sum"
           go mod edit -modfile="$modfile" '-replace=github.com/wailsapp/wails/v3=github.com/wailsapp/wails/v3@v3.0.0-alpha2.118'
           go mod download -modfile="$modfile" github.com/wailsapp/wails/v3@v3.0.0-alpha2.118
+          wails_module="$(go env GOMODCACHE)/github.com/wailsapp/wails/v3@v3.0.0-alpha2.118"
+          patched_wails_module="$RUNNER_TEMP/wails-v3-386"
+          cp -a "$wails_module" "$patched_wails_module"
+          sed -i \
+            -e 's/C\.ulong(len(icon))/C.gsize(len(icon))/g' \
+            -e 's/C\.ulong(len(img\.Pix))/C.gsize(len(img.Pix))/g' \
+            -e 's/C\.long(len(js))/C.gssize(len(js))/g' \
+            -e 's/C\.long(n)/C.gssize(n)/g' \
+            "$patched_wails_module/pkg/application/linux_cgo_gtk3.go"
+          go mod edit -modfile="$modfile" "-replace=github.com/wailsapp/wails/v3=$patched_wails_module"
           go build -modfile="$modfile" -tags production,gtk3 -trimpath -buildvcs=false -ldflags='-s -w' -o "$RUNNER_TEMP/graal-rc"
           mkdir -p release/graal-rc-linux-386/rclib/native/linux-386
           cp "$RUNNER_TEMP/graal-rc" release/graal-rc-linux-386/graal-rc
