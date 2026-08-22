@@ -275,7 +275,8 @@ jobs:
           go mod download -modfile="$modfile" github.com/wailsapp/wails/v3@v3.0.0-alpha2.118
           wails_module="$(go env GOMODCACHE)/github.com/wailsapp/wails/v3@v3.0.0-alpha2.118"
           patched_wails_module="$RUNNER_TEMP/wails-v3-386"
-          cp -a "$wails_module" "$patched_wails_module"
+          cp -R "$wails_module" "$patched_wails_module"
+          chmod -R u+rwX "$patched_wails_module"
           sed -i \
             -e 's/C\.ulong(len(icon))/C.gsize(len(icon))/g' \
             -e 's/C\.ulong(len(img\.Pix))/C.gsize(len(img.Pix))/g' \
