@@ -26,29 +26,29 @@ type ReviewItem struct {
 }
 
 type SyncStatus struct {
-	Enabled           bool         `json:"enabled"`
-	Paused            bool         `json:"paused"`
-	NCDown            bool         `json:"ncDown"`
-	OutputDirMissing  bool         `json:"outputDirMissing"`
-	InitialSync       bool         `json:"initialSync"`
-	PanicMode         bool         `json:"panicMode"`
-	Server            string       `json:"server"`
-	OutputDir         string       `json:"outputDir"`
-	LastSyncAt        int64        `json:"lastSyncAt"`
-	SyncGeneration    uint64       `json:"syncGeneration"`
-	PanicReason       string       `json:"panicReason,omitempty"`
-	PanicAt           int64        `json:"panicAt,omitempty"`
-	ReviewCount       int          `json:"reviewCount"`
-	Items             []ReviewItem `json:"items"`
-	Progress          SyncProgress `json:"progress"`
+	Enabled          bool         `json:"enabled"`
+	Paused           bool         `json:"paused"`
+	NCDown           bool         `json:"ncDown"`
+	OutputDirMissing bool         `json:"outputDirMissing"`
+	InitialSync      bool         `json:"initialSync"`
+	PanicMode        bool         `json:"panicMode"`
+	Server           string       `json:"server"`
+	OutputDir        string       `json:"outputDir"`
+	LastSyncAt       int64        `json:"lastSyncAt"`
+	SyncGeneration   uint64       `json:"syncGeneration"`
+	PanicReason      string       `json:"panicReason,omitempty"`
+	PanicAt          int64        `json:"panicAt,omitempty"`
+	ReviewCount      int          `json:"reviewCount"`
+	Items            []ReviewItem `json:"items"`
+	Progress         SyncProgress `json:"progress"`
 	// NextSyncAt is retained for frontend/API compatibility; automatic server
 	// polling is disabled, so it remains zero.
-	NextSyncAt        int64        `json:"nextSyncAt"`
-	PermissionsReady  bool         `json:"permissionsReady"`
-	PermissionsError  string       `json:"permissionsError,omitempty"`
-	ScriptRightsReady bool         `json:"scriptRightsReady"`
-	ScriptWriteAccess bool         `json:"scriptWriteAccess"`
-	SyncRequired      bool         `json:"syncRequired"`
+	NextSyncAt        int64  `json:"nextSyncAt"`
+	PermissionsReady  bool   `json:"permissionsReady"`
+	PermissionsError  string `json:"permissionsError,omitempty"`
+	ScriptRightsReady bool   `json:"scriptRightsReady"`
+	ScriptWriteAccess bool   `json:"scriptWriteAccess"`
+	SyncRequired      bool   `json:"syncRequired"`
 }
 
 type SyncProgress struct {
@@ -384,13 +384,6 @@ func (e *Engine) retryBootstrap(ctx context.Context, dir string, stop <-chan str
 		case <-stop:
 			return
 		case <-ticker.C:
-			if !e.backend.IsNCConnected() {
-				e.markPermissionsStale()
-				continue
-			}
-			if !e.backend.IsNCAuthenticated() {
-				continue
-			}
 			if err := e.bootstrap(ctx, dir); err != nil {
 				log.Printf("sync bootstrap retry: %v", err)
 				continue
@@ -439,11 +432,8 @@ func (e *Engine) Stop() {
 }
 
 func (e *Engine) bootstrap(ctx context.Context, dir string) error {
-	if !e.backend.IsNCConnected() {
-		return fmt.Errorf("NC is not connected")
-	}
-	if !e.backend.IsNCAuthenticated() {
-		return fmt.Errorf("NC is not authenticated")
+	if err := e.ensureNCConnected(ctx); err != nil {
+		return err
 	}
 	if !e.permissionsReadySnapshot() {
 		if err := e.refreshPermissions(); err != nil {
@@ -518,6 +508,19 @@ func (e *Engine) bootstrap(ctx context.Context, dir string) error {
 	e.finishProgress(len(replies))
 	e.emitStatus()
 	return err
+}
+
+func (e *Engine) ensureNCConnected(ctx context.Context) error {
+	if err := e.backend.EnsureNCConnected(ctx); err != nil {
+		return fmt.Errorf("NC reconnect: %w", err)
+	}
+	if !e.backend.IsNCConnected() {
+		return fmt.Errorf("NC is not connected")
+	}
+	if !e.backend.IsNCAuthenticated() {
+		return fmt.Errorf("NC is not authenticated")
+	}
+	return nil
 }
 
 func (e *Engine) permissionsReadySnapshot() bool {
@@ -763,7 +766,14 @@ func (e *Engine) reconcileLocked(ctx context.Context, refreshRights bool) {
 		e.emitStatus()
 		return
 	}
-	if !cfg.Enabled || cfg.OutputDir == "" || e.paused() || !e.backend.IsNCConnected() {
+	if !cfg.Enabled || cfg.OutputDir == "" || e.paused() {
+		e.emitStatus()
+		return
+	}
+	if err := e.ensureNCConnected(ctx); err != nil {
+		if ctx == nil || ctx.Err() == nil {
+			log.Printf("sync reconcile: %v", err)
+		}
 		e.emitStatus()
 		return
 	}
@@ -772,10 +782,6 @@ func (e *Engine) reconcileLocked(ctx context.Context, refreshRights bool) {
 	// inside the apply loop would treat that edit as the old local version and
 	// allow a stale server snapshot to overwrite it.
 	localBaseline := snapshotLocalScripts(cfg.OutputDir)
-	if !e.backend.IsNCAuthenticated() {
-		e.emitStatus()
-		return
-	}
 	if refreshRights {
 		if err := e.refreshPermissions(); err != nil {
 			log.Printf("sync manual permissions: %v", err)

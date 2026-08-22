@@ -1,0 +1,55 @@
+{
+  "repository": "MorenoLand/GScript.GRClib",
+  "release": "v1.0.45",
+  "releaseUrl": "https://github.com/MorenoLand/GScript.GRClib/releases/tag/v1.0.45",
+  "targets": {
+    "windows-amd64": {
+      "goos": "windows",
+      "goarch": "amd64",
+      "asset": "grclib-windows-x64.zip",
+      "library": "grclib64.dll",
+      "path": "native/windows-amd64/grclib64.dll",
+      "sha256": "71f5f559f40451a4ed22920255468b920122fed3fc3fb0a27c09a7b8b011bade"
+    },
+    "windows-386": {
+      "goos": "windows",
+      "goarch": "386",
+      "asset": "grclib-windows-x86.zip",
+      "library": "grclib.dll",
+      "path": "native/windows-386/grclib.dll",
+      "sha256": "ab2ff07d86852d49d4cdc00fd49e8700b8ee634fb017ce19ee552edec1abfd92"
+    },
+    "linux-amd64": {
+      "goos": "linux",
+      "goarch": "amd64",
+      "asset": "grclib-linux-x64.zip",
+      "library": "grclib.so",
+      "path": "native/linux-amd64/grclib.so",
+      "sha256": "808c3a427fa4ebbb9b92e1b2d51e2ea4c1b1865e222a4b89abfad6e120ff341b"
+    },
+    "linux-386": {
+      "goos": "linux",
+      "goarch": "386",
+      "asset": "grclib-linux-x86.zip",
+      "library": "grclib.so",
+      "path": "native/linux-386/grclib.so",
+      "sha256": "fc9ac979f62c8f7fc095e119302954f2c52c3849abfcb9c47f273bee49fbb4bb"
+    },
+    "darwin-amd64": {
+      "goos": "darwin",
+      "goarch": "amd64",
+      "asset": "grclib-macos-x64.zip",
+      "library": "grclib.dylib",
+      "path": "native/darwin-amd64/grclib.dylib",
+      "sha256": "98fca94f7bdff74cf7cd9779a56e9d649ae7da1980352f7f3475c47ddc5287ab"
+    },
+    "darwin-arm64": {
+      "goos": "darwin",
+      "goarch": "arm64",
+      "asset": "grclib-macos-arm64.zip",
+      "library": "grclib.dylib",
+      "path": "native/darwin-arm64/grclib.dylib",
+      "sha256": "9fe97d186b82dee1c66b7b30046a10fccd455cdb54ffc335e862ca1caac4a01b"
+    }
+  }
+}

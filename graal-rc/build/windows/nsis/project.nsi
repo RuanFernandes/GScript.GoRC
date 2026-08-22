@@ -10,7 +10,8 @@ Unicode true
 ## For development first make a wails nsis build to populate the "wails_tools.nsh":
 ## > wails build --target windows/amd64 --nsis
 ## Then you can call makensis on this file with specifying the path to your binary:
-## Graal RC currently ships an amd64 executable and rclib/grclib64.dll only.
+## Graal RC ships one installer per Windows process architecture, each with its
+## matching native grclib DLL.
 ## Use the Windows Taskfile to supply the binary, native library, and metadata.
 ####
 ## The supported build path is `wails3 task windows:create:nsis:installer`.
@@ -36,7 +37,7 @@ Unicode true
 ####
 
 !ifndef ARG_GRCLIB_DLL
-    !error "Graal RC: ARG_GRCLIB_DLL must point to the native amd64 rclib/grclib64.dll file."
+    !error "Graal RC: ARG_GRCLIB_DLL must point to the native grclib DLL for this installer architecture."
 !endif
 
 !ifndef ARG_GRCLIB_FILE
@@ -86,7 +87,11 @@ OutFile "..\..\..\bin\${INFO_PROJECTNAME}-${ARCH}-installer.exe" # Name of the i
 !if "${WAILS_INSTALL_SCOPE}" == "user"
     InstallDir "$LOCALAPPDATA\Programs\${INFO_PRODUCTNAME}"
 !else
-    InstallDir "$PROGRAMFILES64\${INFO_COMPANYNAME}\${INFO_PRODUCTNAME}"
+    !if "${ARCH}" == "386"
+        InstallDir "$PROGRAMFILES\${INFO_COMPANYNAME}\${INFO_PRODUCTNAME}"
+    !else
+        InstallDir "$PROGRAMFILES64\${INFO_COMPANYNAME}\${INFO_PRODUCTNAME}"
+    !endif
 !endif
 ShowInstDetails show # This will always show the installation details.
 

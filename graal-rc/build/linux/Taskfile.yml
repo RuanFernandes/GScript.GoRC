@@ -17,8 +17,8 @@ tasks:
   build:
     summary: Builds the application for Linux
     preconditions:
-      - sh: '[ "{{.TARGET_ARCH}}" = "amd64" ]'
-        msg: "Linux ARM64 is disabled until an ARM64 rclib/grclib.so is available. Use the amd64 build for now."
+      - sh: '[ "{{.TARGET_ARCH}}" = "amd64" ] || [ "{{.TARGET_ARCH}}" = "386" ]'
+        msg: "Linux native builds currently support amd64 and 386, matching the checked-in grclib release matrix."
     cmds:
       # Linux requires CGO - use Docker when:
       # 1. Cross-compiling from non-Linux, OR
@@ -107,10 +107,15 @@ tasks:
     deps:
       - task: build
     cmds:
-      - task: create:appimage
+      # The x86 AppImage runtime is not available from Wails' current
+      # generator. Keep the 386 build portable as a tarball instead of
+      # publishing an AppImage that embeds an x86_64 runtime.
+      - task: '{{if eq .TARGET_ARCH "386"}}create:tar{{else}}create:appimage{{end}}'
       - task: create:deb
       - task: create:rpm
       - task: create:aur
+    vars:
+      TARGET_ARCH: '{{.ARCH | default ARCH}}'
 
   create:appimage:
     summary: Creates an AppImage
@@ -121,22 +126,46 @@ tasks:
     preconditions:
       - sh: '[ "{{OS}}" = "linux" ]'
         msg: "AppImage generation must run on Linux because Wails bundles the GTK4/WebKitGTK6 runtime there."
+      - sh: '[ "{{.TARGET_ARCH}}" = "amd64" ]'
+        msg: "AppImage generation is currently published for amd64. Use linux:create:tar for the 386 build."
       - sh: 'command -v "{{.APPIMAGETOOL}}" >/dev/null 2>&1'
         msg: "appimagetool is required to repack the AppImage after bundling grclib.so."
     cmds:
       - cp "{{.APP_BINARY}}" "{{.APP_NAME}}"
       - cp ../../appicon.png "{{.APP_NAME}}.png"
       - wails3 generate appimage -binary "{{.APP_NAME}}" -icon {{.ICON}} -desktopfile {{.DESKTOP_FILE}} -outputdir {{.OUTPUT_DIR}} -builddir {{.ROOT_DIR}}/build/linux/appimage/build
-      - cp "{{.ROOT_DIR}}/rclib/grclib.so" "{{.ROOT_DIR}}/build/linux/appimage/build/{{.APP_NAME}}-x86_64.AppDir/usr/bin/"
+      - cp "{{.ROOT_DIR}}/rclib/native/linux-{{.TARGET_ARCH}}/grclib.so" "{{.ROOT_DIR}}/build/linux/appimage/build/{{.APP_NAME}}-x86_64.AppDir/usr/bin/"
       - rm -f "{{.ROOT_DIR}}/bin/{{.APP_NAME}}-x86_64.AppImage"
       - '"{{.APPIMAGETOOL}}" "{{.ROOT_DIR}}/build/linux/appimage/build/{{.APP_NAME}}-x86_64.AppDir" "{{.ROOT_DIR}}/bin/{{.APP_NAME}}-x86_64.AppImage"'
     vars:
       APP_NAME: '{{.APP_NAME}}'
+      TARGET_ARCH: '{{.ARCH | default ARCH}}'
       APP_BINARY: '../../../bin/{{.APP_NAME}}'
       ICON: '{{.APP_NAME}}.png'
       DESKTOP_FILE: '../{{.APP_NAME}}.desktop'
       OUTPUT_DIR: '../../../bin'
       APPIMAGETOOL: '{{.APPIMAGETOOL | default "appimagetool"}}'
+
+  create:tar:
+    summary: Creates a portable Linux tarball with the matching grclib.so
+    deps:
+      - task: build
+    cmds:
+      - rm -rf "{{.BUNDLE_DIR}}"
+      - mkdir -p "{{.BUNDLE_DIR}}/rclib/native/linux-{{.TARGET_ARCH}}"
+      - cp "{{.APP_BINARY}}" "{{.BUNDLE_DIR}}/{{.APP_NAME}}"
+      - cp "{{.GRCLIB_PATH}}" "{{.BUNDLE_DIR}}/rclib/native/linux-{{.TARGET_ARCH}}/grclib.so"
+      - cp "{{.ROOT_DIR}}/build/appicon.png" "{{.BUNDLE_DIR}}/appicon.png"
+      - cp "{{.ROOT_DIR}}/build/linux/{{.APP_NAME}}.desktop" "{{.BUNDLE_DIR}}/{{.APP_NAME}}.desktop"
+      - tar -C "{{.BUNDLE_ROOT}}" -czf "{{.OUTPUT}}" "{{.BUNDLE_NAME}}"
+    vars:
+      TARGET_ARCH: '{{.ARCH | default ARCH}}'
+      BUNDLE_NAME: '{{.APP_NAME}}-linux-{{.TARGET_ARCH}}'
+      BUNDLE_ROOT: '{{.ROOT_DIR}}/build/linux/bundles'
+      BUNDLE_DIR: '{{.BUNDLE_ROOT}}/{{.BUNDLE_NAME}}'
+      APP_BINARY: '{{.ROOT_DIR}}/{{.BIN_DIR}}/{{.APP_NAME}}'
+      GRCLIB_PATH: '{{.ROOT_DIR}}/rclib/native/linux-{{.TARGET_ARCH}}/grclib.so'
+      OUTPUT: '{{.BIN_DIR}}/{{.APP_NAME}}-linux-{{.TARGET_ARCH}}.tar.gz'
 
   create:deb:
     summary: Creates a deb package
@@ -166,16 +195,34 @@ tasks:
     summary: Creates a deb package
     cmds:
       - wails3 tool package -name "{{.APP_NAME}}" -format deb -config ./build/linux/nfpm/nfpm.yaml -out {{.ROOT_DIR}}/bin
+    vars:
+      TARGET_ARCH: '{{.ARCH | default ARCH}}'
+      GRCLIB_PATH: '{{.ROOT_DIR}}/rclib/native/linux-{{.TARGET_ARCH}}/grclib.so'
+    env:
+      GOARCH: '{{.TARGET_ARCH}}'
+      GRCLIB_PATH: '{{.GRCLIB_PATH}}'
 
   generate:rpm:
     summary: Creates a rpm package
     cmds:
       - wails3 tool package -name "{{.APP_NAME}}" -format rpm -config ./build/linux/nfpm/nfpm.yaml -out {{.ROOT_DIR}}/bin
+    vars:
+      TARGET_ARCH: '{{.ARCH | default ARCH}}'
+      GRCLIB_PATH: '{{.ROOT_DIR}}/rclib/native/linux-{{.TARGET_ARCH}}/grclib.so'
+    env:
+      GOARCH: '{{.TARGET_ARCH}}'
+      GRCLIB_PATH: '{{.GRCLIB_PATH}}'
 
   generate:aur:
     summary: Creates a arch linux packager package
     cmds:
       - wails3 tool package -name "{{.APP_NAME}}" -format archlinux -config ./build/linux/nfpm/nfpm.yaml -out {{.ROOT_DIR}}/bin
+    vars:
+      TARGET_ARCH: '{{.ARCH | default ARCH}}'
+      GRCLIB_PATH: '{{.ROOT_DIR}}/rclib/native/linux-{{.TARGET_ARCH}}/grclib.so'
+    env:
+      GOARCH: '{{.TARGET_ARCH}}'
+      GRCLIB_PATH: '{{.GRCLIB_PATH}}'
 
   generate:dotdesktop:
     summary: Generates a `.desktop` file

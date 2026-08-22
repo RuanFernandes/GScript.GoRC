@@ -12,7 +12,7 @@ func TestWindowsNativeLibraryExportsPlayerIdentityCallbacks(t *testing.T) {
 		t.Skip("the committed Windows DLL is not loaded on non-Windows hosts")
 	}
 	if err := load(); err != nil {
-		t.Fatalf("load grclib64.dll: %v", err)
+		t.Fatalf("load %s: %v", libFileName(), err)
 	}
 	for name, proc := range map[string]*proc{
 		"rc_on_player_joined":             procOnPlayerJoined,
@@ -26,9 +26,33 @@ func TestWindowsNativeLibraryExportsPlayerIdentityCallbacks(t *testing.T) {
 	}
 }
 
+func TestNativeLibraryNamesByTarget(t *testing.T) {
+	for _, test := range []struct {
+		goos   string
+		goarch string
+		want   string
+	}{
+		{goos: "windows", goarch: "amd64", want: "grclib64.dll"},
+		{goos: "windows", goarch: "386", want: "grclib.dll"},
+		{goos: "linux", goarch: "amd64", want: "grclib.so"},
+		{goos: "linux", goarch: "386", want: "grclib.so"},
+		{goos: "darwin", goarch: "amd64", want: "grclib.dylib"},
+		{goos: "darwin", goarch: "arm64", want: "grclib.dylib"},
+	} {
+		t.Run(test.goos+"/"+test.goarch, func(t *testing.T) {
+			if got := nativeLibraryName(test.goos, test.goarch); got != test.want {
+				t.Fatalf("nativeLibraryName(%q, %q) = %q, want %q", test.goos, test.goarch, got, test.want)
+			}
+			if got := nativeTargetKey(test.goos, test.goarch); got != test.goos+"-"+test.goarch {
+				t.Fatalf("nativeTargetKey(%q, %q) = %q", test.goos, test.goarch, got)
+			}
+		})
+	}
+}
+
 func TestNativeABIStructLayouts(t *testing.T) {
 	if unsafe.Sizeof(uintptr(0)) != 8 {
-		t.Skip("grclib is shipped only for 64-bit targets")
+		t.Skip("the assertions below cover the 64-bit C struct ABI")
 	}
 
 	tests := []struct {

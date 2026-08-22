@@ -65,6 +65,10 @@ RequestExecutionLevel "${REQUEST_EXECUTION_LEVEL}"
     !define SUPPORTS_AMD64
 !endif
 
+!ifdef ARG_WAILS_386_BINARY
+    !define SUPPORTS_386
+!endif
+
 !ifdef ARG_WAILS_ARM64_BINARY
     !define SUPPORTS_ARM64
 !endif
@@ -76,27 +80,31 @@ RequestExecutionLevel "${REQUEST_EXECUTION_LEVEL}"
         !define ARCH "amd64"
     !endif
 !else
-    !ifdef SUPPORTS_ARM64
-        !define ARCH "arm64"
+    !ifdef SUPPORTS_386
+        !define ARCH "386"
     !else
-        !error "Wails: Undefined ARCH, please provide at least one of ARG_WAILS_AMD64_BINARY or ARG_WAILS_ARM64_BINARY"
+        !ifdef SUPPORTS_ARM64
+        !define ARCH "arm64"
+        !else
+            !error "Wails: Undefined ARCH, please provide one of ARG_WAILS_AMD64_BINARY, ARG_WAILS_386_BINARY or ARG_WAILS_ARM64_BINARY"
+        !endif
     !endif
 !endif
 
-# Graal RC currently ships only the amd64 native library. Do not produce an
-# installer that embeds an executable whose process cannot load it.
-!if "${ARCH}" != "amd64"
-    !error "Graal RC: the Windows installer requires an amd64 executable because rclib/grclib64.dll is the only native library shipped."
-!endif
-
 !ifndef ARG_GRCLIB_DLL
-    !error "Graal RC: ARG_GRCLIB_DLL is required and must point to rclib/grclib64.dll."
+    !error "Graal RC: ARG_GRCLIB_DLL is required and must point to the native DLL for this architecture."
 !endif
 !ifndef ARG_GRCLIB_FILE
-    !error "Graal RC: ARG_GRCLIB_FILE is required and must be grclib64.dll."
+    !error "Graal RC: ARG_GRCLIB_FILE is required."
 !endif
-!if "${ARG_GRCLIB_FILE}" != "grclib64.dll"
-    !error "Graal RC: the native library destination must be grclib64.dll for an amd64 build."
+!if "${ARCH}" == "386"
+    !if "${ARG_GRCLIB_FILE}" != "grclib.dll"
+        !error "Graal RC: an x86 build must package grclib.dll."
+    !endif
+!else
+    !if "${ARG_GRCLIB_FILE}" != "grclib64.dll"
+        !error "Graal RC: an amd64 build must package grclib64.dll."
+    !endif
 !endif
 
 !macro wails.checkArchitecture
@@ -109,26 +117,32 @@ RequestExecutionLevel "${REQUEST_EXECUTION_LEVEL}"
     !endif
 
     ${If} ${AtLeastWin10}
-        !ifdef SUPPORTS_AMD64
-            ${if} ${IsNativeAMD64}
-                Goto ok
-            ${EndIf}
-        !endif
+        !if "${ARCH}" == "386"
+            # A 32-bit Windows executable is valid on both 32-bit Windows and
+            # WOW64. It does not need the x64.nsh native-architecture gate.
+            Goto ok
+        !else
+            !ifdef SUPPORTS_AMD64
+                ${if} ${IsNativeAMD64}
+                    Goto ok
+                ${EndIf}
+            !endif
 
-        !ifdef SUPPORTS_ARM64
-            ${if} ${IsNativeARM64}
-                Goto ok
-            ${EndIf}
-        !endif
+            !ifdef SUPPORTS_ARM64
+                ${if} ${IsNativeARM64}
+                    Goto ok
+                ${EndIf}
+            !endif
 
-        IfSilent silentArch notSilentArch
-        silentArch:
-            SetErrorLevel 65
-            Abort
-        notSilentArch:
-            MessageBox MB_OK "${WAILS_ARCHITECTURE_NOT_SUPPORTED}"
-            SetErrorLevel 65
-            Abort
+            IfSilent silentArch notSilentArch
+            silentArch:
+                SetErrorLevel 65
+                Abort
+            notSilentArch:
+                MessageBox MB_OK "${WAILS_ARCHITECTURE_NOT_SUPPORTED}"
+                SetErrorLevel 65
+                Abort
+        !endif
     ${else}
         IfSilent silentWin notSilentWin
         silentWin:
@@ -162,6 +176,12 @@ RequestExecutionLevel "${REQUEST_EXECUTION_LEVEL}"
         ${if} ${IsNativeARM64}
             File "/oname=${PRODUCT_EXECUTABLE}" "${ARG_WAILS_ARM64_BINARY}"
         ${EndIf}
+    !endif
+
+    !ifdef SUPPORTS_386
+        !if "${ARCH}" == "386"
+            File "/oname=${PRODUCT_EXECUTABLE}" "${ARG_WAILS_386_BINARY}"
+        !endif
     !endif
 
 !macroend

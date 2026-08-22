@@ -16,10 +16,10 @@ and shortcut instead of leaving a second per-user installation. Installation and
 automatic updates therefore request administrator approval. User data remains under
 `%LOCALAPPDATA%\graal-rc` and is not removed by the installer.
 
-The current repository ships only `rclib/grclib64.dll`. Therefore the x86 binary is a
-compile artifact, while x86 FFI/runtime and NSIS validation are conditional on a matching
-`rclib/grclib.dll` being added. The pipeline never substitutes the 64-bit DLL into an x86
-artifact.
+The repository ships the native grclib matrix under `rclib/native/<os>-<arch>/`, fetched
+from the pinned `GScript.GRClib` release. The pipeline always selects the matching native
+library and never substitutes a different architecture into an artifact. The legacy flat
+files under `rclib/` remain only as development fallbacks.
 
 The checked-in Wails `v3.0.0-alpha2.117` dependency has an upstream 386 compile error in
 its updater package (`2 << 30` passed as `int`). The x86 build script uses a disposable
@@ -49,8 +49,19 @@ a notice rather than requiring secrets or failing a pull request for missing too
 Local examples from the repository root:
 
 ```powershell
+go run ./build/ci/fetch-grclib -root . -check
 pwsh -File build/ci/generate-bindings.ps1
 pwsh -File build/ci/verify-ffi.ps1 -Architecture amd64 -RunStaticcheck
 pwsh -File build/ci/build-windows.ps1 -Architecture amd64
 pwsh -File build/ci/build-windows.ps1 -Architecture 386
 ```
+
+To refresh the native matrix from a newer upstream release, run:
+
+```powershell
+go run ./build/ci/fetch-grclib -root . -release v1.0.45 -force
+```
+
+The fetcher resolves the six expected release assets, extracts only the
+architecture-specific library, records SHA-256 values in
+`rclib/native/manifest.json`, and refuses a release with a missing asset.

@@ -4,9 +4,9 @@
 // symbols through purego.SyscallN. Either way the project builds with
 // CGO_ENABLED=0.
 //
-// The native file is selected by GOOS: grclib64.dll (Windows), grclib.so
-// (Linux), grclib.dylib (macOS) — one amd64 lib per desktop target, shipped
-// committed under rclib/.
+// The native file is selected by the compiled GOOS/GOARCH pair. The release
+// matrix is committed under rclib/native/<os>-<arch>/, while the flat files in
+// rclib/ remain as backwards-compatible fallbacks for existing installations.
 //
 // Struct and signatures mirror how the reference C++ client consumes the
 // library: rc_connect -> rc_get_servers -> rc_connect_to_server.
@@ -351,13 +351,16 @@ func arg(a []uintptr, i int) uintptr {
 	return 0
 }
 
-// libFileName returns the committed native library filename for the current
-// GOOS. All desktop targets are amd64; the lib bitness must match the process
-// bitness, so each platform ships exactly one lib (selected here). macOS uses
-// the .dylib extension (purego.Dlopen/dlsym load it the same as a .so).
-func libFileName() string {
-	switch runtime.GOOS {
+// nativeLibraryName returns the filename expected by a target process. Windows
+// uses a distinct name for its 32-bit and 64-bit DLLs; Unix keeps the platform
+// filename stable because the architecture is selected by the containing
+// directory/package.
+func nativeLibraryName(goos, goarch string) string {
+	switch goos {
 	case "windows":
+		if goarch == "386" {
+			return "grclib.dll"
+		}
 		return "grclib64.dll"
 	case "darwin":
 		return "grclib.dylib"
@@ -366,14 +369,26 @@ func libFileName() string {
 	}
 }
 
+func nativeTargetKey(goos, goarch string) string {
+	return goos + "-" + goarch
+}
+
+func libFileName() string {
+	return nativeLibraryName(runtime.GOOS, runtime.GOARCH)
+}
+
 // libSearchPaths returns candidate locations for the native library. It checks
 // the cwd and executable directory, then walks every parent of each looking for
 // a "rclib/<lib>" sibling. This finds the lib during `wails dev` (cwd at the
 // project root), when running the built binary from build/bin (lib several
 // levels up at <repo>/rclib/<lib>), and from a packaged macOS app
-// (Contents/Frameworks/<lib>).
+// (Contents/Frameworks/<os>-<arch>/<lib>). Flat locations are retained only
+// for amd64 packages produced before the native matrix was introduced; a
+// different architecture must never silently load an x64 flat library.
 func libSearchPaths() []string {
 	name := libFileName()
+	target := nativeTargetKey(runtime.GOOS, runtime.GOARCH)
+	legacyFlatFallback := runtime.GOARCH == "amd64"
 
 	var roots []string
 	if cwd, err := os.Getwd(); err == nil {
@@ -401,13 +416,19 @@ func libSearchPaths() []string {
 	}
 
 	for _, root := range roots {
-		add(filepath.Join(root, name))
-		add(filepath.Join(root, "rclib", name))
+		add(filepath.Join(root, "native", target, name))
+		add(filepath.Join(root, "rclib", "native", target, name))
 		if runtime.GOOS == "darwin" {
-			// Packaged macOS apps keep native libraries in
-			// <app>.app/Contents/Frameworks while the executable lives in
-			// <app>.app/Contents/MacOS.
-			add(filepath.Join(root, "..", "Frameworks", name))
+			add(filepath.Join(root, "..", "Frameworks", target, name))
+		}
+		if legacyFlatFallback {
+			add(filepath.Join(root, name))
+			add(filepath.Join(root, "rclib", name))
+			if runtime.GOOS == "darwin" {
+				// Packaged macOS apps produced before the matrix used a flat
+				// library directly under Contents/Frameworks.
+				add(filepath.Join(root, "..", "Frameworks", name))
+			}
 		}
 		// Walk parents: <root>/.., <root>/../.., ... looking for rclib/<lib>.
 		dir := root
@@ -416,8 +437,12 @@ func libSearchPaths() []string {
 			if parent == dir {
 				break
 			}
-			add(filepath.Join(parent, "rclib", name))
-			add(filepath.Join(parent, name))
+			add(filepath.Join(parent, "rclib", "native", target, name))
+			add(filepath.Join(parent, "native", target, name))
+			if legacyFlatFallback {
+				add(filepath.Join(parent, "rclib", name))
+				add(filepath.Join(parent, name))
+			}
 			dir = parent
 		}
 	}

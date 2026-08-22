@@ -143,23 +143,15 @@ if ($binaryMachine -ne $expectedMachine) {
 }
 
 $nativeName = if ($Architecture -eq 'amd64') { 'grclib64.dll' } else { 'grclib.dll' }
-$nativePath = Join-Path $repositoryRoot (Join-Path 'rclib' $nativeName)
+$nativePath = Join-Path $repositoryRoot (Join-Path "rclib\native\windows-$Architecture" $nativeName)
 $artifactFiles = @([System.IO.FileInfo](Get-Item -LiteralPath $binaryPath))
-if (Test-Path -LiteralPath $nativePath -PathType Leaf) {
-    $nativeMachine = Get-PeMachine -Path $nativePath
-    if ($nativeMachine -ne $expectedMachine) {
-        throw "$nativeName has PE machine 0x$('{0:X4}' -f $nativeMachine), expected 0x$('{0:X4}' -f $expectedMachine)"
-    }
-    $artifactNativePath = Join-Path $OutputDirectory $nativeName
-    Copy-Item -LiteralPath $nativePath -Destination $artifactNativePath -Force
-    $artifactFiles += [System.IO.FileInfo](Get-Item -LiteralPath $artifactNativePath)
+$nativeMachine = Get-PeMachine -Path $nativePath
+if ($nativeMachine -ne $expectedMachine) {
+    throw "$nativeName has PE machine 0x$('{0:X4}' -f $nativeMachine), expected 0x$('{0:X4}' -f $expectedMachine)"
 }
-elseif ($Architecture -eq '386') {
-    Write-Output '::notice::rclib/grclib.dll is not present; publishing the x86 compile artifact without a native DLL.'
-}
-else {
-    throw "Required native library is missing: $nativePath"
-}
+$artifactNativePath = Join-Path $OutputDirectory $nativeName
+Copy-Item -LiteralPath $nativePath -Destination $artifactNativePath -Force
+$artifactFiles += [System.IO.FileInfo](Get-Item -LiteralPath $artifactNativePath)
 
 $hashLines = foreach ($file in ($artifactFiles | Sort-Object Name)) {
     $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()

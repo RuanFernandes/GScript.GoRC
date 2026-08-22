@@ -16,6 +16,11 @@ import (
 
 // ScriptBackend is the subset of *connection.Service the engine needs.
 type ScriptBackend interface {
+	// EnsureNCConnected waits for the NC socket to be connected and
+	// authenticated, retrying a transient disconnect within a bounded timeout.
+	// Reconcile must call this before reading or writing the script snapshot.
+	EnsureNCConnected(context.Context) error
+
 	// IsNCConnected reports whether the NC (script) socket is up. Every
 	// reconcile path gates on this — no server I/O happens while NC is down.
 	IsNCConnected() bool

@@ -57,21 +57,12 @@ try {
 
     $expectedMachine = if ($Architecture -eq 'amd64') { [uint16]0x8664 } else { [uint16]0x014c }
     $nativeName = if ($Architecture -eq 'amd64') { 'grclib64.dll' } else { 'grclib.dll' }
-    $nativePath = Join-Path $repositoryRoot (Join-Path 'rclib' $nativeName)
-
-    if (Test-Path -LiteralPath $nativePath -PathType Leaf) {
-        $nativeMachine = Get-PeMachine -Path $nativePath
-        if ($nativeMachine -ne $expectedMachine) {
-            throw "$nativeName has PE machine 0x$('{0:X4}' -f $nativeMachine), expected 0x$('{0:X4}' -f $expectedMachine) for $Architecture"
-        }
-        Write-Host "FFI native library: $nativeName matches $Architecture (PE 0x$('{0:X4}' -f $nativeMachine))"
+    $nativePath = Join-Path $repositoryRoot (Join-Path "rclib\native\windows-$Architecture" $nativeName)
+    $nativeMachine = Get-PeMachine -Path $nativePath
+    if ($nativeMachine -ne $expectedMachine) {
+        throw "$nativeName has PE machine 0x$('{0:X4}' -f $nativeMachine), expected 0x$('{0:X4}' -f $expectedMachine) for $Architecture"
     }
-    elseif ($Architecture -eq '386') {
-        Write-Output "::notice::rclib/grclib.dll is not present; x86 compile is validated, but x86 packaging/runtime validation is skipped."
-    }
-    else {
-        throw "Required native library is missing: $nativePath"
-    }
+    Write-Host "FFI native library: $nativeName matches $Architecture (PE 0x$('{0:X4}' -f $nativeMachine))"
 
     $testRoot = Join-Path ([System.IO.Path]::GetTempPath()) "graal-rc-ffi-$PID-$Architecture"
     New-Item -ItemType Directory -Path $testRoot -Force | Out-Null

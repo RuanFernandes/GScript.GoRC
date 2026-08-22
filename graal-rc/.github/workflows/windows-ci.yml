@@ -269,16 +269,10 @@ jobs:
         shell: pwsh
         run: pwsh -NoProfile -File build/ci/validate-installer.ps1 -Architecture amd64 -BinaryPath 'ci-artifacts/windows/amd64/graal-rc-windows-amd64.exe'
 
-      - name: Conditionally validate x86 NSIS installer
+      - name: Compile and validate x86 NSIS installer
         if: steps.detect_nsis.outputs.nsis_available == 'true'
         shell: pwsh
-        run: |
-          if (Test-Path -LiteralPath 'rclib/grclib.dll' -PathType Leaf) {
-            pwsh -NoProfile -File build/ci/validate-installer.ps1 -Architecture 386 -BinaryPath 'ci-artifacts/windows/386/graal-rc-windows-386.exe'
-          }
-          else {
-            Write-Output '::notice::rclib/grclib.dll is absent; x86 installer validation is skipped.'
-          }
+        run: pwsh -NoProfile -File build/ci/validate-installer.ps1 -Architecture 386 -BinaryPath 'ci-artifacts/windows/386/graal-rc-windows-386.exe'
 
       - name: Record installer gate status
         id: installer_status
@@ -295,6 +289,15 @@ jobs:
         with:
           name: windows-installer-amd64
           path: ci-artifacts/installers/amd64
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload validated x86 installer and hash
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-386
+          path: ci-artifacts/installers/386
           if-no-files-found: ignore
           retention-days: 14
 

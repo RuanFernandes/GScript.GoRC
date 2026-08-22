@@ -5,7 +5,7 @@ param(
     [string]$InstallScope,
 
     [Parameter(Mandatory = $true)]
-    [ValidateSet('amd64')]
+    [ValidateSet('amd64', '386')]
     [string]$Architecture,
 
     [Parameter(Mandatory = $true)]
@@ -116,8 +116,12 @@ if ([System.IO.Path]::GetExtension($resolvedNativeLibraryPath) -ne '.dll') {
     throw "The native Windows payload must be a .dll file: '$NativeLibraryPath'."
 }
 
-if ($NativeLibraryName -ne 'grclib64.dll') {
+if ($Architecture -eq 'amd64' -and $NativeLibraryName -ne 'grclib64.dll') {
     throw "Graal RC amd64 installers must package the native library as grclib64.dll."
+}
+
+if ($Architecture -eq '386' -and $NativeLibraryName -ne 'grclib.dll') {
+    throw "Graal RC x86 installers must package the native library as grclib.dll."
 }
 
 if ([System.IO.Path]::GetFileName($resolvedNativeLibraryPath) -ne $NativeLibraryName) {
@@ -157,6 +161,13 @@ if ($productVersion -notmatch '^\d+\.\d+\.\d+$') {
 
 $resolvedMakensisPath = Resolve-Makensis -RequestedPath $MakensisPath
 $requestExecutionLevel = if ($InstallScope -eq 'user') { 'user' } else { 'admin' }
+$binaryDefine = if ($Architecture -eq 'amd64') {
+    "-DARG_WAILS_AMD64_BINARY=$resolvedExecutablePath"
+}
+else {
+    "-DARG_WAILS_386_BINARY=$resolvedExecutablePath"
+}
+
 $defines = @(
     "-DINFO_PROJECTNAME=$AppName",
     "-DPRODUCT_EXECUTABLE=$AppName.exe",
@@ -166,7 +177,7 @@ $defines = @(
     "-DINFO_COPYRIGHT=$copyright",
     "-DWAILS_INSTALL_SCOPE=$InstallScope",
     "-DREQUEST_EXECUTION_LEVEL=$requestExecutionLevel",
-    "-DARG_WAILS_AMD64_BINARY=$resolvedExecutablePath",
+    $binaryDefine,
     "-DARG_GRCLIB_FILE=$NativeLibraryName",
     "-DARG_GRCLIB_DLL=$resolvedNativeLibraryPath"
 )
