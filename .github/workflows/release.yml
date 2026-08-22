@@ -232,12 +232,12 @@ jobs:
           cache: true
           cache-dependency-path: graal-rc/go.sum
 
-      - name: Install 32-bit Linux GUI toolchain
+      - name: Install Linux GUI toolchains
         working-directory: .
         run: |
           sudo dpkg --add-architecture i386
           sudo apt-get update
-          sudo apt-get install -y gcc-multilib g++-multilib libc6-dev-i386 pkg-config libgtk-4-dev libwebkitgtk-6.0-dev libgtk-3-dev libwebkit2gtk-4.1-dev libgtk-4-dev:i386 libwebkitgtk-6.0-dev:i386 libgtk-3-dev:i386 libwebkit2gtk-4.1-dev:i386
+          sudo apt-get install -y gcc-multilib g++-multilib libc6-dev-i386 pkg-config libgtk-4-dev libwebkitgtk-6.0-dev libgtk-3-dev libwebkit2gtk-4.1-dev
 
       - name: Install Wails CLI and frontend assets
         run: |
@@ -246,6 +246,13 @@ jobs:
           npm ci --prefix frontend
           wails3 generate bindings -f '-tags production' -clean=true -ts -i
           npm run build --prefix frontend
+
+      - name: Switch to 32-bit GTK3 development libraries
+        working-directory: .
+        run: |
+          sudo apt-get remove -y libgtk-4-dev libwebkitgtk-6.0-dev libgtk-3-dev libwebkit2gtk-4.1-dev
+          sudo apt-get autoremove -y
+          sudo apt-get install -y libgtk-3-dev:i386 libwebkit2gtk-4.1-dev:i386
 
       - name: Set release version in build metadata
         run: node build/ci/set-version.mjs "${{ needs.version.outputs.version }}"
@@ -264,7 +271,7 @@ jobs:
           go mod edit -modfile="$modfile" '-replace=github.com/wailsapp/wails/v3=github.com/wailsapp/wails/v3@v3.0.0-alpha2.118'
           go mod download -modfile="$modfile" github.com/wailsapp/wails/v3@v3.0.0-alpha2.118
           wails3 generate .desktop -name graal-rc -exec graal-rc -icon graal-rc -outputfile build/linux/graal-rc.desktop -categories 'Development;'
-          go build -modfile="$modfile" -tags production -trimpath -buildvcs=false -ldflags='-s -w' -o "$RUNNER_TEMP/graal-rc"
+          go build -modfile="$modfile" -tags production,gtk3 -trimpath -buildvcs=false -ldflags='-s -w' -o "$RUNNER_TEMP/graal-rc"
           mkdir -p release/graal-rc-linux-386/rclib/native/linux-386
           cp "$RUNNER_TEMP/graal-rc" release/graal-rc-linux-386/graal-rc
           cp rclib/native/linux-386/grclib.so release/graal-rc-linux-386/rclib/native/linux-386/grclib.so
