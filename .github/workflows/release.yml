@@ -1,346 +1,380 @@
 name: release
 
-# Manual release: build the supported common desktop targets and publish a
-# GitHub release. The native grclib files currently shipped by the repository
-# are x86_64-only, so these are Windows 10/11 x64, Linux x86_64 and macOS
-# x86_64 (native Intel and Rosetta 2 on Apple Silicon). ARM64/386 artifacts
-# must wait for matching native libraries; publishing a Go binary without them
-# would produce an installer that cannot connect to Graal.
-#
-# Triggered from the Actions tab via "Run workflow". Pick a semver bump level
-# (patch/minor/major) and the next tag is computed from the latest existing tag
-# automatically — no manual `git tag` needed.
 on:
+  push:
+    tags:
+      - 'v*.*.*'
   workflow_dispatch:
     inputs:
-      level:
-        description: "Version bump (auto-computes next tag from the latest one)"
-        required: true
-        type: choice
-        default: patch
-        options:
-          - patch   # 0.0.1
-          - minor   # 0.1.0
-          - major   # 1.0.0
       custom_tag:
-        description: "Override: explicit tag (e.g. v1.2.3). Blank = use bump."
-        required: false
-        default: ""
-      release_name:
-        description: "Release title"
+        description: "Release tag to build (for example v4.1.0)"
         required: true
-        default: "Graal RC"
-      prerelease:
-        description: "Mark as pre-release"
-        type: boolean
-        required: true
-        default: false
-      make_latest:
-        description: "Set as latest release"
-        type: choice
-        options:
-          - "false"
-          - "true"
-        required: true
-        default: "true"
-      publish_release:
-        description: "Create a GitHub release; false keeps downloadable artifacts only"
-        type: boolean
-        required: true
-        default: true
+        default: "v4.1.0"
 
 permissions:
-  contents: write # needed to push the computed tag and create the release
-  actions: read
+  contents: write
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  WAILS_VERSION: v3.0.0-alpha2.117
+  TASK_VERSION: v3.40.1
+
 jobs:
   version:
     name: Resolve release version
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.resolve.outputs.version }}
       tag: ${{ steps.resolve.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - name: Resolve semver
         id: resolve
         shell: bash
         env:
-          BUMP_LEVEL: ${{ inputs.level }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
           CUSTOM_TAG: ${{ inputs.custom_tag }}
         run: |
           set -euo pipefail
-          version="${CUSTOM_TAG#v}"
-          if [ -z "$version" ]; then
-            latest=$(git tag -l 'v[0-9]*' --sort=-v:refname | head -n1 || true)
-            base="${latest#v}"
-            [ -z "$base" ] && base="0.0.0"
-            if [[ ! "$base" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              echo "Latest tag '$latest' is not a stable semver tag." >&2
-              exit 1
-            fi
-            IFS='.' read -r major minor patch <<< "$base"
-            case "$BUMP_LEVEL" in
-              major) major=$((major + 1)); minor=0; patch=0 ;;
-              minor) minor=$((minor + 1)); patch=0 ;;
-              patch) patch=$((patch + 1)) ;;
-              *) echo "Unsupported bump level: $BUMP_LEVEL" >&2; exit 1 ;;
-            esac
-            version="$major.$minor.$patch"
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            tag="$REF_NAME"
+          else
+            tag="${CUSTOM_TAG:-}"
           fi
+          tag="v${tag#v}"
+          version="${tag#v}"
           if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Version '$version' must contain exactly three numeric components." >&2
+            echo "Release tag '$tag' is not a stable semver tag." >&2
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=v$version" >> "$GITHUB_OUTPUT"
-          echo "Resolved release version: $version"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
   windows:
-    name: Windows (amd64)
+    name: Windows ${{ matrix.arch }}
     needs: version
     runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, '386']
     defaults:
       run:
         working-directory: graal-rc
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Check out release source
+        uses: actions/checkout@v4
         with:
-          node-version: "22"
+          ref: ${{ needs.version.outputs.tag }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
           cache: npm
           cache-dependency-path: graal-rc/frontend/package-lock.json
-      - name: Set release version in build metadata
-        run: node build/ci/set-version.mjs "${{ needs.version.outputs.version }}"
-      - uses: actions/setup-go@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          go-version: ">=1.25.0"
-          cache-dependency-path: graal-rc/go.sum
-      - name: Install wails3 CLI
-        shell: bash
-        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.117
-      - name: Put Go bin on PATH
-        shell: bash
-        run: echo "$HOME/go/bin" >> "$GITHUB_PATH"
-      - name: Install task
-        shell: bash
-        run: go install github.com/go-task/task/v3/cmd/task@latest
-      - name: Ensure NSIS present
+          go-version-file: graal-rc/go.mod
+          cache: true
+
+      - name: Install Wails CLI and generate frontend assets
         shell: pwsh
         run: |
-          # Chocolatey installs NSIS to C:\Program Files (x86)\NSIS, but its PATH
-          # update isn't visible to this step's shell, so resolve makensis by full
-          # path and export the dir for later steps via GITHUB_PATH.
-          $nsisDir = "C:\Program Files (x86)\NSIS"
-          if (-not (Test-Path "$nsisDir\makensis.exe")) {
-            choco install nsis -y --no-progress --force
+          $goBin = (go env GOBIN).Trim()
+          if ([string]::IsNullOrWhiteSpace($goBin)) { $goBin = Join-Path (go env GOPATH).Trim() 'bin' }
+          $env:PATH = "$goBin;$env:PATH"
+          Add-Content -Path $env:GITHUB_PATH -Value $goBin
+          go install ("github.com/wailsapp/wails/v3/cmd/wails3@" + $env:WAILS_VERSION)
+          npm ci --prefix frontend
+          wails3 generate bindings -f '-tags production' -clean=true -ts -i
+          npm run build --prefix frontend
+
+      - name: Set release version in build metadata
+        shell: pwsh
+        run: node build/ci/set-version.mjs '${{ needs.version.outputs.version }}'
+
+      - name: Ensure NSIS is available
+        shell: pwsh
+        run: |
+          $nsisDir = 'C:\Program Files (x86)\NSIS'
+          if (-not (Test-Path -LiteralPath (Join-Path $nsisDir 'makensis.exe'))) {
+            choco install nsis --yes --no-progress
           }
-          "$nsisDir" | Out-File -FilePath $env:GITHUB_PATH -Append
-          & "$nsisDir\makensis.exe" /VERSION
-      - name: Build NSIS installer (amd64)
-        shell: bash
-        env:
-          CGO_ENABLED: "0" # syscall loader — no C toolchain needed for Windows
-        run: task windows:package
-      - name: Normalize installer name
-        shell: bash
-        run: cp bin/graal-rc-amd64-installer.exe bin/nullbornes-rc-windows-x64-installer.exe
-      - uses: actions/upload-artifact@v4
+          Add-Content -Path $env:GITHUB_PATH -Value $nsisDir
+
+      - name: Build Windows binary
+        shell: pwsh
+        run: pwsh -NoProfile -File build/ci/build-windows.ps1 -Architecture '${{ matrix.arch }}' -Version '${{ needs.version.outputs.version }}'
+
+      - name: Build and validate NSIS installer
+        shell: pwsh
+        run: pwsh -NoProfile -File build/ci/validate-installer.ps1 -Architecture '${{ matrix.arch }}' -BinaryPath 'ci-artifacts/windows/${{ matrix.arch }}/graal-rc-windows-${{ matrix.arch }}.exe'
+
+      - name: Normalize release artifact name
+        shell: pwsh
+        run: |
+          $suffix = if ('${{ matrix.arch }}' -eq 'amd64') { 'x64' } else { 'x86' }
+          New-Item -ItemType Directory -Path release -Force | Out-Null
+          Copy-Item "ci-artifacts/installers/${{ matrix.arch }}/graal-rc-${{ matrix.arch }}-installer.exe" "release/nullbornes-rc-windows-$suffix-installer.exe"
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: windows
-          path: graal-rc/bin/nullbornes-rc-windows-x64-installer.exe
+          name: release-windows-${{ matrix.arch }}
+          path: graal-rc/release/nullbornes-rc-windows-*.exe
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 14
 
   linux-amd64:
-    name: Linux x64 (AppImage)
+    name: Linux amd64 AppImage
     needs: version
     runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: graal-rc
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Check out release source
+        uses: actions/checkout@v4
         with:
-          node-version: "22"
+          ref: ${{ needs.version.outputs.tag }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
           cache: npm
           cache-dependency-path: graal-rc/frontend/package-lock.json
-      - name: Set release version in build metadata
-        run: node build/ci/set-version.mjs "${{ needs.version.outputs.version }}"
-      - uses: actions/setup-go@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          go-version: ">=1.25.0"
-          cache-dependency-path: graal-rc/go.sum
-      - name: Install GTK4/WebKitGTK6 deps + libfuse2
+          go-version-file: graal-rc/go.mod
+          cache: true
+
+      - name: Install Linux GUI dependencies
+        working-directory: .
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libadwaita-1-dev libfuse2t64 file zip pkg-config
-      - name: Install wails3 CLI
-        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.117
-      - name: Put Go bin on PATH
-        run: echo "$HOME/go/bin" >> "$GITHUB_PATH"
-      - name: Install task
-        run: go install github.com/go-task/task/v3/cmd/task@latest
-      - name: Fetch appimagetool
-        run: |
-          curl -sSL -o "$HOME/appimagetool" https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
-          chmod +x "$HOME/appimagetool"
-          "$HOME/appimagetool" --version
-      - name: Build AppImage with GTK/WebKit runtime and grclib.so
-        env:
-          CGO_ENABLED: "1"
-        run: APPIMAGETOOL="$HOME/appimagetool" task linux:create:appimage
-      - name: Normalize AppImage name
-        run: cp bin/graal-rc-x86_64.AppImage bin/nullbornes-rc-linux-x64.AppImage
-      - uses: actions/upload-artifact@v4
-        with:
-          name: linux-amd64
-          path: graal-rc/bin/nullbornes-rc-linux-x64.AppImage
-          if-no-files-found: error
-          retention-days: 1
+          sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libgtk-3-dev libwebkit2gtk-4.1-dev libfuse2t64 pkg-config
 
-  macos-amd64:
-    name: macOS x64 (.app tarball)
+      - name: Install build tools and frontend assets
+        run: |
+          go install github.com/wailsapp/wails/v3/cmd/wails3@${WAILS_VERSION}
+          go install github.com/go-task/task/v3/cmd/task@${TASK_VERSION}
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          npm ci --prefix frontend
+          wails3 generate bindings -f '-tags production' -clean=true -ts -i
+          npm run build --prefix frontend
+
+      - name: Set release version in build metadata
+        run: node build/ci/set-version.mjs "${{ needs.version.outputs.version }}"
+
+      - name: Install AppImage tool
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/appimagetool.AppImage" https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x "$RUNNER_TEMP/appimagetool.AppImage"
+          cat > "$RUNNER_TEMP/appimagetool" <<'SCRIPT'
+          #!/usr/bin/env bash
+          exec "$RUNNER_TEMP/appimagetool.AppImage" --appimage-extract-and-run "$@"
+          SCRIPT
+          chmod +x "$RUNNER_TEMP/appimagetool"
+
+      - name: Build Linux AppImage
+        env:
+          CGO_ENABLED: '1'
+        run: task linux:create:appimage ARCH=amd64 APPIMAGETOOL="$RUNNER_TEMP/appimagetool"
+
+      - name: Normalize release artifact name
+        run: |
+          mkdir -p release
+          cp bin/graal-rc-x86_64.AppImage release/nullbornes-rc-linux-x64.AppImage
+
+      - name: Upload Linux amd64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-amd64
+          path: graal-rc/release/nullbornes-rc-linux-x64.AppImage
+          if-no-files-found: error
+          retention-days: 14
+
+  linux-386:
+    name: Linux 386 portable archive
     needs: version
-    # macos-13 (Intel) runner pools are effectively gone from GitHub's free
-    # tier — jobs sit in "queued" indefinitely. macos-14 is Apple Silicon and
-    # always available, so we cross-compile to x86_64 via `clang -arch x86_64`
-    # (Apple's SDK still ships the x86_64 slice). Produces a real amd64 binary
-    # matching the x86_64 grclib.dylib; runs natively on Intel Macs and under
-    # Rosetta on Apple Silicon.
-    runs-on: macos-14
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: graal-rc
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Check out release source
+        uses: actions/checkout@v4
         with:
-          node-version: "22"
+          ref: ${{ needs.version.outputs.tag }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
           cache: npm
           cache-dependency-path: graal-rc/frontend/package-lock.json
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: graal-rc/go.mod
+          cache: true
+
+      - name: Install 32-bit Linux GUI toolchain
+        working-directory: .
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y gcc-multilib g++-multilib libc6-dev-i386 pkg-config libgtk-4-dev:i386 libwebkitgtk-6.0-dev:i386 libgtk-3-dev:i386 libwebkit2gtk-4.1-dev:i386
+
+      - name: Install Wails CLI and frontend assets
+        run: |
+          go install github.com/wailsapp/wails/v3/cmd/wails3@${WAILS_VERSION}
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          npm ci --prefix frontend
+          wails3 generate bindings -f '-tags production' -clean=true -ts -i
+          npm run build --prefix frontend
+
       - name: Set release version in build metadata
         run: node build/ci/set-version.mjs "${{ needs.version.outputs.version }}"
-      - uses: actions/setup-go@v5
+
+      - name: Build 32-bit Linux binary and portable archive
+        env:
+          GOOS: linux
+          GOARCH: '386'
+          CGO_ENABLED: '1'
+          PKG_CONFIG_LIBDIR: /usr/lib/i386-linux-gnu/pkgconfig:/usr/share/pkgconfig
+        run: |
+          set -euo pipefail
+          modfile="$RUNNER_TEMP/go-386.mod"
+          cp go.mod "$modfile"
+          cp go.sum "$RUNNER_TEMP/go-386.sum"
+          go mod edit -modfile="$modfile" '-replace=github.com/wailsapp/wails/v3=github.com/wailsapp/wails/v3@v3.0.0-alpha2.118'
+          go mod download -modfile="$modfile" github.com/wailsapp/wails/v3@v3.0.0-alpha2.118
+          wails3 generate .desktop -name graal-rc -exec graal-rc -icon graal-rc -outputfile build/linux/graal-rc.desktop -categories 'Development;'
+          go build -modfile="$modfile" -tags production -trimpath -buildvcs=false -ldflags='-s -w' -o "$RUNNER_TEMP/graal-rc"
+          mkdir -p release/graal-rc-linux-386/rclib/native/linux-386
+          cp "$RUNNER_TEMP/graal-rc" release/graal-rc-linux-386/graal-rc
+          cp rclib/native/linux-386/grclib.so release/graal-rc-linux-386/rclib/native/linux-386/grclib.so
+          cp build/appicon.png release/graal-rc-linux-386/appicon.png
+          cp build/linux/graal-rc.desktop release/graal-rc-linux-386/graal-rc.desktop
+          tar -C release -czf release/nullbornes-rc-linux-x86.tar.gz graal-rc-linux-386
+          rm -rf release/graal-rc-linux-386
+
+      - name: Upload Linux 386 artifact
+        uses: actions/upload-artifact@v4
         with:
-          go-version: ">=1.25.0"
-          cache-dependency-path: graal-rc/go.sum
-      - name: Install wails3 CLI
-        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.117
-      - name: Put Go bin on PATH
-        run: echo "$HOME/go/bin" >> "$GITHUB_PATH"
-      - name: Install task
-        run: go install github.com/go-task/task/v3/cmd/task@latest
-      - name: Build frontend + bindings
-        run: task common:build:frontend
-      - name: Generate macOS icon
-        run: task common:generate:icons
-      - name: Cross-build darwin/amd64 (CGO x86_64)
+          name: release-linux-386
+          path: graal-rc/release/nullbornes-rc-linux-x86.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  macos:
+    name: macOS ${{ matrix.arch }}
+    needs: version
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            suffix: x64
+          - arch: arm64
+            suffix: arm64
+    defaults:
+      run:
+        working-directory: graal-rc
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+          cache-dependency-path: graal-rc/frontend/package-lock.json
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: graal-rc/go.mod
+          cache: true
+
+      - name: Install build tools and frontend assets
+        run: |
+          go install github.com/wailsapp/wails/v3/cmd/wails3@${WAILS_VERSION}
+          go install github.com/go-task/task/v3/cmd/task@${TASK_VERSION}
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          npm ci --prefix frontend
+          wails3 generate bindings -f '-tags production' -clean=true -ts -i
+          npm run build --prefix frontend
+
+      - name: Set release version in build metadata
+        run: node build/ci/set-version.mjs "${{ needs.version.outputs.version }}"
+
+      - name: Build macOS bundle
         env:
           GOOS: darwin
-          GOARCH: amd64
-          CGO_ENABLED: "1"
-          CGO_CFLAGS: "-arch x86_64 -mmacosx-version-min=12.0"
-          CGO_LDFLAGS: "-arch x86_64 -mmacosx-version-min=12.0"
-          MACOSX_DEPLOYMENT_TARGET: "12.0"
-        run: go build -tags production -trimpath -buildvcs=false -ldflags="-w -s" -o bin/graal-rc .
-      - name: Create macOS application bundle
-        run: task darwin:create:app:bundle
-      - name: Verify ad-hoc signature
-        run: codesign --verify --deep --strict --verbose=2 bin/graal-rc.app
-      - name: Archive macOS application bundle
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: '1'
+          CGO_CFLAGS: ${{ matrix.arch == 'amd64' && '-arch x86_64 -mmacosx-version-min=12.0' || '-mmacosx-version-min=12.0' }}
+          CGO_LDFLAGS: ${{ matrix.arch == 'amd64' && '-arch x86_64 -mmacosx-version-min=12.0' || '-mmacosx-version-min=12.0' }}
+          MACOSX_DEPLOYMENT_TARGET: '12.0'
         run: |
           set -euo pipefail
-          test -d bin/graal-rc.app
-          test -f bin/graal-rc.app/Contents/Resources/icons.icns
-          test -f bin/graal-rc.app/Contents/Frameworks/grclib.dylib
-          test ! -e bin/graal-rc.app/Contents/Resources/Assets.car
-          mkdir -p stage
-          cp -R bin/graal-rc.app stage/
-          tar -C stage -czf bin/graal-rc-darwin-amd64.tar.gz graal-rc.app
-          cp bin/graal-rc-darwin-amd64.tar.gz bin/nullbornes-rc-macos-x64.tar.gz
-      - uses: actions/upload-artifact@v4
-        with:
-          name: macos-amd64
-          path: graal-rc/bin/nullbornes-rc-macos-x64.tar.gz
-          if-no-files-found: error
-          retention-days: 1
-
-  release:
-    name: Publish release
-    needs: [version, windows, linux-amd64, macos-amd64]
-    if: ${{ always() && inputs.publish_release == true && needs.version.result == 'success' && needs.windows.result == 'success' && needs['linux-amd64'].result == 'success' && needs['macos-amd64'].result == 'success' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0 # need full history + tags to read the latest tag
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-      - name: Flatten artifacts
-        run: |
-          set -euo pipefail
+          if [[ '${{ matrix.arch }}' == 'amd64' ]]; then
+            go build -tags production -trimpath -buildvcs=false -ldflags='-w -s' -o bin/graal-rc .
+          else
+            task darwin:package ARCH=arm64
+          fi
+          if [[ '${{ matrix.arch }}' == 'amd64' ]]; then
+            task darwin:create:app:bundle ARCH=amd64
+          fi
           mkdir -p release
-          for artifact in \
-            nullbornes-rc-windows-x64-installer.exe \
-            nullbornes-rc-linux-x64.AppImage \
-            nullbornes-rc-macos-x64.tar.gz; do
-            source=$(find dist -type f -name "$artifact" -print -quit)
-            test -n "$source"
-            cp "$source" "release/$artifact"
-          done
-          ls -la release
-      - uses: softprops/action-gh-release@v2
+          tar -C bin -czf "release/nullbornes-rc-macos-${{ matrix.suffix }}.tar.gz" graal-rc.app
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ needs.version.outputs.tag }}
-          target_commitish: ${{ github.sha }}
-          name: ${{ github.event.inputs.release_name }}
-          prerelease: ${{ github.event.inputs.prerelease }}
-          make_latest: ${{ github.event.inputs.make_latest }}
-          body: |
-            Version ${{ needs.version.outputs.version }} built from commit ${{ github.sha }} on `${{ github.ref_name }}` via manual dispatch.
+          name: release-macos-${{ matrix.arch }}
+          path: graal-rc/release/nullbornes-rc-macos-*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
 
-            Targets:
-            - Windows 10/11 x64 (NSIS installer)
-            - Linux x86_64 (AppImage; choose language in Settings on first launch)
-            - macOS x86_64 (.app tarball; native Intel and Rosetta 2 on Apple Silicon)
-
-            GoRC stores the selected language in the platform user config directory,
-            so the preference survives updates and is shared by all app windows.
-
-            Native grclib libs are bundled per platform.
-          files: release/*
-
-  cleanup:
-    name: Remove intermediate artifacts
-    if: ${{ always() && inputs.publish_release == true }}
-    needs: [release]
-    runs-on: ubuntu-22.04
-    permissions:
-      actions: write
+  publish:
+    name: Publish GitHub release assets
+    needs: [version, windows, linux-amd64, linux-386, macos]
+    runs-on: ubuntu-24.04
     steps:
-      - name: Delete artifacts from this run
+      - name: Download all release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+
+      - name: Generate release checksums
+        working-directory: release
+        run: sha256sum nullbornes-rc-* > SHA256SUMS.txt
+
+      - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: bash
         run: |
-          set -euo pipefail
-          mapfile -t artifact_ids < <(
-            gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" \
-              --jq ".artifacts[] | select(.workflow_run.id == ${GITHUB_RUN_ID}) | .id"
-          )
-
-          for artifact_id in "${artifact_ids[@]}"; do
-            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}" >/dev/null
-          done
-
-          echo "Deleted ${#artifact_ids[@]} intermediate artifact(s) from run ${GITHUB_RUN_ID}."
+          gh release create '${{ needs.version.outputs.tag }}' release/nullbornes-rc-* release/SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Graal Remote Control ${{ needs.version.outputs.tag }}" \
+            --notes "Cross-platform native matrix release for Windows x64/x86, Linux x64/386 and macOS x64/arm64." \
+            --verify-tag
