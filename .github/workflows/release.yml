@@ -115,7 +115,9 @@ jobs:
 
       - name: Build and validate NSIS installer
         shell: pwsh
-        run: pwsh -NoProfile -File build/ci/validate-installer.ps1 -Architecture '${{ matrix.arch }}' -BinaryPath 'ci-artifacts/windows/${{ matrix.arch }}/graal-rc-windows-${{ matrix.arch }}.exe'
+        run: |
+          New-Item -ItemType Directory -Path bin -Force | Out-Null
+          pwsh -NoProfile -File build/ci/validate-installer.ps1 -Architecture '${{ matrix.arch }}' -BinaryPath 'ci-artifacts/windows/${{ matrix.arch }}/graal-rc-windows-${{ matrix.arch }}.exe'
 
       - name: Normalize release artifact name
         shell: pwsh
@@ -246,6 +248,7 @@ jobs:
           npm ci --prefix frontend
           wails3 generate bindings -f '-tags production' -clean=true -ts -i
           npm run build --prefix frontend
+          wails3 generate .desktop -name graal-rc -exec graal-rc -icon graal-rc -outputfile build/linux/graal-rc.desktop -categories 'Development;'
 
       - name: Switch to 32-bit GTK3 development libraries
         working-directory: .
@@ -270,7 +273,6 @@ jobs:
           cp go.sum "$RUNNER_TEMP/go-386.sum"
           go mod edit -modfile="$modfile" '-replace=github.com/wailsapp/wails/v3=github.com/wailsapp/wails/v3@v3.0.0-alpha2.118'
           go mod download -modfile="$modfile" github.com/wailsapp/wails/v3@v3.0.0-alpha2.118
-          wails3 generate .desktop -name graal-rc -exec graal-rc -icon graal-rc -outputfile build/linux/graal-rc.desktop -categories 'Development;'
           go build -modfile="$modfile" -tags production,gtk3 -trimpath -buildvcs=false -ldflags='-s -w' -o "$RUNNER_TEMP/graal-rc"
           mkdir -p release/graal-rc-linux-386/rclib/native/linux-386
           cp "$RUNNER_TEMP/graal-rc" release/graal-rc-linux-386/graal-rc
