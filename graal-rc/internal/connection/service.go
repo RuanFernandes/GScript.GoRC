@@ -62,6 +62,8 @@ type Service struct {
 	pumpCancel      context.CancelFunc
 	pumpDone        chan struct{}
 	pumpErr         error
+	ncConnectMu     sync.Mutex // serializes native NC reconnect attempts
+	ncAutoReconnect bool       // disabled by an explicit DisconnectNC call
 	lastNCAttempt   time.Time  // last ConnectToNCServer attempt; throttles retries
 	lastNCKeepalive time.Time  // last silent NC keepalive (weapon-list ping)
 	ncRequestMu     sync.Mutex // serializes brief NC sends and synchronous mutations
@@ -102,18 +104,30 @@ type Service struct {
 	// disconnected so callers remain fail-closed, but permission comparisons must
 	// still use the last server snapshot instead of treating every rejoin as a
 	// first load.
-	selfRightsBaseline        folderrights.Access
-	selfStaffRightsBaseline   int
-	selfRightsBaselineLoaded  bool
-	selfRightsBaselineAccount string
-	selfRightsBaselineServer  string
-	selfRightsAccount         string
+	selfRightsBaseline         folderrights.Access
+	selfStaffRightsBaseline    int
+	selfRightsBaselineLoaded   bool
+	selfRightsBaselineAccount  string
+	selfRightsBaselineServer   string
+	selfRightsAccount          string
+	selfRightsAccountCanonical bool
 	// selfRightsCommunityName is the optional community name associated with
-	// selfRightsAccount. Both values come from the server's RC chat identity
-	// notification and are used to correlate later rights-change messages.
+	// selfRightsAccount. The account is learned from the server's RC identity
+	// notification/player properties, while the community name comes from the
+	// player property stream when the server exposes it.
 	selfRightsCommunityName string
 	selfRightsServer        string
 	selfRightsUpdated       time.Time
+
+	// playerIdentityProps mirrors the account/community properties decoded by
+	// grclib for each player. The initial PLO_ADDPLAYER callback emits property
+	// changes before the player-joined callback, so retaining both values lets
+	// us correlate the local player's community name even when New RC arrives
+	// a few events later.
+	playerIdentityMu  sync.Mutex
+	playerAccounts    map[int]string
+	playerCommunities map[int]string
+	selfPlayerID      int
 
 	// pendingFiles correlates a file download request (by remote path) to its
 	// content bytes, delivered asynchronously via the FileReceived callback.
@@ -231,6 +245,8 @@ type ServerScriptContext struct {
 
 // scriptTimeout is how long OpenScript/OpenNPC* waits for the NC server reply.
 const scriptTimeout = 15 * time.Second
+
+var errNCUnavailable = errors.New("NC is not connected")
 
 const (
 	rightsChangedMessage = "has set rights of"
@@ -739,6 +755,29 @@ type loadedRightsMessage struct {
 	ExplicitAccount bool
 }
 
+// parseNewRCMessage extracts the canonical account announced by the server
+// after the RC login has been accepted. The C++ server emits this as a normal
+// PLO_RC_CHAT line, for example: "New RC: Graal5766947". Some chat renderers
+// prepend a timestamp, so that prefix is accepted here as well.
+func parseNewRCMessage(text string) (string, bool) {
+	text = strings.TrimSpace(text)
+	if strings.HasPrefix(text, "[") {
+		if timestampEnd := strings.IndexByte(text, ']'); timestampEnd >= 0 {
+			text = strings.TrimSpace(text[timestampEnd+1:])
+		}
+	}
+
+	const prefix = "new rc:"
+	if len(text) < len(prefix) || !strings.EqualFold(text[:len(prefix)], prefix) {
+		return "", false
+	}
+	account := strings.TrimSpace(text[len(prefix):])
+	if newline := strings.IndexAny(account, "\r\n"); newline >= 0 {
+		account = strings.TrimSpace(account[:newline])
+	}
+	return account, account != ""
+}
+
 // parseLoadedRightsMessage extracts the identity displayed by the RC after an
 // openrights request. The optional parenthesized value is the canonical
 // account when the target is a community name:
@@ -817,7 +856,9 @@ func equalFoldAny(value string, candidates ...string) bool {
 
 // selfRightsAliases returns every identity that can be used by the server for
 // the current session. The login account/nickname are available immediately;
-// the canonical account and optional community name are learned from RC chat.
+// the canonical account is learned from the server identity event and the
+// optional community name from player properties (with /openrights as a
+// compatibility fallback).
 func (s *Service) selfRightsAliases() []string {
 	s.mu.Lock()
 	aliases := []string{s.creds.Account, s.creds.Nickname}
@@ -850,6 +891,139 @@ func (s *Service) editorTarget(account string) (target string, selfRequest bool,
 	return target, selfRequest, nil
 }
 
+// captureCanonicalServerAccount stores the account selected by the server for
+// this RC session. The server emits it in the same PLO_RC_CHAT stream used by
+// the C++ client ("New RC: <account>"). It is authoritative over the login
+// alias, but a later New RC notification for another RC must never replace an
+// identity already captured for this session.
+func (s *Service) captureCanonicalServerAccount(account string) {
+	account = strings.TrimSpace(account)
+	if account == "" {
+		return
+	}
+
+	s.mu.Lock()
+	loginAccount := s.creds.Account
+	s.mu.Unlock()
+
+	s.rightsMu.Lock()
+	// The server broadcasts one New RC line for the RC that just logged in,
+	// followed by no sender metadata. Treat the first line as this session's
+	// authoritative identity and ignore later broadcasts for other RCs.
+	if s.selfRightsAccountCanonical {
+		s.rightsMu.Unlock()
+		return
+	}
+	current := strings.TrimSpace(s.selfRightsAccount)
+	changed := !strings.EqualFold(current, account)
+	s.selfRightsAccount = account
+	s.selfRightsAccountCanonical = true
+	s.rightsMu.Unlock()
+
+	if !changed {
+		// A compatibility /openrights response may have populated the same
+		// value first; the source marker still makes this event authoritative.
+		return
+	}
+	log.Printf("[identity] canonical account received from server account=%q login=%q", account, loginAccount)
+	s.resolveSelfPlayerIdentity()
+	s.emitEvent("rc:scriptIdentityChanged")
+}
+
+// captureServerCommunityName stores the community name from the native player
+// property stream. An empty value is meaningful when a server clears the
+// property, so the caller may intentionally pass an empty string.
+func (s *Service) captureServerCommunityName(community string) {
+	community = strings.TrimSpace(community)
+	s.rightsMu.Lock()
+	changed := s.selfRightsCommunityName != community
+	if changed {
+		s.selfRightsCommunityName = community
+	}
+	s.rightsMu.Unlock()
+	if changed {
+		log.Printf("[identity] community name received from player properties community=%q", community)
+		s.emitEvent("rc:scriptIdentityChanged")
+	}
+}
+
+// rememberPlayerProperty keeps the account/community values decoded by
+// grclib. PLO_ADDPLAYER emits the individual property callbacks before its
+// player-joined callback, so the small per-session map lets a later New RC
+// notification resolve the local player id and its community name.
+func (s *Service) rememberPlayerProperty(playerID int, prop, value string) {
+	if playerID < 0 {
+		return
+	}
+	prop = strings.ToLower(strings.TrimSpace(prop))
+	value = strings.TrimSpace(value)
+	if prop != "account" && prop != "accountname" && prop != "community" && prop != "communityname" {
+		return
+	}
+
+	s.playerIdentityMu.Lock()
+	if s.playerAccounts == nil {
+		s.playerAccounts = make(map[int]string)
+	}
+	if s.playerCommunities == nil {
+		s.playerCommunities = make(map[int]string)
+	}
+	switch prop {
+	case "account", "accountname":
+		if value == "" {
+			delete(s.playerAccounts, playerID)
+		} else {
+			s.playerAccounts[playerID] = value
+		}
+	case "community", "communityname":
+		s.playerCommunities[playerID] = value
+	}
+	s.playerIdentityMu.Unlock()
+
+	s.resolveSelfPlayerIdentity()
+}
+
+func (s *Service) rememberPlayerJoined(account string, playerID int) {
+	s.rememberPlayerProperty(playerID, "account", account)
+}
+
+func (s *Service) forgetPlayer(playerID int) {
+	s.playerIdentityMu.Lock()
+	delete(s.playerAccounts, playerID)
+	delete(s.playerCommunities, playerID)
+	if s.selfPlayerID == playerID {
+		s.selfPlayerID = 0
+	}
+	s.playerIdentityMu.Unlock()
+}
+
+// resolveSelfPlayerIdentity associates the server's canonical account with
+// the native player-property stream and applies its community name if present.
+func (s *Service) resolveSelfPlayerIdentity() {
+	canonical := strings.TrimSpace(s.SelfAccount())
+	aliases := s.selfRightsAliases()
+	if canonical == "" && len(aliases) == 0 {
+		return
+	}
+
+	s.playerIdentityMu.Lock()
+	if s.selfPlayerID == 0 {
+		for playerID, account := range s.playerAccounts {
+			if equalFoldAny(account, canonical) || equalFoldAny(account, aliases...) {
+				s.selfPlayerID = playerID
+				break
+			}
+		}
+	}
+	playerID := s.selfPlayerID
+	community, hasCommunity := s.playerCommunities[playerID]
+	s.playerIdentityMu.Unlock()
+
+	if playerID != 0 && hasCommunity {
+		s.captureServerCommunityName(community)
+	}
+}
+
 // captureSelfRightsIdentity accepts only a message generated by the current
 // RC identity. This prevents a staff member viewing another player's rights
 // from replacing the local account/community cache.
@@ -870,7 +1044,7 @@ func (s *Service) captureSelfRightsIdentity(message loadedRightsMessage) {
 
 	s.rightsMu.Lock()
 	changed := false
-	if message.ExplicitAccount || s.selfRightsAccount == "" {
+	if !s.selfRightsAccountCanonical && (message.ExplicitAccount || s.selfRightsAccount == "") {
 		if s.selfRightsAccount != account {
 			s.selfRightsAccount = account
 			changed = true
@@ -884,6 +1058,7 @@ func (s *Service) captureSelfRightsIdentity(message loadedRightsMessage) {
 
 	if changed {
 		log.Printf("[rights] self identity captured actor=%q community=%q account=%q", message.Actor, community, account)
+		s.resolveSelfPlayerIdentity()
 		s.emitEvent("rc:scriptIdentityChanged")
 	}
 }
@@ -896,6 +1071,11 @@ func (s *Service) emitScriptPermissionsEvent(permissionChanged bool) {
 // notifications. The callback runs on grclib's pump, so a refresh must stay
 // asynchronous: OpenRights waits for another callback from that pump.
 func (s *Service) handleRCMessage(text string) {
+	if account, ok := parseNewRCMessage(text); ok {
+		s.captureCanonicalServerAccount(account)
+		return
+	}
+
 	if loaded, ok := parseLoadedRightsMessage(text); ok {
 		s.captureSelfRightsIdentity(loaded)
 		return
@@ -1020,6 +1200,7 @@ type NCStatus struct {
 func (s *Service) startPump(h rclib.Handle) {
 	s.stopPump()
 	s.mu.Lock()
+	s.ncAutoReconnect = true
 	s.lastNCAttempt = time.Time{}
 	s.lastNCKeepalive = time.Time{}
 	s.mu.Unlock()
@@ -1123,6 +1304,13 @@ func (s *Service) failPump(h rclib.Handle, done chan struct{}, err error) {
 // enter the retry loop at all.
 const ncReconnectInterval = 2 * time.Second
 
+// ncReconnectTimeout bounds a sync-triggered recovery attempt. The event pump
+// keeps retrying in the background, but a caller that needs NC must not wait
+// forever for the native handshake to complete.
+const ncReconnectTimeout = 15 * time.Second
+
+const ncReconnectPollInterval = 100 * time.Millisecond
+
 // ncKeepaliveInterval is how often a silent NC packet is sent to keep the NC
 // (script) socket alive. The server can drop an otherwise idle NC connection.
 const ncKeepaliveInterval = 3 * time.Minute
@@ -1140,20 +1328,44 @@ const ncFetchConcurrency = 16
 // first-attempt miss — common with the release build's timing — does not leave
 // the NC socket dead for the whole session.
 func (s *Service) maybeConnectNC(h rclib.Handle) {
-	// Rights gate: no NC exposed to this account, or already connected.
-	if !rclib.HasNCServer(h) || rclib.IsNCConnected(h) {
-		return
+	if err := s.tryConnectNC(h, false); err != nil {
+		log.Printf("nc connect (will retry in %s): %v", ncReconnectInterval, err)
+	}
+}
+
+// tryConnectNC performs one serialized, throttled native NC connect attempt.
+// The pump and sync workers can both notice a dropped NC socket, so the
+// native call must have one owner at a time and must re-check the state after
+// acquiring the mutex.
+func (s *Service) tryConnectNC(h rclib.Handle, force bool) error {
+	s.ncConnectMu.Lock()
+	defer s.ncConnectMu.Unlock()
+
+	if !rclib.IsConnected(h) || !rclib.IsAuthenticated(h) {
+		return nil
 	}
 	s.mu.Lock()
-	if !s.lastNCAttempt.IsZero() && time.Since(s.lastNCAttempt) < ncReconnectInterval {
+	autoReconnect := s.ncAutoReconnect
+	s.mu.Unlock()
+	if !force && !autoReconnect {
+		return nil
+	}
+	if !rclib.HasNCServer(h) || rclib.IsNCConnected(h) {
+		return nil
+	}
+	s.mu.Lock()
+	if !force && !s.lastNCAttempt.IsZero() && time.Since(s.lastNCAttempt) < ncReconnectInterval {
 		s.mu.Unlock()
-		return
+		return nil
 	}
 	s.lastNCAttempt = time.Now()
 	s.mu.Unlock()
-	if err := rclib.ConnectToNCServer(h); err != nil {
-		log.Printf("nc connect (will retry in %s): %v", ncReconnectInterval, err)
+
+	err := rclib.ConnectToNCServer(h)
+	if err == nil {
+		log.Printf("[nc] connect requested")
 	}
+	return err
 }
 
 // ncKeepalive sends a silent NC round-trip while NC is connected. The response
@@ -1167,7 +1379,7 @@ func (s *Service) ncKeepalive(h rclib.Handle) {
 	s.lastNCKeepalive = time.Now()
 	s.mu.Unlock()
 
-	if !rclib.HasNCServer(h) || !rclib.IsNCConnected(h) {
+	if !rclib.IsConnected(h) || !rclib.IsAuthenticated(h) || !rclib.HasNCServer(h) || !rclib.IsNCConnected(h) {
 		return
 	}
 	_ = rclib.SendNCPacket(h, weaponListGetPacket)
@@ -1388,6 +1600,15 @@ func (s *Service) connectToServer(ctx context.Context, index int) error {
 			s.emitEvent("rc:disconnected", reason)
 			s.emitEvent("rc:fbReset")
 			s.emitEvent("rc:channels", s.resetChannels())
+		},
+		PlayerJoined: func(account string, playerID int) {
+			s.rememberPlayerJoined(account, playerID)
+		},
+		PlayerLeft: func(_ string, playerID int) {
+			s.forgetPlayer(playerID)
+		},
+		PlayerPropChanged: func(playerID int, prop, value string) {
+			s.rememberPlayerProperty(playerID, prop, value)
 		},
 		Message: func(text string) {
 			s.appendChatHistory(text)
@@ -1646,7 +1867,16 @@ func (s *Service) connectToNC(ctx context.Context) error {
 	if h == 0 {
 		return errors.New("not connected: log in first")
 	}
-	if err := rclib.ConnectToNCServer(h); err != nil {
+	if !rclib.IsConnected(h) || !rclib.IsAuthenticated(h) {
+		return errors.New("main server is not authenticated")
+	}
+	if !rclib.HasNCServer(h) {
+		return errors.New("this account has no NC rights on this server")
+	}
+	s.mu.Lock()
+	s.ncAutoReconnect = true
+	s.mu.Unlock()
+	if err := s.tryConnectNC(h, true); err != nil {
 		return err
 	}
 	if err := operationErr(ctx); err != nil {
@@ -1661,7 +1891,74 @@ func (s *Service) connectToNC(ctx context.Context) error {
 	return nil
 }
 
-// DisconnectNC closes the NC socket.
+// EnsureNCConnected waits for the NC socket to be connected and authenticated.
+// The event pump performs background retries, while this method gives sync and
+// other NC-dependent operations a bounded, coordinated recovery path instead
+// of treating a transient disconnect as a permanent empty/failed snapshot.
+func (s *Service) EnsureNCConnected(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, ncReconnectTimeout)
+	defer cancel()
+
+	forceAttempt := true
+	attempted := false
+	started := time.Now()
+	var lastErr error
+	for {
+		h, err := s.requireHandle()
+		if err != nil {
+			return err
+		}
+		if !rclib.IsConnected(h) || !rclib.IsAuthenticated(h) {
+			return errors.New("main server is not authenticated")
+		}
+		if !rclib.HasNCServer(h) {
+			return errors.New("this account has no NC rights on this server")
+		}
+		s.mu.Lock()
+		s.ncAutoReconnect = true
+		s.mu.Unlock()
+		if rclib.IsNCConnected(h) && rclib.IsNCAuthenticated(h) {
+			if attempted {
+				log.Printf("[nc] connection restored after %s", time.Since(started))
+			}
+			return nil
+		}
+
+		attempted = true
+		if err := s.tryConnectNC(h, forceAttempt); err != nil {
+			lastErr = err
+			log.Printf("[nc] reconnect attempt failed: %v", err)
+		} else {
+			lastErr = nil
+		}
+		forceAttempt = false
+
+		timer := time.NewTimer(ncReconnectPollInterval)
+		select {
+		case <-waitCtx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if lastErr != nil {
+				return fmt.Errorf("NC reconnect timed out: %w", lastErr)
+			}
+			return fmt.Errorf("NC reconnect timed out: %w", waitCtx.Err())
+		case <-timer.C:
+		}
+	}
+}
+
+// DisconnectNC closes the NC socket and disables the pump's automatic NC
+// reconnect until an explicit ConnectToNCServer or a new server session.
 func (s *Service) DisconnectNC() error {
 	operation := s.beginLifecycleOperation()
 	defer s.endLifecycleOperation(operation)
@@ -1674,6 +1971,9 @@ func (s *Service) DisconnectNC() error {
 	if h == 0 {
 		return errors.New("not connected: log in first")
 	}
+	s.mu.Lock()
+	s.ncAutoReconnect = false
+	s.mu.Unlock()
 	if err := rclib.DisconnectNC(h); err != nil {
 		return err
 	}
@@ -1688,10 +1988,13 @@ func (s *Service) NCStatus() NCStatus {
 	if h == 0 {
 		return NCStatus{}
 	}
+	mainConnected := rclib.IsConnected(h)
+	mainAuthenticated := mainConnected && rclib.IsAuthenticated(h)
+	ncConnected := mainAuthenticated && rclib.IsNCConnected(h)
 	return NCStatus{
-		HasNc:         rclib.HasNCServer(h),
-		Connected:     rclib.IsNCConnected(h),
-		Authenticated: rclib.IsNCAuthenticated(h),
+		HasNc:         mainAuthenticated && rclib.HasNCServer(h),
+		Connected:     ncConnected,
+		Authenticated: ncConnected && rclib.IsNCAuthenticated(h),
 	}
 }
 
@@ -1800,9 +2103,11 @@ func (s *Service) SendAdminMessageAll(message string) error {
 	return rclib.SendAdminMessageAll(h, message)
 }
 
-// SelfAccount returns the account name used by the active server for the
-// logged-in session. The canonical name from openrights wins once available;
-// the listserver credential is the startup fallback.
+// SelfAccount returns the account name selected by the active server for the
+// logged-in session. The RC identity notification/player properties are used
+// as soon as they arrive; the listserver credential is only the startup
+// fallback. /openrights may also fill the same canonical value, but is not
+// required for identity resolution.
 func (s *Service) SelfAccount() string {
 	s.mu.Lock()
 	account := s.creds.Account
@@ -1823,16 +2128,22 @@ func (s *Service) SelfAccount() string {
 // server.
 func (s *Service) clearSelfFolderRights() {
 	s.rightsMu.Lock()
-	stateChanged := s.selfRightsLoaded || s.selfRightsError != "" || s.selfRightsAccount != "" || s.selfRightsCommunityName != "" || s.selfRightsServer != ""
+	stateChanged := s.selfRightsLoaded || s.selfRightsError != "" || s.selfRightsAccount != "" || s.selfRightsAccountCanonical || s.selfRightsCommunityName != "" || s.selfRightsServer != ""
 	s.selfRights = folderrights.Access{}
 	s.selfStaffRights = 0
 	s.selfRightsLoaded = false
 	s.selfRightsError = ""
 	s.selfRightsAccount = ""
+	s.selfRightsAccountCanonical = false
 	s.selfRightsCommunityName = ""
 	s.selfRightsServer = ""
 	s.selfRightsUpdated = time.Time{}
 	s.rightsMu.Unlock()
+	s.playerIdentityMu.Lock()
+	s.playerAccounts = nil
+	s.playerCommunities = nil
+	s.selfPlayerID = 0
+	s.playerIdentityMu.Unlock()
 	if stateChanged {
 		s.emitScriptPermissionsEvent(false)
 	}
@@ -2541,12 +2852,10 @@ func (s *Service) requireNC() (rclib.Handle, error) {
 		return 0, errors.New("this account has no NC rights on this server")
 	}
 	// NC exposed but not connected: the pump retries every ncReconnectInterval,
-	// but force one attempt now so a save right after login is not lost to the
-	// throttle window.
-	s.mu.Lock()
-	s.lastNCAttempt = time.Now()
-	s.mu.Unlock()
-	if err := rclib.ConnectToNCServer(h); err != nil {
+	// while this guarded path joins that retry schedule. Keeping the throttle
+	// here is important because a bulk fetch can have many workers observe the
+	// same dropped socket at once.
+	if err := s.tryConnectNC(h, false); err != nil {
 		return 0, fmt.Errorf("NC server not connected: %w", err)
 	}
 	return h, nil
@@ -2730,7 +3039,7 @@ func (s *Service) IsNCAuthenticated() bool {
 // 15s) and is skipped+logged; it never aborts the fetch. progress (optional)
 // reports done/total so the UI can show a background bar.
 func (s *Service) FetchAllScripts(ctx context.Context, allowed func(scriptType, name string) bool, progress func(done, total int)) ([]rclib.ScriptReply, error) {
-	if _, err := s.requireNC(); err != nil {
+	if err := s.EnsureNCConnected(ctx); err != nil {
 		return nil, err
 	}
 	weapons, err := s.GetWeapons()
@@ -2788,7 +3097,17 @@ func (s *Service) FetchAllScripts(ctx context.Context, allowed func(scriptType, 
 	total := len(jobs)
 	log.Printf("[sync fetch] permission filter kept=%d skipped=%d", total, skipped)
 
-	return s.fetchScriptJobs(ctx, jobs, progress)
+	replies, fetchErr := s.fetchScriptJobs(ctx, jobs, progress)
+	// A dropped NC can leave a valid-looking partial reply slice while the
+	// workers are unwinding. Never let that slice become a reconciliation
+	// snapshot: the caller must retry after the socket is restored.
+	if errors.Is(fetchErr, errNCUnavailable) {
+		return nil, errNCUnavailable
+	}
+	if !s.IsNCConnected() || !s.IsNCAuthenticated() {
+		return nil, errNCUnavailable
+	}
+	return replies, fetchErr
 }
 
 // fetchScriptJobs processes a bulk script fetch with a fixed number of
@@ -2814,6 +3133,8 @@ func runScriptFetchJobs(ctx context.Context, jobs []scriptFetchJob, workerCount 
 	if err := ctx.Err(); err != nil {
 		return out, err
 	}
+	workCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	if workerCount < 1 {
 		workerCount = 1
@@ -2823,6 +3144,8 @@ func runScriptFetchJobs(ctx context.Context, jobs []scriptFetchJob, workerCount 
 	}
 	jobCh := make(chan scriptFetchJob)
 	var outMu sync.Mutex
+	var fetchErrMu sync.Mutex
+	var terminalFetchErr error
 	var wg sync.WaitGroup
 	var done int32
 	wg.Add(workerCount)
@@ -2831,13 +3154,13 @@ func runScriptFetchJobs(ctx context.Context, jobs []scriptFetchJob, workerCount 
 			defer wg.Done()
 			for {
 				select {
-				case <-ctx.Done():
+				case <-workCtx.Done():
 					return
 				case j, ok := <-jobCh:
 					if !ok {
 						return
 					}
-					r, err := fetch(ctx, j)
+					r, err := fetch(workCtx, j)
 					if err == nil {
 						// Some NC callbacks return only the NPC id. Keep the
 						// display name from the cached NPC list so local sync
@@ -2849,6 +3172,14 @@ func runScriptFetchJobs(ctx context.Context, jobs []scriptFetchJob, workerCount 
 						out = append(out, r)
 						outMu.Unlock()
 					} else {
+						if errors.Is(err, errNCUnavailable) {
+							fetchErrMu.Lock()
+							if terminalFetchErr == nil {
+								terminalFetchErr = err
+							}
+							fetchErrMu.Unlock()
+							cancel()
+						}
 						log.Printf("sync fetch %s:%s failed: %v", j.stype, j.key, err)
 					}
 					if progress != nil {
@@ -2862,16 +3193,22 @@ func runScriptFetchJobs(ctx context.Context, jobs []scriptFetchJob, workerCount 
 sendJobs:
 	for _, j := range jobs {
 		select {
-		case <-ctx.Done():
+		case <-workCtx.Done():
 			break sendJobs
 		case jobCh <- j:
 		}
-		if ctx.Err() != nil {
+		if workCtx.Err() != nil {
 			break sendJobs
 		}
 	}
 	close(jobCh)
 	wg.Wait()
+	fetchErrMu.Lock()
+	deferredErr := terminalFetchErr
+	fetchErrMu.Unlock()
+	if deferredErr != nil {
+		return out, deferredErr
+	}
 	return out, ctx.Err()
 }
 
@@ -3044,7 +3381,7 @@ func (s *Service) openScriptContext(ctx context.Context, scriptType, key, name s
 	if err := s.requireScriptPermission(scriptType, name, 'r'); err != nil {
 		return rclib.ScriptReply{}, err
 	}
-	h, err := s.requireHandle()
+	h, err := s.requireNC()
 	if err != nil {
 		return rclib.ScriptReply{}, err
 	}
@@ -3095,19 +3432,30 @@ func (s *Service) openScriptContext(ctx context.Context, scriptType, key, name s
 	}
 	timer := time.NewTimer(scriptTimeout)
 	defer timer.Stop()
-	select {
-	case <-waiter.done:
-		return waiter.reply, waiter.err
-	case <-ctx.Done():
-		if isNew {
-			s.cancelPending(pending, waiter, ctx.Err())
+	ncPoll := time.NewTicker(ncReconnectPollInterval)
+	defer ncPoll.Stop()
+	for {
+		select {
+		case <-waiter.done:
+			return waiter.reply, waiter.err
+		case <-ctx.Done():
+			if isNew {
+				s.cancelPending(pending, waiter, ctx.Err())
+			}
+			return rclib.ScriptReply{}, ctx.Err()
+		case <-ncPoll.C:
+			if !s.IsNCConnected() || !s.IsNCAuthenticated() {
+				if isNew {
+					s.cancelPending(pending, waiter, errNCUnavailable)
+				}
+				return rclib.ScriptReply{}, errNCUnavailable
+			}
+		case <-timer.C:
+			if isNew {
+				s.cancelPending(pending, waiter, errors.New("script request timed out"))
+			}
+			return rclib.ScriptReply{}, errors.New("script request timed out")
 		}
-		return rclib.ScriptReply{}, ctx.Err()
-	case <-timer.C:
-		if isNew {
-			s.cancelPending(pending, waiter, errors.New("script request timed out"))
-		}
-		return rclib.ScriptReply{}, errors.New("script request timed out")
 	}
 }
 
@@ -3321,6 +3669,8 @@ func (s *Service) waitForWeaponList(ctx context.Context, generation uint64) erro
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, weaponListRefreshTimeout)
 	defer cancel()
+	ncPoll := time.NewTicker(ncReconnectPollInterval)
+	defer ncPoll.Stop()
 
 	for {
 		s.weaponListMu.Lock()
@@ -3339,6 +3689,10 @@ func (s *Service) waitForWeaponList(ctx context.Context, generation uint64) erro
 		case <-signal:
 		case <-waitCtx.Done():
 			return fmt.Errorf("waiting for weapon list: %w", waitCtx.Err())
+		case <-ncPoll.C:
+			if !s.IsNCConnected() || !s.IsNCAuthenticated() {
+				return errNCUnavailable
+			}
 		}
 	}
 }
@@ -3533,6 +3887,7 @@ func (s *Service) logout() {
 	s.creds = Credentials{}
 	s.serverName = ""
 	s.serverEpoch++
+	s.ncAutoReconnect = false
 	s.channels = nil
 	s.maxUpload = 0
 	s.mu.Unlock()
@@ -3567,7 +3922,7 @@ func (s *Service) Status() Status {
 	}
 	if s.handle != 0 && !pumpFailed {
 		st.Connected = rclib.IsConnected(s.handle)
-		st.Authenticated = rclib.IsAuthenticated(s.handle)
+		st.Authenticated = st.Connected && rclib.IsAuthenticated(s.handle)
 	}
 	s.rightsMu.RLock()
 	st.RealAccount = s.selfRightsAccount

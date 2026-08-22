@@ -289,6 +289,28 @@ func TestRunScriptFetchJobsUsesFixedWorkerPool(t *testing.T) {
 	}
 }
 
+func TestRunScriptFetchJobsStopsOnNCDisconnect(t *testing.T) {
+	jobs := make([]scriptFetchJob, 128)
+	for i := range jobs {
+		jobs[i] = scriptFetchJob{stype: "weapon", key: string(rune(i)), name: "weapon"}
+	}
+
+	var calls atomic.Int32
+	replies, err := runScriptFetchJobs(context.Background(), jobs, 4, func(ctx context.Context, job scriptFetchJob) (rclib.ScriptReply, error) {
+		if calls.Add(1) == 1 {
+			return rclib.ScriptReply{}, errNCUnavailable
+		}
+		<-ctx.Done()
+		return rclib.ScriptReply{}, ctx.Err()
+	}, nil)
+	if !errors.Is(err, errNCUnavailable) {
+		t.Fatalf("runScriptFetchJobs error = %v, want NC disconnect", err)
+	}
+	if len(replies) != 0 {
+		t.Fatalf("replies = %d, want no partial snapshot after NC disconnect", len(replies))
+	}
+}
+
 func TestWaitForWeaponListRequiresNextGeneration(t *testing.T) {
 	s := NewService()
 	s.weaponListMu.Lock()
@@ -416,6 +438,76 @@ func TestParseLoadedRightsMessage(t *testing.T) {
 	}
 	if withoutCommunity.Actor != "ruanf" || withoutCommunity.Target != "ruanf" || withoutCommunity.Account != "ruanf" || withoutCommunity.CommunityName != "" || withoutCommunity.ExplicitAccount {
 		t.Fatalf("unexpected account-only identity: %+v", withoutCommunity)
+	}
+}
+
+func TestParseNewRCMessage(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		message string
+		want    string
+		ok      bool
+	}{
+		{name: "plain", message: "New RC: Graal5766947", want: "Graal5766947", ok: true},
+		{name: "timestamp", message: "[08:56 ] New RC: Graal5766947", want: "Graal5766947", ok: true},
+		{name: "case insensitive", message: "new rc: graal5766947", want: "graal5766947", ok: true},
+		{name: "empty account", message: "New RC:", ok: false},
+		{name: "embedded text", message: "server says New RC: Graal5766947", ok: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok := parseNewRCMessage(test.message)
+			if got != test.want || ok != test.ok {
+				t.Fatalf("parseNewRCMessage(%q) = (%q, %v), want (%q, %v)", test.message, got, ok, test.want, test.ok)
+			}
+		})
+	}
+}
+
+func TestCaptureCanonicalServerAccountUsesNewRCIdentity(t *testing.T) {
+	s := NewService()
+	s.creds = Credentials{Account: "login@example.com", Nickname: "Repinho"}
+	s.rightsMu.Lock()
+	s.selfRightsAccount = "Repinho" // compatibility response arrived first
+	s.rightsMu.Unlock()
+
+	s.handleRCMessage("[08:56 ] New RC: Graal5766947")
+	s.captureCanonicalServerAccount("OtherRC")
+
+	if got := s.SelfAccount(); got != "Graal5766947" {
+		t.Fatalf("SelfAccount() = %q, want canonical server account", got)
+	}
+	status := s.Status()
+	if status.Account != "login@example.com" || status.RealAccount != "Graal5766947" {
+		t.Fatalf("status identity = account %q realAccount %q", status.Account, status.RealAccount)
+	}
+}
+
+func TestPlayerPropertiesResolveCommunityForCanonicalSelf(t *testing.T) {
+	s := NewService()
+	s.creds = Credentials{Account: "login@example.com"}
+
+	// The native player-properties callbacks can arrive before the server's
+	// New RC chat line, so verify that the later canonical account resolves the
+	// already-buffered community property.
+	s.rememberPlayerProperty(42, "account", "Graal5766947")
+	s.rememberPlayerProperty(42, "community", "Repinho")
+	s.captureCanonicalServerAccount("Graal5766947")
+
+	status := s.Status()
+	if status.RealAccount != "Graal5766947" || status.CommunityName != "Repinho" {
+		t.Fatalf("status identity = realAccount %q community %q", status.RealAccount, status.CommunityName)
+	}
+}
+
+func TestPlayerPropertiesIgnoreUnrelatedPlayers(t *testing.T) {
+	s := NewService()
+	s.creds = Credentials{Account: "login@example.com"}
+	s.rememberPlayerProperty(7, "account", "OtherPlayer")
+	s.rememberPlayerProperty(7, "community", "OtherCommunity")
+	s.captureCanonicalServerAccount("Graal5766947")
+
+	if got := s.Status().CommunityName; got != "" {
+		t.Fatalf("unrelated player's community resolved as %q", got)
 	}
 }
 

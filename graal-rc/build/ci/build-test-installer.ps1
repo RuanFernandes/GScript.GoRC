@@ -16,7 +16,7 @@ $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $buildScript = Join-Path $repositoryRoot 'build\ci\build-windows.ps1'
 $compileScript = Join-Path $repositoryRoot 'build\windows\compile-nsis.ps1'
 $binaryPath = Join-Path $repositoryRoot "ci-artifacts\windows\$Architecture\graal-rc-windows-$Architecture.exe"
-$nativeLibraryPath = Join-Path $repositoryRoot 'rclib\grclib64.dll'
+$nativeLibraryPath = Join-Path $repositoryRoot 'rclib\native\windows-amd64\grclib64.dll'
 $canonicalInstallerPath = Join-Path $repositoryRoot "bin\graal-rc-$Architecture-installer.exe"
 
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {

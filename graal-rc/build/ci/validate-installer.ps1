@@ -32,14 +32,7 @@ if ($null -eq $makensis) {
 }
 
 $nativeName = if ($Architecture -eq 'amd64') { 'grclib64.dll' } else { 'grclib.dll' }
-$nativePath = Join-Path $repositoryRoot (Join-Path 'rclib' $nativeName)
-if (-not (Test-Path -LiteralPath $nativePath -PathType Leaf)) {
-    if ($Architecture -eq '386') {
-        Write-Output '::notice::rclib/grclib.dll is not present; x86 NSIS validation is skipped because the installer cannot ship a matching FFI library.'
-        exit 0
-    }
-    throw "Required native library is missing: $nativePath"
-}
+$nativePath = Join-Path $repositoryRoot (Join-Path "rclib\native\windows-$Architecture" $nativeName)
 
 $wails = Get-Command wails3 -CommandType Application -ErrorAction Stop
 $nsisDirectory = Join-Path $repositoryRoot 'build\windows\nsis'

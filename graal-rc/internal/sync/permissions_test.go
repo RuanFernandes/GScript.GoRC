@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"graal-rc/rclib"
@@ -12,10 +13,16 @@ type permissionBackendStub struct {
 	permissionRefreshes int
 	weaponRefreshes     int
 	fetches             int
+	ensureCalls         int
+	ensureErr           error
 	fetchErr            error
 	fetchReplies        []rclib.ScriptReply
 }
 
+func (b *permissionBackendStub) EnsureNCConnected(context.Context) error {
+	b.ensureCalls++
+	return b.ensureErr
+}
 func (b *permissionBackendStub) IsNCConnected() bool     { return true }
 func (b *permissionBackendStub) IsNCAuthenticated() bool { return true }
 
@@ -68,6 +75,23 @@ func TestBootstrapRetryReusesLoadedPermissions(t *testing.T) {
 	}
 	if backend.permissionRefreshes != 1 {
 		t.Fatalf("permission refreshes = %d, want 1 across an internal retry", backend.permissionRefreshes)
+	}
+}
+
+func TestBootstrapWaitsForNCRecoveryBeforeReadingScripts(t *testing.T) {
+	backend := &permissionBackendStub{ensureErr: errors.New("temporary NC failure")}
+	engine := NewEngine(backend, "TestServer", nil)
+	engine.ApplyConfig(SyncConfig{Enabled: true, OutputDir: t.TempDir(), PollingMinutes: 1})
+
+	err := engine.bootstrap(context.Background(), engine.config().OutputDir)
+	if err == nil || !strings.Contains(err.Error(), "NC reconnect") {
+		t.Fatalf("bootstrap error = %v, want an NC reconnect error", err)
+	}
+	if backend.ensureCalls != 1 {
+		t.Fatalf("NC recovery attempts = %d, want 1", backend.ensureCalls)
+	}
+	if backend.fetches != 0 {
+		t.Fatalf("script fetches = %d, want 0 while NC recovery failed", backend.fetches)
 	}
 }
 

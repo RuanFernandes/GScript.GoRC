@@ -1,14 +1,58 @@
 package rclib
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 	"unsafe"
 )
 
+func TestWindowsNativeLibraryExportsPlayerIdentityCallbacks(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("the committed Windows DLL is not loaded on non-Windows hosts")
+	}
+	if err := load(); err != nil {
+		t.Fatalf("load %s: %v", libFileName(), err)
+	}
+	for name, proc := range map[string]*proc{
+		"rc_on_player_joined":             procOnPlayerJoined,
+		"rc_on_player_left":               procOnPlayerLeft,
+		"rc_on_player_prop_changed":       procOnPlayerPropChanged,
+		"rc_on_player_properties_changed": procOnPlayerPropertiesChanged,
+	} {
+		if proc == nil {
+			t.Fatalf("native export %s was not resolved", name)
+		}
+	}
+}
+
+func TestNativeLibraryNamesByTarget(t *testing.T) {
+	for _, test := range []struct {
+		goos   string
+		goarch string
+		want   string
+	}{
+		{goos: "windows", goarch: "amd64", want: "grclib64.dll"},
+		{goos: "windows", goarch: "386", want: "grclib.dll"},
+		{goos: "linux", goarch: "amd64", want: "grclib.so"},
+		{goos: "linux", goarch: "386", want: "grclib.so"},
+		{goos: "darwin", goarch: "amd64", want: "grclib.dylib"},
+		{goos: "darwin", goarch: "arm64", want: "grclib.dylib"},
+	} {
+		t.Run(test.goos+"/"+test.goarch, func(t *testing.T) {
+			if got := nativeLibraryName(test.goos, test.goarch); got != test.want {
+				t.Fatalf("nativeLibraryName(%q, %q) = %q, want %q", test.goos, test.goarch, got, test.want)
+			}
+			if got := nativeTargetKey(test.goos, test.goarch); got != test.goos+"-"+test.goarch {
+				t.Fatalf("nativeTargetKey(%q, %q) = %q", test.goos, test.goarch, got)
+			}
+		})
+	}
+}
+
 func TestNativeABIStructLayouts(t *testing.T) {
 	if unsafe.Sizeof(uintptr(0)) != 8 {
-		t.Skip("grclib is shipped only for 64-bit targets")
+		t.Skip("the assertions below cover the 64-bit C struct ABI")
 	}
 
 	tests := []struct {
@@ -132,5 +176,63 @@ func TestCallbackPanicIsQueuedForPump(t *testing.T) {
 	}
 	if err := takeCallbackFault(testHandle); err != nil {
 		t.Fatalf("callback fault was not consumed: %v", err)
+	}
+}
+
+func TestPlayerIdentityCallbacksCopyNativeStrings(t *testing.T) {
+	const testHandle = Handle(0xCA12)
+	var joined struct {
+		account string
+		id      int
+	}
+	var property struct {
+		id    int
+		name  string
+		value string
+	}
+	var properties struct {
+		id   int
+		data string
+	}
+
+	routeMu.Lock()
+	routes[testHandle] = &EventCallbacks{
+		PlayerJoined: func(account string, id int) {
+			joined.account = account
+			joined.id = id
+		},
+		PlayerPropChanged: func(id int, name, value string) {
+			property.id = id
+			property.name = name
+			property.value = value
+		},
+		PlayerPropertiesChanged: func(id int, data string) {
+			properties.id = id
+			properties.data = data
+		},
+	}
+	routeMu.Unlock()
+	defer func() {
+		routeMu.Lock()
+		delete(routes, testHandle)
+		routeMu.Unlock()
+	}()
+
+	account := append([]byte("Graal5766947"), 0)
+	propName := append([]byte("community"), 0)
+	propValue := append([]byte("Repinho"), 0)
+	rawProperties := append([]byte("props"), 0)
+	playerJoinedEntry(unsafe.Pointer(&account[0]), uintptr(42), uintptr(testHandle))
+	playerPropChangedEntry(uintptr(42), unsafe.Pointer(&propName[0]), unsafe.Pointer(&propValue[0]), uintptr(testHandle))
+	playerPropertiesChangedEntry(uintptr(42), unsafe.Pointer(&rawProperties[0]), uintptr(testHandle))
+
+	if joined.account != "Graal5766947" || joined.id != 42 {
+		t.Fatalf("joined callback = %#v, want canonical account and player id", joined)
+	}
+	if property.id != 42 || property.name != "community" || property.value != "Repinho" {
+		t.Fatalf("property callback = %#v, want copied community property", property)
+	}
+	if properties.id != 42 || properties.data != "props" {
+		t.Fatalf("properties callback = %#v, want copied property payload", properties)
 	}
 }

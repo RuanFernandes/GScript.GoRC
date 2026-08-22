@@ -11,8 +11,8 @@ tasks:
   build:
     summary: Builds the application
     preconditions:
-      - sh: '[ "{{.TARGET_ARCH}}" = "amd64" ]'
-        msg: "macOS ARM64 is disabled until an ARM64 rclib/grclib.dylib is available. Use the amd64 build under Rosetta for now."
+      - sh: '[ "{{.TARGET_ARCH}}" = "amd64" ] || [ "{{.TARGET_ARCH}}" = "arm64" ]'
+        msg: "macOS native builds currently support amd64 and arm64, matching the checked-in grclib release matrix."
     cmds:
       - task: '{{if eq OS "darwin"}}build:native{{else}}build:docker{{end}}'
         vars:
@@ -91,9 +91,6 @@ tasks:
 
   build:universal:
     summary: Builds darwin universal binary (arm64 + amd64)
-    preconditions:
-      - sh: 'false'
-        msg: "Universal macOS builds are disabled until an ARM64 rclib/grclib.dylib is available."
     deps:
       - task: build
         vars:
@@ -129,13 +126,12 @@ tasks:
 
   package:universal:
     summary: Packages darwin universal binary (arm64 + amd64)
-    preconditions:
-      - sh: 'false'
-        msg: "Universal macOS packages are disabled until an ARM64 rclib/grclib.dylib is available."
     deps:
       - task: build:universal
     cmds:
       - task: create:app:bundle
+        vars:
+          UNIVERSAL: "true"
 
 
   create:app:bundle:
@@ -146,10 +142,30 @@ tasks:
       - mkdir -p "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Frameworks"
       - mkdir -p "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources"
       - cp build/darwin/icons.icns "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Resources"
-      - cp rclib/grclib.dylib "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Frameworks"
+      - task: '{{if eq .UNIVERSAL "true"}}copy:native:universal{{else}}copy:native:single{{end}}'
+        vars:
+          TARGET_ARCH: '{{.ARCH | default ARCH}}'
+          FRAMEWORKS_DIR: '{{.ROOT_DIR}}/{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/Frameworks'
       - cp "{{.BIN_DIR}}/{{.APP_NAME}}" "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents/MacOS"
       - cp build/darwin/Info.plist "{{.BIN_DIR}}/{{.APP_NAME}}.app/Contents"
       - task: '{{if eq OS "darwin"}}codesign:adhoc{{else}}codesign:skip{{end}}'
+    vars:
+      UNIVERSAL: '{{.UNIVERSAL | default "false"}}'
+
+  copy:native:single:
+    summary: Copies the native grclib for one macOS architecture into a bundle
+    internal: true
+    cmds:
+      - mkdir -p "{{.FRAMEWORKS_DIR}}/darwin-{{.TARGET_ARCH}}"
+      - cp "{{.ROOT_DIR}}/rclib/native/darwin-{{.TARGET_ARCH}}/grclib.dylib" "{{.FRAMEWORKS_DIR}}/darwin-{{.TARGET_ARCH}}/grclib.dylib"
+
+  copy:native:universal:
+    summary: Copies both native grclib libraries into a universal macOS bundle
+    internal: true
+    cmds:
+      - mkdir -p "{{.FRAMEWORKS_DIR}}/darwin-amd64" "{{.FRAMEWORKS_DIR}}/darwin-arm64"
+      - cp "{{.ROOT_DIR}}/rclib/native/darwin-amd64/grclib.dylib" "{{.FRAMEWORKS_DIR}}/darwin-amd64/grclib.dylib"
+      - cp "{{.ROOT_DIR}}/rclib/native/darwin-arm64/grclib.dylib" "{{.FRAMEWORKS_DIR}}/darwin-arm64/grclib.dylib"
 
   codesign:adhoc:
     summary: Ad-hoc signs the app bundle (macOS only)
@@ -170,11 +186,14 @@ tasks:
       - mkdir -p "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app/Contents/Frameworks"
       - mkdir -p "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app/Contents/Resources"
       - cp build/darwin/icons.icns "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app/Contents/Resources"
-      - cp rclib/grclib.dylib "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app/Contents/Frameworks"
+      - mkdir -p "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app/Contents/Frameworks/darwin-{{.TARGET_ARCH}}"
+      - cp "rclib/native/darwin-{{.TARGET_ARCH}}/grclib.dylib" "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app/Contents/Frameworks/darwin-{{.TARGET_ARCH}}/grclib.dylib"
       - cp "{{.BIN_DIR}}/{{.APP_NAME}}" "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app/Contents/MacOS"
       - cp "build/darwin/Info.dev.plist" "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app/Contents/Info.plist"
       - codesign --force --deep --sign - "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app"
       - 'open "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app"'
+    vars:
+      TARGET_ARCH: '{{.ARCH | default ARCH}}'
 
   sign:
     summary: Signs the application bundle with Developer ID

@@ -6,9 +6,9 @@ import (
 	"unsafe"
 )
 
-// The native library is shipped only for 64-bit desktop targets. These limits
-// are deliberately conservative protocol/ABI guardrails: a malformed C count
-// must not turn into an unbounded Go allocation or slice header.
+// These limits are deliberately conservative protocol/ABI guardrails for both
+// 32-bit and 64-bit desktop targets: a malformed C count must not turn into an
+// unbounded Go allocation or slice header.
 const (
 	maxNativeElements = 1 << 20
 	maxNativeBytes    = 512 << 20

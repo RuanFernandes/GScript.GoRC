@@ -11,11 +11,25 @@ export interface ChangelogEntry {
 // the visible history from nullborne.com when the release service is reachable.
 const CHANGELOG_PT_BR: ChangelogEntry[] = [
   {
+    version: "4.1.0",
+    date: "22/08/2026",
+    title: "Matriz nativa multiplataforma e reconexão do NC",
+    summary: "Integra as bibliotecas GRClib por arquitetura e permite que o Sync recupere o NC sem travar.",
+    current: true,
+    changes: [
+      "A GRClib v1.0.45 agora é distribuída por Windows x64/x86, Linux x64/x86 e macOS x64/arm64, sempre com a biblioteca nativa correta.",
+      "Os builds e pacotes selecionam a biblioteca correspondente à arquitetura e não fazem fallback silencioso para um binário incompatível.",
+      "O portal de downloads publica a matriz de instaladores e arquivos portáteis por sistema operacional e arquitetura.",
+      "O RC detecta quando o NC fica desconectado durante o Sync ou Re-Sync e tenta restabelecer a conexão antes de continuar.",
+      "As requisições de scripts são encerradas de forma controlada ao perder o NC, evitando workers presos, snapshots parciais e travamentos do aplicativo.",
+    ],
+  },
+  {
     version: "4.0.2",
     date: "21/08/2026",
     title: "Galeria de Scripts em formato de projetos",
     summary: "Deixa a galeria mais clara, remove o editor duplicado e preserva os dados entre reinícios da API.",
-    current: true,
+    current: false,
     changes: [
       "A galeria agora apresenta projetos em cards, com resumo de visibilidade, dono, quantidade de scripts e seleção de um único script para consultar.",
       "As ações agora são Copiar no script atual, Atualizar com script atual e Adicionar script atual; todas pedem confirmação antes de alterar o editor ou a galeria, com textos traduzidos.",
@@ -294,8 +308,19 @@ const CHANGELOG_PT_BR: ChangelogEntry[] = [
 
 const CHANGELOG_EN: ChangelogEntry[] = [
   {
+    version: "4.1.0", date: "2026-08-22", title: "Cross-platform native matrix and NC recovery",
+    summary: "Ships GRClib per architecture and lets Sync recover NC connections without hanging.", current: true,
+    changes: [
+      "GRClib v1.0.45 is now distributed for Windows x64/x86, Linux x64/x86 and macOS x64/arm64, with the matching native library in each build.",
+      "Builds and packages select the library for their architecture and never silently fall back to an incompatible binary.",
+      "The download portal publishes the installer and portable-archive matrix by operating system and architecture.",
+      "The RC detects when NC disconnects during Sync or Re-Sync and attempts to restore the connection before continuing.",
+      "Script requests shut down cleanly when NC is lost, preventing stuck workers, partial snapshots and application hangs.",
+    ],
+  },
+  {
     version: "4.0.2", date: "2026-08-21", title: "Project-based Script Gallery",
-    summary: "Makes the gallery clearer, removes the duplicate editor and preserves API data across restarts.", current: true,
+    summary: "Makes the gallery clearer, removes the duplicate editor and preserves API data across restarts.", current: false,
     changes: [
       "The gallery now presents projects as cards with visibility, owner, script counts and a focused script selection view.",
       "Actions are now Copy to current script, Update with current script and Add current script; each asks for confirmation before changing the editor or gallery, with translated copy.",
@@ -511,8 +536,19 @@ const CHANGELOG_EN: ChangelogEntry[] = [
 
 const CHANGELOG_ES: ChangelogEntry[] = [
   {
+    version: "4.1.0", date: "2026-08-22", title: "Matriz nativa multiplataforma y reconexión del NC",
+    summary: "Integra GRClib por arquitectura y permite que Sync recupere NC sin bloquearse.", current: true,
+    changes: [
+      "GRClib v1.0.45 ahora se distribuye para Windows x64/x86, Linux x64/x86 y macOS x64/arm64, con la biblioteca nativa correspondiente en cada build.",
+      "Los builds y paquetes seleccionan la biblioteca de su arquitectura y nunca hacen fallback silencioso a un binario incompatible.",
+      "El portal de descargas publica la matriz de instaladores y archivos portátiles por sistema operativo y arquitectura.",
+      "El RC detecta cuando el NC se desconecta durante Sync o Re-Sync e intenta restablecer la conexión antes de continuar.",
+      "Las solicitudes de scripts se cierran de forma controlada al perder el NC, evitando workers bloqueados, snapshots parciales y bloqueos de la aplicación.",
+    ],
+  },
+  {
     version: "4.0.2", date: "2026-08-21", title: "Galería de scripts basada en proyectos",
-    summary: "Hace la galería más clara, elimina el editor duplicado y conserva los datos de la API entre reinicios.", current: true,
+    summary: "Hace la galería más clara, elimina el editor duplicado y conserva los datos de la API entre reinicios.", current: false,
     changes: [
       "La galería ahora presenta los proyectos como tarjetas, con visibilidad, propietario, cantidad de scripts y una vista centrada en el script seleccionado.",
       "Las acciones ahora son Copiar en el script actual, Actualizar con script actual y Añadir script actual; todas piden confirmación antes de cambiar el editor o la galería, con textos traducidos.",
