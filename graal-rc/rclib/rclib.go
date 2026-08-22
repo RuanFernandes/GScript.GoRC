@@ -222,25 +222,29 @@ var (
 	procProcessEvents   *proc
 	procOnConnected     *proc
 	procOnDisconnected  *proc
+	procOnPlayerJoined  *proc
+	procOnPlayerLeft    *proc
 
-	procConnectToNcServer   *proc
-	procDisconnectNc        *proc
-	procIsNcConnected       *proc
-	procIsNcAuthenticated   *proc
-	procHasNcServer         *proc
-	procIrcLogin            *proc
-	procSendIrcText         *proc
-	procExecute             *proc
-	procSetNickname         *proc
-	procGetPlayers          *proc
-	procOnMessage           *proc
-	procOnIrcMessage        *proc
-	procOnServerData        *proc
-	procOnPrivateMessage    *proc
-	procSendPrivateMessage  *proc
-	procSendMassPM          *proc
-	procSendAdminMessage    *proc
-	procSendAdminMessageAll *proc
+	procConnectToNcServer         *proc
+	procDisconnectNc              *proc
+	procIsNcConnected             *proc
+	procIsNcAuthenticated         *proc
+	procHasNcServer               *proc
+	procIrcLogin                  *proc
+	procSendIrcText               *proc
+	procExecute                   *proc
+	procSetNickname               *proc
+	procGetPlayers                *proc
+	procOnPlayerPropChanged       *proc
+	procOnPlayerPropertiesChanged *proc
+	procOnMessage                 *proc
+	procOnIrcMessage              *proc
+	procOnServerData              *proc
+	procOnPrivateMessage          *proc
+	procSendPrivateMessage        *proc
+	procSendMassPM                *proc
+	procSendAdminMessage          *proc
+	procSendAdminMessageAll       *proc
 
 	// Player admin editors (rights / attributes / bans) on the main server.
 	procRequestPlayerRights       *proc
@@ -466,6 +470,8 @@ func registerAll(resolve func(name string) (*proc, error)) error {
 	procProcessEvents = get("rc_process_events")
 	procOnConnected = get("rc_on_connected")
 	procOnDisconnected = get("rc_on_disconnected")
+	procOnPlayerJoined = get("rc_on_player_joined")
+	procOnPlayerLeft = get("rc_on_player_left")
 	procConnectToNcServer = get("rc_connect_to_nc_server")
 	procDisconnectNc = get("rc_disconnect_nc")
 	procIsNcConnected = get("rc_is_nc_connected")
@@ -476,6 +482,8 @@ func registerAll(resolve func(name string) (*proc, error)) error {
 	procExecute = get("rc_execute")
 	procSetNickname = get("rc_set_nickname")
 	procGetPlayers = get("rc_get_players")
+	procOnPlayerPropChanged = get("rc_on_player_prop_changed")
+	procOnPlayerPropertiesChanged = get("rc_on_player_properties_changed")
 	procOnMessage = get("rc_on_message")
 	procOnIrcMessage = get("rc_on_irc_message")
 	procOnServerData = get("rc_on_server_data")
@@ -647,12 +655,16 @@ func bptrToString(p *byte) string {
 // Methods are invoked from the event-pump goroutine (during rc_process_events),
 // so they must be non-blocking.
 type EventCallbacks struct {
-	Connected      func()
-	Disconnected   func(reason string)
-	Message        func(text string)
-	IrcMessage     func(channel, line string)
-	ServerData     func(dataType, content string)
-	PrivateMessage func(playerID int, account, nick, message string)
+	Connected               func()
+	Disconnected            func(reason string)
+	PlayerJoined            func(account string, playerID int)
+	PlayerLeft              func(account string, playerID int)
+	PlayerPropChanged       func(playerID int, prop, value string)
+	PlayerPropertiesChanged func(playerID int, properties string)
+	Message                 func(text string)
+	IrcMessage              func(channel, line string)
+	ServerData              func(dataType, content string)
+	PrivateMessage          func(playerID int, account, nick, message string)
 
 	// Script/NC callbacks (fired on the pump goroutine).
 	ScriptReceived     func(scriptType, name string, id int, script string)
@@ -680,12 +692,16 @@ type EventCallbacks struct {
 }
 
 var (
-	cbConnected      = newCallback(connectedEntry)
-	cbDisconnected   = newCallback(disconnectedEntry)
-	cbMessage        = newCallback(messageEntry)
-	cbIrcMessage     = newCallback(ircMessageEntry)
-	cbServerData     = newCallback(serverDataEntry)
-	cbPrivateMessage = newCallback(privateMessageEntry)
+	cbConnected               = newCallback(connectedEntry)
+	cbDisconnected            = newCallback(disconnectedEntry)
+	cbPlayerJoined            = newCallback(playerJoinedEntry)
+	cbPlayerLeft              = newCallback(playerLeftEntry)
+	cbPlayerPropChanged       = newCallback(playerPropChangedEntry)
+	cbPlayerPropertiesChanged = newCallback(playerPropertiesChangedEntry)
+	cbMessage                 = newCallback(messageEntry)
+	cbIrcMessage              = newCallback(ircMessageEntry)
+	cbServerData              = newCallback(serverDataEntry)
+	cbPrivateMessage          = newCallback(privateMessageEntry)
 
 	cbScriptReceived     = newCallback(scriptReceivedEntry)
 	cbWeaponAdded        = newCallback(weaponCacheChangedEntry)
@@ -732,6 +748,63 @@ func disconnectedEntry(reason unsafe.Pointer, userData uintptr) uintptr {
 	fire(userData, func(c *EventCallbacks) {
 		if c.Disconnected != nil {
 			c.Disconnected(msg)
+		}
+	})
+	return 0
+}
+
+// playerJoinedEntry is the C-callable shim for
+// RC_OnPlayerJoined(account, player_id, user_data).
+func playerJoinedEntry(account unsafe.Pointer, playerID, userData uintptr) uintptr {
+	defer safeRecover("on_player_joined", userData)
+	acct := bptrToString((*byte)(account))
+	id := int(int32(playerID))
+	fire(userData, func(c *EventCallbacks) {
+		if c.PlayerJoined != nil {
+			c.PlayerJoined(acct, id)
+		}
+	})
+	return 0
+}
+
+// playerLeftEntry is the C-callable shim for
+// RC_OnPlayerLeft(account, player_id, user_data).
+func playerLeftEntry(account unsafe.Pointer, playerID, userData uintptr) uintptr {
+	defer safeRecover("on_player_left", userData)
+	acct := bptrToString((*byte)(account))
+	id := int(int32(playerID))
+	fire(userData, func(c *EventCallbacks) {
+		if c.PlayerLeft != nil {
+			c.PlayerLeft(acct, id)
+		}
+	})
+	return 0
+}
+
+// playerPropChangedEntry is the C-callable shim for
+// RC_OnPlayerPropChanged(player_id, prop, value, user_data).
+func playerPropChangedEntry(playerID uintptr, prop, value unsafe.Pointer, userData uintptr) uintptr {
+	defer safeRecover("on_player_prop_changed", userData)
+	property := bptrToString((*byte)(prop))
+	propertyValue := bptrToString((*byte)(value))
+	id := int(int32(playerID))
+	fire(userData, func(c *EventCallbacks) {
+		if c.PlayerPropChanged != nil {
+			c.PlayerPropChanged(id, property, propertyValue)
+		}
+	})
+	return 0
+}
+
+// playerPropertiesChangedEntry is the C-callable shim for
+// RC_OnPlayerPropertiesChanged(player_id, properties, user_data).
+func playerPropertiesChangedEntry(playerID uintptr, properties unsafe.Pointer, userData uintptr) uintptr {
+	defer safeRecover("on_player_properties_changed", userData)
+	props := bptrToString((*byte)(properties))
+	id := int(int32(playerID))
+	fire(userData, func(c *EventCallbacks) {
+		if c.PlayerPropertiesChanged != nil {
+			c.PlayerPropertiesChanged(id, props)
 		}
 	})
 	return 0
@@ -1080,6 +1153,10 @@ func RegisterCallbacks(h Handle, cbs *EventCallbacks) (err error) {
 	routeMu.Unlock()
 	procOnConnected.Call(uintptr(h), cbConnected, uintptr(h))
 	procOnDisconnected.Call(uintptr(h), cbDisconnected, uintptr(h))
+	procOnPlayerJoined.Call(uintptr(h), cbPlayerJoined, uintptr(h))
+	procOnPlayerLeft.Call(uintptr(h), cbPlayerLeft, uintptr(h))
+	procOnPlayerPropChanged.Call(uintptr(h), cbPlayerPropChanged, uintptr(h))
+	procOnPlayerPropertiesChanged.Call(uintptr(h), cbPlayerPropertiesChanged, uintptr(h))
 	procOnMessage.Call(uintptr(h), cbMessage, uintptr(h))
 	procOnIrcMessage.Call(uintptr(h), cbIrcMessage, uintptr(h))
 	procOnServerData.Call(uintptr(h), cbServerData, uintptr(h))
@@ -1128,6 +1205,10 @@ func UnregisterCallbacks(h Handle) (err error) {
 	}()
 	procOnConnected.Call(uintptr(h), 0, 0)
 	procOnDisconnected.Call(uintptr(h), 0, 0)
+	procOnPlayerJoined.Call(uintptr(h), 0, 0)
+	procOnPlayerLeft.Call(uintptr(h), 0, 0)
+	procOnPlayerPropChanged.Call(uintptr(h), 0, 0)
+	procOnPlayerPropertiesChanged.Call(uintptr(h), 0, 0)
 	procOnMessage.Call(uintptr(h), 0, 0)
 	procOnIrcMessage.Call(uintptr(h), 0, 0)
 	procOnServerData.Call(uintptr(h), 0, 0)
