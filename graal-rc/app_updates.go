@@ -274,15 +274,15 @@ func downloadInstaller(info UpdateInfo) (string, error) {
 	if info.Installer == nil {
 		return "", errors.New("update metadata does not include an installer")
 	}
-	expectedPath := updateDownloadPath(info.Platform)
-	if expectedPath == "" {
+	expectedPaths := updateDownloadPaths(info.Platform, info.Architecture)
+	if len(expectedPaths) == 0 {
 		return "", fmt.Errorf("unsupported update platform %q", info.Platform)
 	}
 	endpoint, err := url.Parse(info.DownloadURL)
 	if err != nil {
 		return "", err
 	}
-	if endpoint.Scheme != "https" || strings.ToLower(endpoint.Hostname()) != "nullborne.com" || endpoint.Path != expectedPath || endpoint.RawQuery != "" || endpoint.Fragment != "" || endpoint.User != nil {
+	if endpoint.Scheme != "https" || strings.ToLower(endpoint.Hostname()) != "nullborne.com" || !containsString(expectedPaths, endpoint.Path) || endpoint.RawQuery != "" || endpoint.Fragment != "" || endpoint.User != nil {
 		return "", fmt.Errorf("update download URL is not the trusted %s release route", info.Platform)
 	}
 
@@ -339,13 +339,47 @@ func downloadInstaller(info UpdateInfo) (string, error) {
 	return installerPath, nil
 }
 
-func updateDownloadPath(platform string) string {
+func updateDownloadPath(platform, architecture string) string {
+	platform = strings.ToLower(strings.TrimSpace(platform))
+	architecture = strings.ToLower(strings.TrimSpace(architecture))
+
 	switch platform {
-	case "windows", "linux", "mac":
-		return "/" + platform
+	case "windows", "linux":
+		if architecture != "amd64" && architecture != "386" {
+			return ""
+		}
+	case "mac":
+		if architecture != "amd64" && architecture != "arm64" {
+			return ""
+		}
 	default:
 		return ""
 	}
+
+	return "/" + platform + "/" + architecture
+}
+
+func updateDownloadPaths(platform, architecture string) []string {
+	canonicalPath := updateDownloadPath(platform, architecture)
+	if canonicalPath == "" {
+		return nil
+	}
+
+	paths := []string{canonicalPath}
+	if strings.EqualFold(strings.TrimSpace(platform), "windows") && strings.EqualFold(strings.TrimSpace(architecture), "amd64") {
+		// Builds before the architecture matrix only knew the legacy x64 alias.
+		paths = append(paths, "/windows")
+	}
+	return paths
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func updateTemporaryPattern(platform string) string {

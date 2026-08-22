@@ -75,24 +75,34 @@ func TestReleaseTargetMapsSupportedOperatingSystems(t *testing.T) {
 
 func TestUpdateDownloadRoutesAndTemporaryNames(t *testing.T) {
 	tests := []struct {
-		platform string
-		path     string
-		pattern  string
+		platform     string
+		architecture string
+		path         string
+		pattern      string
 	}{
-		{platform: "windows", path: "/windows", pattern: "nullbornes-rc-update-*.exe"},
-		{platform: "linux", path: "/linux", pattern: "nullbornes-rc-update-*.AppImage"},
-		{platform: "mac", path: "/mac", pattern: "nullbornes-rc-update-*.tar.gz"},
+		{platform: "windows", architecture: "amd64", path: "/windows/amd64", pattern: "nullbornes-rc-update-*.exe"},
+		{platform: "windows", architecture: "386", path: "/windows/386", pattern: "nullbornes-rc-update-*.exe"},
+		{platform: "linux", architecture: "amd64", path: "/linux/amd64", pattern: "nullbornes-rc-update-*.AppImage"},
+		{platform: "linux", architecture: "386", path: "/linux/386", pattern: "nullbornes-rc-update-*.AppImage"},
+		{platform: "mac", architecture: "amd64", path: "/mac/amd64", pattern: "nullbornes-rc-update-*.tar.gz"},
+		{platform: "mac", architecture: "arm64", path: "/mac/arm64", pattern: "nullbornes-rc-update-*.tar.gz"},
 	}
 	for _, test := range tests {
-		if got := updateDownloadPath(test.platform); got != test.path {
-			t.Fatalf("updateDownloadPath(%q) = %q, want %q", test.platform, got, test.path)
+		if got := updateDownloadPath(test.platform, test.architecture); got != test.path {
+			t.Fatalf("updateDownloadPath(%q, %q) = %q, want %q", test.platform, test.architecture, got, test.path)
 		}
 		if got := updateTemporaryPattern(test.platform); got != test.pattern {
 			t.Fatalf("updateTemporaryPattern(%q) = %q, want %q", test.platform, got, test.pattern)
 		}
 	}
-	if got := updateDownloadPath("other"); got != "" {
-		t.Fatalf("updateDownloadPath(other) = %q, want empty", got)
+	legacyPaths := updateDownloadPaths("windows", "amd64")
+	if len(legacyPaths) != 2 || legacyPaths[0] != "/windows/amd64" || legacyPaths[1] != "/windows" {
+		t.Fatalf("updateDownloadPaths(windows, amd64) = %#v, want canonical and legacy x64 routes", legacyPaths)
+	}
+	for _, invalid := range [][2]string{{"other", "amd64"}, {"windows", "arm64"}, {"linux", "arm64"}, {"mac", "386"}} {
+		if got := updateDownloadPath(invalid[0], invalid[1]); got != "" {
+			t.Fatalf("updateDownloadPath(%q, %q) = %q, want empty", invalid[0], invalid[1], got)
+		}
 	}
 }
 
