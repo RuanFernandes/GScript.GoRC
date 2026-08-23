@@ -40,6 +40,24 @@ function Get-PeMachine {
     return [System.BitConverter]::ToUInt16($bytes, $peOffset + 4)
 }
 
+function Get-PeSubsystem {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -lt 0x40 -or $bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) {
+        throw "$Path is not a valid PE file"
+    }
+    $peOffset = [System.BitConverter]::ToInt32($bytes, 0x3c)
+    $subsystemOffset = $peOffset + 24 + 68
+    if ($peOffset -lt 0 -or $subsystemOffset + 2 -gt $bytes.Length) {
+        throw "$Path contains an invalid PE optional header"
+    }
+    if ($bytes[$peOffset] -ne 0x50 -or $bytes[$peOffset + 1] -ne 0x45 -or $bytes[$peOffset + 2] -ne 0 -or $bytes[$peOffset + 3] -ne 0) {
+        throw "$Path is missing the PE signature"
+    }
+    return [System.BitConverter]::ToUInt16($bytes, $subsystemOffset)
+}
+
 $wails = Get-Command wails3 -CommandType Application -ErrorAction Stop
 $binaryName = "graal-rc-windows-$Architecture.exe"
 $binaryPath = Join-Path $OutputDirectory $binaryName
@@ -140,6 +158,10 @@ if (-not (Test-Path -LiteralPath $binaryPath -PathType Leaf)) {
 $binaryMachine = Get-PeMachine -Path $binaryPath
 if ($binaryMachine -ne $expectedMachine) {
     throw "$binaryName has PE machine 0x$('{0:X4}' -f $binaryMachine), expected 0x$('{0:X4}' -f $expectedMachine)"
+}
+$binarySubsystem = Get-PeSubsystem -Path $binaryPath
+if ($binarySubsystem -ne 2) {
+    throw "$binaryName is a console PE (subsystem $binarySubsystem); Windows RC builds must use the GUI subsystem"
 }
 
 $nativeName = if ($Architecture -eq 'amd64') { 'grclib64.dll' } else { 'grclib.dll' }

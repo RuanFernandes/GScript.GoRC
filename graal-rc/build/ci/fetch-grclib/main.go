@@ -24,12 +24,13 @@ const (
 )
 
 type nativeTarget struct {
-	Key     string
-	GOOS    string
-	GOARCH  string
-	Asset   string
-	Library string
-	Path    string
+	Key            string
+	GOOS           string
+	GOARCH         string
+	Asset          string
+	AssetLibraries []string
+	Library        string
+	Path           string
 }
 
 type releaseResponse struct {
@@ -58,17 +59,17 @@ type manifestTarget struct {
 }
 
 var targets = []nativeTarget{
-	{Key: "windows-amd64", GOOS: "windows", GOARCH: "amd64", Asset: "grclib-windows-x64.zip", Library: "grclib64.dll", Path: "native/windows-amd64/grclib64.dll"},
-	{Key: "windows-386", GOOS: "windows", GOARCH: "386", Asset: "grclib-windows-x86.zip", Library: "grclib.dll", Path: "native/windows-386/grclib.dll"},
-	{Key: "linux-amd64", GOOS: "linux", GOARCH: "amd64", Asset: "grclib-linux-x64.zip", Library: "grclib.so", Path: "native/linux-amd64/grclib.so"},
-	{Key: "linux-386", GOOS: "linux", GOARCH: "386", Asset: "grclib-linux-x86.zip", Library: "grclib.so", Path: "native/linux-386/grclib.so"},
-	{Key: "darwin-amd64", GOOS: "darwin", GOARCH: "amd64", Asset: "grclib-macos-x64.zip", Library: "grclib.dylib", Path: "native/darwin-amd64/grclib.dylib"},
-	{Key: "darwin-arm64", GOOS: "darwin", GOARCH: "arm64", Asset: "grclib-macos-arm64.zip", Library: "grclib.dylib", Path: "native/darwin-arm64/grclib.dylib"},
+	{Key: "windows-amd64", GOOS: "windows", GOARCH: "amd64", Asset: "grclib-windows-x64.zip", AssetLibraries: []string{"grclib.dll", "grclib64.dll"}, Library: "grclib64.dll", Path: "native/windows-amd64/grclib64.dll"},
+	{Key: "windows-386", GOOS: "windows", GOARCH: "386", Asset: "grclib-windows-x86.zip", AssetLibraries: []string{"grclib.dll"}, Library: "grclib.dll", Path: "native/windows-386/grclib.dll"},
+	{Key: "linux-amd64", GOOS: "linux", GOARCH: "amd64", Asset: "grclib-linux-x64.zip", AssetLibraries: []string{"grclib.so"}, Library: "grclib.so", Path: "native/linux-amd64/grclib.so"},
+	{Key: "linux-386", GOOS: "linux", GOARCH: "386", Asset: "grclib-linux-x86.zip", AssetLibraries: []string{"grclib.so"}, Library: "grclib.so", Path: "native/linux-386/grclib.so"},
+	{Key: "darwin-amd64", GOOS: "darwin", GOARCH: "amd64", Asset: "grclib-macos-x64.zip", AssetLibraries: []string{"grclib.dylib"}, Library: "grclib.dylib", Path: "native/darwin-amd64/grclib.dylib"},
+	{Key: "darwin-arm64", GOOS: "darwin", GOARCH: "arm64", Asset: "grclib-macos-arm64.zip", AssetLibraries: []string{"grclib.dylib"}, Library: "grclib.dylib", Path: "native/darwin-arm64/grclib.dylib"},
 }
 
 func main() {
 	rootFlag := flag.String("root", ".", "GoRC repository root")
-	releaseFlag := flag.String("release", "v1.0.45", "GScript.GRClib release tag")
+	releaseFlag := flag.String("release", "v1.0.46", "GScript.GRClib release tag")
 	checkFlag := flag.Bool("check", false, "validate the checked-in native libraries without network access")
 	forceFlag := flag.Bool("force", false, "redownload libraries even when the manifest already matches")
 	flag.Parse()
@@ -120,7 +121,7 @@ func main() {
 		if err != nil {
 			fatal(fmt.Errorf("download %s: %w", target.Asset, err))
 		}
-		libraryBytes, err := extractLibrary(archiveBytes, target.Library)
+		libraryBytes, err := extractLibrary(archiveBytes, target.AssetLibraries...)
 		if err != nil {
 			fatal(fmt.Errorf("extract %s from %s: %w", target.Library, target.Asset, err))
 		}
@@ -191,13 +192,20 @@ func download(assetURL string) ([]byte, error) {
 	return data, nil
 }
 
-func extractLibrary(archiveBytes []byte, libraryName string) ([]byte, error) {
+func extractLibrary(archiveBytes []byte, libraryNames ...string) ([]byte, error) {
 	archive, err := zip.NewReader(bytes.NewReader(archiveBytes), int64(len(archiveBytes)))
 	if err != nil {
 		return nil, err
 	}
+	wanted := make(map[string]struct{}, len(libraryNames))
+	for _, libraryName := range libraryNames {
+		wanted[libraryName] = struct{}{}
+	}
 	for _, entry := range archive.File {
-		if entry.FileInfo().IsDir() || filepath.Base(filepath.ToSlash(entry.Name)) != libraryName {
+		if entry.FileInfo().IsDir() {
+			continue
+		}
+		if _, ok := wanted[filepath.Base(filepath.ToSlash(entry.Name))]; !ok {
 			continue
 		}
 		reader, err := entry.Open()
@@ -217,7 +225,7 @@ func extractLibrary(archiveBytes []byte, libraryName string) ([]byte, error) {
 		}
 		return data, nil
 	}
-	return nil, fmt.Errorf("archive does not contain %s", libraryName)
+	return nil, fmt.Errorf("archive does not contain any of %s", strings.Join(libraryNames, ", "))
 }
 
 func check(root string) error {
@@ -312,7 +320,7 @@ func writeAtomic(path string, data []byte, windows bool) error {
 func normalizeTag(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return "v1.0.45"
+		return "v1.0.46"
 	}
 	if !strings.HasPrefix(strings.ToLower(value), "v") {
 		return "v" + value

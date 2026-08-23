@@ -11,11 +11,23 @@ export interface ChangelogEntry {
 // the visible history from nullborne.com when the release service is reachable.
 const CHANGELOG_PT_BR: ChangelogEntry[] = [
   {
+    version: "4.1.1",
+    date: "22/08/2026",
+    title: "Correção do Sync e dos builds Windows",
+    summary: "Atualiza a GRCLib, corrige as rotas de atualização por arquitetura e remove o console auxiliar dos builds Windows.",
+    current: true,
+    changes: [
+      "A GRCLib v1.0.46 corrige o parser das respostas de classes, eliminando os timeouts que travavam o Sync inicial.",
+      "O atualizador valida a arquitetura antes de aceitar a rota de download, evitando instalar um artefato incompatível.",
+      "Os builds Windows de desenvolvimento e de release usam o subsistema gráfico e não abrem um console de debug junto com o RC.",
+    ],
+  },
+  {
     version: "4.1.0",
     date: "22/08/2026",
     title: "Matriz nativa multiplataforma e reconexão do NC",
     summary: "Integra as bibliotecas GRClib por arquitetura e permite que o Sync recupere o NC sem travar.",
-    current: true,
+    current: false,
     changes: [
       "A GRClib v1.0.45 agora é distribuída por Windows x64/x86, Linux x64/x86 e macOS x64/arm64, sempre com a biblioteca nativa correta.",
       "Os builds e pacotes selecionam a biblioteca correspondente à arquitetura e não fazem fallback silencioso para um binário incompatível.",
@@ -308,8 +320,17 @@ const CHANGELOG_PT_BR: ChangelogEntry[] = [
 
 const CHANGELOG_EN: ChangelogEntry[] = [
   {
+    version: "4.1.1", date: "2026-08-22", title: "Sync and Windows build fix",
+    summary: "Updates GRCLib, validates update routes by architecture and removes the auxiliary console from Windows builds.", current: true,
+    changes: [
+      "GRCLib v1.0.46 fixes the class-response parser, eliminating the timeouts that stalled the initial Sync.",
+      "The updater validates the architecture before accepting a download route, preventing incompatible artifacts from being installed.",
+      "Windows development and release builds use the GUI subsystem and no longer open a debug console next to RC.",
+    ],
+  },
+  {
     version: "4.1.0", date: "2026-08-22", title: "Cross-platform native matrix and NC recovery",
-    summary: "Ships GRClib per architecture and lets Sync recover NC connections without hanging.", current: true,
+    summary: "Ships GRClib per architecture and lets Sync recover NC connections without hanging.", current: false,
     changes: [
       "GRClib v1.0.45 is now distributed for Windows x64/x86, Linux x64/x86 and macOS x64/arm64, with the matching native library in each build.",
       "Builds and packages select the library for their architecture and never silently fall back to an incompatible binary.",
@@ -536,8 +557,17 @@ const CHANGELOG_EN: ChangelogEntry[] = [
 
 const CHANGELOG_ES: ChangelogEntry[] = [
   {
+    version: "4.1.1", date: "2026-08-22", title: "Corrección de Sync y builds de Windows",
+    summary: "Actualiza GRCLib, valida las rutas de actualización por arquitectura y elimina la consola auxiliar de los builds de Windows.", current: true,
+    changes: [
+      "GRCLib v1.0.46 corrige el parser de respuestas de clases y elimina los timeouts que bloqueaban el Sync inicial.",
+      "El actualizador valida la arquitectura antes de aceptar una ruta de descarga, evitando instalar artefactos incompatibles.",
+      "Los builds de desarrollo y release de Windows usan el subsistema gráfico y ya no abren una consola de depuración junto al RC.",
+    ],
+  },
+  {
     version: "4.1.0", date: "2026-08-22", title: "Matriz nativa multiplataforma y reconexión del NC",
-    summary: "Integra GRClib por arquitectura y permite que Sync recupere NC sin bloquearse.", current: true,
+    summary: "Integra GRCLib por arquitectura y permite que Sync recupere NC sin bloquearse.", current: false,
     changes: [
       "GRClib v1.0.45 ahora se distribuye para Windows x64/x86, Linux x64/x86 y macOS x64/arm64, con la biblioteca nativa correspondiente en cada build.",
       "Los builds y paquetes seleccionan la biblioteca de su arquitectura y nunca hacen fallback silencioso a un binario incompatible.",
