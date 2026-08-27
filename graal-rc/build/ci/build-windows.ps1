@@ -82,7 +82,11 @@ if ($Version -ne '') {
     $testInfo = Get-Content -LiteralPath $sysoInfoPath -Raw | ConvertFrom-Json
     $testInfo.fixed.file_version = $Version
     $testInfo.info.'0000'.ProductVersion = $Version
-    $testInfo | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $testInfoPath -Encoding utf8
+    # wails3 reads this file as JSON bytes and does not accept a UTF-8 BOM.
+    # Write explicitly without a BOM so the script works in both Windows
+    # PowerShell (where -Encoding utf8 adds one) and PowerShell 7.
+    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+    [System.IO.File]::WriteAllText($testInfoPath, ($testInfo | ConvertTo-Json -Depth 10), $utf8NoBom)
     $sysoInfoPath = $testInfoPath
 }
 

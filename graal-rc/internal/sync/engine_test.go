@@ -337,6 +337,56 @@ func TestPushLocalCreatesClassAndInitializesEmptyBody(t *testing.T) {
 	}
 }
 
+func TestPushLocalEmitsUploadedContent(t *testing.T) {
+	backend := &recordingBackend{}
+	type emittedEvent struct {
+		name string
+		data []any
+	}
+	var events []emittedEvent
+	engine := NewEngine(backend, "TestServer", func(name string, data ...any) {
+		events = append(events, emittedEvent{name: name, data: data})
+	})
+	dir := t.TempDir()
+	path := filepath.Join(dir, "weapons", "Sword.gs2")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ref := scriptRef{kind: "weapon", key: "Sword", name: "Sword"}
+	engine.ApplyConfig(SyncConfig{Enabled: true, OutputDir: dir, AutoPushLocal: true})
+	engine.rememberRef(ref, path)
+	engine.setHash(path, HashScript("old"))
+	if err := os.WriteFile(path, []byte("local weapon"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	engine.pushLocal(t.Context(), path)
+
+	if got := backend.savedWeapons["Sword"]; got != "local weapon" {
+		t.Fatalf("uploaded weapon content = %q, want local weapon", got)
+	}
+	if len(events) == 0 {
+		t.Fatal("successful local upload did not emit an event")
+	}
+	var update LocalScriptUploaded
+	for _, event := range events {
+		if event.name != "rc:syncLocalUploaded" || len(event.data) != 1 {
+			continue
+		}
+		var ok bool
+		update, ok = event.data[0].(LocalScriptUploaded)
+		if ok {
+			break
+		}
+	}
+	if update.Kind != "weapon" || update.Key != "Sword" || update.Content != "local weapon" {
+		t.Fatalf("uploaded event = %#v, want weapon/Sword/local weapon", update)
+	}
+}
+
 func TestRemoveUnlistedLocalFilesAppliesServerPriority(t *testing.T) {
 	engine := NewEngine(&permissionBackendStub{}, "TestServer", nil)
 	dir := t.TempDir()

@@ -100,6 +100,97 @@ func TestExecuteRejectsAStoppedEventPump(t *testing.T) {
 	}
 }
 
+func TestNCAutomaticAttemptIsLatchedPerServerSession(t *testing.T) {
+	s := NewService()
+
+	if !s.claimNCAttempt(false) {
+		t.Fatal("first automatic NC attempt was rejected")
+	}
+	if s.claimNCAttempt(false) {
+		t.Fatal("automatic NC attempt was not latched")
+	}
+
+	s.resetNCConnectionState()
+	if !s.claimNCAttempt(false) {
+		t.Fatal("new server session did not reset the NC attempt latch")
+	}
+}
+
+func TestNCManualDisconnectBlocksAutomaticAttemptUntilExplicitReconnect(t *testing.T) {
+	s := NewService()
+	s.mu.Lock()
+	s.ncManuallyDisconnected = true
+	s.ncConnectionAttempted = true
+	s.mu.Unlock()
+
+	if s.claimNCAttempt(false) {
+		t.Fatal("automatic NC attempt ignored manual disconnect")
+	}
+	if !s.claimNCAttempt(true) {
+		t.Fatal("explicit NC reconnect was rejected")
+	}
+
+	s.mu.Lock()
+	manuallyDisconnected := s.ncManuallyDisconnected
+	attempted := s.ncConnectionAttempted
+	s.mu.Unlock()
+	if manuallyDisconnected || !attempted {
+		t.Fatalf("explicit reconnect state = manuallyDisconnected %v attempted %v", manuallyDisconnected, attempted)
+	}
+}
+
+func TestEnsureSelfFolderRightsRechecksAfterSerializedRefresh(t *testing.T) {
+	s := NewService()
+	s.rightsRefreshMu.Lock()
+	done := make(chan error, 1)
+	go func() { done <- s.ensureSelfFolderRights() }()
+
+	select {
+	case err := <-done:
+		t.Fatalf("ensureSelfFolderRights returned before the active refresh completed: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	s.rightsMu.Lock()
+	s.selfRightsLoaded = true
+	s.rightsMu.Unlock()
+	s.rightsRefreshMu.Unlock()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ensureSelfFolderRights returned %v after a snapshot was loaded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ensureSelfFolderRights did not return after the serialized refresh")
+	}
+}
+
+func TestEnsureWeaponListReadyWaitsForInitialGeneration(t *testing.T) {
+	s := NewService()
+	s.resetWeaponListState()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- s.ensureWeaponListReady(ctx) }()
+
+	select {
+	case err := <-done:
+		t.Fatalf("ensureWeaponListReady returned before the initial list callback: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	s.markWeaponListReceived(1)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ensureWeaponListReady returned %v after the list callback", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ensureWeaponListReady did not observe the initial list callback")
+	}
+}
+
 func TestResolveEditorForAccountAcceptsCanonicalSelfWithEmptyComments(t *testing.T) {
 	s := NewService()
 	waiter, isNew := s.registerEditor(editorSelfKey("comments"))
@@ -441,57 +532,35 @@ func TestParseLoadedRightsMessage(t *testing.T) {
 	}
 }
 
-func TestParseNewRCMessage(t *testing.T) {
-	for _, test := range []struct {
-		name    string
-		message string
-		want    string
-		ok      bool
-	}{
-		{name: "plain", message: "New RC: Graal5766947", want: "Graal5766947", ok: true},
-		{name: "timestamp", message: "[08:56 ] New RC: Graal5766947", want: "Graal5766947", ok: true},
-		{name: "case insensitive", message: "new rc: graal5766947", want: "graal5766947", ok: true},
-		{name: "empty account", message: "New RC:", ok: false},
-		{name: "embedded text", message: "server says New RC: Graal5766947", ok: false},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			got, ok := parseNewRCMessage(test.message)
-			if got != test.want || ok != test.ok {
-				t.Fatalf("parseNewRCMessage(%q) = (%q, %v), want (%q, %v)", test.message, got, ok, test.want, test.ok)
-			}
-		})
-	}
-}
-
-func TestCaptureCanonicalServerAccountUsesNewRCIdentity(t *testing.T) {
+func TestNewRCMessageDoesNotChangeIdentity(t *testing.T) {
 	s := NewService()
 	s.creds = Credentials{Account: "login@example.com", Nickname: "Repinho"}
-	s.rightsMu.Lock()
-	s.selfRightsAccount = "Repinho" // compatibility response arrived first
-	s.rightsMu.Unlock()
 
-	s.handleRCMessage("[08:56 ] New RC: Graal5766947")
-	s.captureCanonicalServerAccount("OtherRC")
+	s.handleRCMessage("[08:56 ] New RC: OtherRC")
 
-	if got := s.SelfAccount(); got != "Graal5766947" {
-		t.Fatalf("SelfAccount() = %q, want canonical server account", got)
+	if got := s.SelfAccount(); got != "login@example.com" {
+		t.Fatalf("SelfAccount() = %q, want login credential", got)
 	}
 	status := s.Status()
-	if status.Account != "login@example.com" || status.RealAccount != "Graal5766947" {
+	if status.Account != "login@example.com" || status.RealAccount != "" {
 		t.Fatalf("status identity = account %q realAccount %q", status.Account, status.RealAccount)
 	}
 }
 
-func TestPlayerPropertiesResolveCommunityForCanonicalSelf(t *testing.T) {
+func TestPlayerPropertiesResolveCommunityForAuthenticatedSelf(t *testing.T) {
 	s := NewService()
-	s.creds = Credentials{Account: "login@example.com"}
+	s.creds = Credentials{Account: "login@example.com", Nickname: "Repinho"}
 
 	// The native player-properties callbacks can arrive before the server's
-	// New RC chat line, so verify that the later canonical account resolves the
-	// already-buffered community property.
+	// authenticated rights identity, so verify that the later rights response
+	// resolves the already-buffered community property.
 	s.rememberPlayerProperty(42, "account", "Graal5766947")
 	s.rememberPlayerProperty(42, "community", "Repinho")
-	s.captureCanonicalServerAccount("Graal5766947")
+	message, ok := parseLoadedRightsMessage("Repinho loaded the rights of Repinho (Graal5766947)")
+	if !ok {
+		t.Fatal("authenticated rights identity was not parsed")
+	}
+	s.captureSelfRightsIdentity(message)
 
 	status := s.Status()
 	if status.RealAccount != "Graal5766947" || status.CommunityName != "Repinho" {
@@ -504,7 +573,9 @@ func TestPlayerPropertiesIgnoreUnrelatedPlayers(t *testing.T) {
 	s.creds = Credentials{Account: "login@example.com"}
 	s.rememberPlayerProperty(7, "account", "OtherPlayer")
 	s.rememberPlayerProperty(7, "community", "OtherCommunity")
-	s.captureCanonicalServerAccount("Graal5766947")
+	s.rightsMu.Lock()
+	s.selfRightsAccount = "Graal5766947"
+	s.rightsMu.Unlock()
 
 	if got := s.Status().CommunityName; got != "" {
 		t.Fatalf("unrelated player's community resolved as %q", got)

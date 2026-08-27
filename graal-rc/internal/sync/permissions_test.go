@@ -11,7 +11,7 @@ import (
 
 type permissionBackendStub struct {
 	permissionRefreshes int
-	weaponRefreshes     int
+	permissionEnsures   int
 	fetches             int
 	ensureCalls         int
 	ensureErr           error
@@ -35,6 +35,11 @@ func (b *permissionBackendStub) RefreshSelfFolderRights() error {
 	return nil
 }
 
+func (b *permissionBackendStub) EnsureSelfFolderRights() error {
+	b.permissionEnsures++
+	return nil
+}
+
 func (b *permissionBackendStub) CanReadScript(string, string) bool  { return true }
 func (b *permissionBackendStub) CanWriteScript(string, string) bool { return true }
 
@@ -49,11 +54,6 @@ func (b *permissionBackendStub) SaveNPC(int, string) error       { return nil }
 func (b *permissionBackendStub) AddWeapon(string) error { return nil }
 func (b *permissionBackendStub) AddClass(string) error  { return nil }
 func (b *permissionBackendStub) CreateNPC(string, int, string, string, string, string, string) error {
-	return nil
-}
-
-func (b *permissionBackendStub) RefreshWeapons() error {
-	b.weaponRefreshes++
 	return nil
 }
 
@@ -73,8 +73,11 @@ func TestBootstrapRetryReusesLoadedPermissions(t *testing.T) {
 	if err := engine.bootstrap(context.Background(), engine.config().OutputDir); err == nil {
 		t.Fatal("retry bootstrap should still report the list error")
 	}
-	if backend.permissionRefreshes != 1 {
-		t.Fatalf("permission refreshes = %d, want 1 across an internal retry", backend.permissionRefreshes)
+	if backend.permissionEnsures != 1 {
+		t.Fatalf("permission ensures = %d, want 1 across an internal retry", backend.permissionEnsures)
+	}
+	if backend.permissionRefreshes != 0 {
+		t.Fatalf("permission refreshes = %d, want 0 during bootstrap", backend.permissionRefreshes)
 	}
 }
 
@@ -107,8 +110,8 @@ func TestBootstrapReusesSessionPermissions(t *testing.T) {
 	if backend.permissionRefreshes != 0 {
 		t.Fatalf("permission refreshes = %d, want 0 when the session snapshot is reused", backend.permissionRefreshes)
 	}
-	if backend.weaponRefreshes != 1 {
-		t.Fatalf("weapon list refreshes = %d, want 1 during login bootstrap", backend.weaponRefreshes)
+	if backend.permissionEnsures != 0 {
+		t.Fatalf("permission ensures = %d, want 0 when the session snapshot is reused", backend.permissionEnsures)
 	}
 }
 
@@ -142,11 +145,11 @@ func TestManualResyncRefreshesSelfPermissions(t *testing.T) {
 	if backend.permissionRefreshes != 2 {
 		t.Fatalf("permission refreshes = %d, want 2", backend.permissionRefreshes)
 	}
+	if backend.permissionEnsures != 0 {
+		t.Fatalf("permission ensures = %d, want 0 for explicit re-syncs", backend.permissionEnsures)
+	}
 	if backend.fetches != 2 {
 		t.Fatalf("script fetches = %d, want 2", backend.fetches)
-	}
-	if backend.weaponRefreshes != 0 {
-		t.Fatalf("weapon list refreshes = %d, want 0 after login", backend.weaponRefreshes)
 	}
 	status := engine.Status()
 	if !status.PermissionsReady || status.PermissionsError != "" {
@@ -172,8 +175,5 @@ func TestListChangedDoesNotStartResync(t *testing.T) {
 	}
 	if backend.fetches != 0 {
 		t.Fatalf("script fetches = %d, want 0 for a live list callback", backend.fetches)
-	}
-	if backend.weaponRefreshes != 0 {
-		t.Fatalf("weapon list refreshes = %d, want 0 for a live list callback", backend.weaponRefreshes)
 	}
 }

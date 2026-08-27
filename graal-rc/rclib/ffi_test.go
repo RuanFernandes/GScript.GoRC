@@ -179,6 +179,57 @@ func TestCallbackPanicIsQueuedForPump(t *testing.T) {
 	}
 }
 
+func TestDisconnectedExRejectsStaleRegistrationAndHandle(t *testing.T) {
+	nativeHandle := new(byte)
+	otherHandle := new(byte)
+	testHandle := Handle(uintptr(unsafe.Pointer(nativeHandle)))
+	reason := append([]byte("Connection closed"), 0)
+	var calls int
+	var receivedHandle Handle
+	var receivedReason string
+
+	routeMu.Lock()
+	token := nextDisconnectRouteTokenLocked()
+	disconnectRoutes[token] = &disconnectRoute{
+		handle: testHandle,
+		callbacks: &EventCallbacks{
+			DisconnectedEx: func(handle Handle, message string) {
+				calls++
+				receivedHandle = handle
+				receivedReason = message
+			},
+		},
+	}
+	routeMu.Unlock()
+	defer func() {
+		routeMu.Lock()
+		delete(disconnectRoutes, token)
+		routeMu.Unlock()
+		runtime.KeepAlive(nativeHandle)
+		runtime.KeepAlive(otherHandle)
+	}()
+
+	disconnectedExEntry(unsafe.Pointer(nativeHandle), unsafe.Pointer(&reason[0]), token)
+	if calls != 1 || receivedHandle != testHandle || receivedReason != "Connection closed" {
+		t.Fatalf("extended disconnect callback = calls=%d handle=%#x reason=%q", calls, uintptr(receivedHandle), receivedReason)
+	}
+
+	disconnectedExEntry(unsafe.Pointer(otherHandle), unsafe.Pointer(&reason[0]), token)
+	if calls != 1 {
+		t.Fatalf("stale native handle invoked callback: calls=%d", calls)
+	}
+
+	// Removing the registration models a server-session replacement on the
+	// reused native handle. A callback queued by the old session must be ignored.
+	routeMu.Lock()
+	delete(disconnectRoutes, token)
+	routeMu.Unlock()
+	disconnectedExEntry(unsafe.Pointer(nativeHandle), unsafe.Pointer(&reason[0]), token)
+	if calls != 1 {
+		t.Fatalf("stale registration invoked callback: calls=%d", calls)
+	}
+}
+
 func TestPlayerIdentityCallbacksCopyNativeStrings(t *testing.T) {
 	const testHandle = Handle(0xCA12)
 	var joined struct {

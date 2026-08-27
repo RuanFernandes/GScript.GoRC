@@ -62,6 +62,12 @@ interface EditorInstance {
 
 type SaveAction = "save" | "saveAndClose"
 
+interface SyncLocalUploaded {
+  kind: string
+  key: string
+  content: string
+}
+
 function parseEditorParams(): {kind: EditorKind; key: string} | null {
   const hash = typeof window !== "undefined" ? window.location.hash : ""
   const q = hash.indexOf("?")
@@ -96,6 +102,8 @@ export function ScriptEditorWindowScreen() {
   const pendingLspUpdateRef = useRef<Promise<void>>(Promise.resolve())
   const lspReadyRef = useRef<Promise<void>>(Promise.resolve())
   const pendingSaveActionRef = useRef<SaveAction | null>(null)
+  const pendingExternalContentRef = useRef<string | null>(null)
+  const latestSyncedContentRef = useRef<string | null>(null)
   // contentRef mirrors `content` so the Ctrl+S handler (registered once at mount
   // with a stale closure) always saves the LATEST text — without this, the mount-
   // time doSave closure captures an empty/stale content and saves nothing.
@@ -154,7 +162,7 @@ export function ScriptEditorWindowScreen() {
       .getLoadedScript(kind, key)
       .then((reply) => {
         if (cancelled) return
-        const text = reply?.script ?? ""
+        const text = latestSyncedContentRef.current ?? reply?.script ?? ""
         setScriptName(reply?.name ?? "")
         setContent(text)
         contentRef.current = text
@@ -169,6 +177,39 @@ export function ScriptEditorWindowScreen() {
     return () => {
       cancelled = true
     }
+  }, [kind, key])
+
+  // A local-sync upload is authoritative for this script. Keep an already-open
+  // Monaco model in step with the exact bytes that were sent to the server,
+  // including when the event arrives while the initial payload is loading.
+  useEffect(() => {
+    const off = Events.On("rc:syncLocalUploaded", (e: {data: string}) => {
+      try {
+        const update = JSON.parse(e.data) as Partial<SyncLocalUploaded>
+        if (update.kind !== kind || update.key !== key || typeof update.content !== "string") return
+
+        const next = update.content
+        latestSyncedContentRef.current = next
+        const editor = editorRef.current
+        if (editor && editor.getValue() !== next) {
+          pendingExternalContentRef.current = next
+          try {
+            editor.setValue(next)
+          } catch {
+            pendingExternalContentRef.current = null
+          }
+        } else {
+          pendingExternalContentRef.current = null
+        }
+        contentRef.current = next
+        setContent(next)
+        setOriginal(next)
+        setDirty(false)
+      } catch {
+        // Ignore malformed broadcasts; the local file and server remain intact.
+      }
+    })
+    return () => off()
   }, [kind, key])
 
   // Sync conflicts are broadcast to every window. Only the editor matching
@@ -661,9 +702,11 @@ export function ScriptEditorWindowScreen() {
             onMount={handleMount}
             onChange={(value) => {
               const v = value ?? ""
+              const isExternalSyncUpdate = pendingExternalContentRef.current === v
+              if (isExternalSyncUpdate) pendingExternalContentRef.current = null
               setContent(v)
               contentRef.current = v
-              setDirty(v !== original)
+              setDirty(isExternalSyncUpdate ? false : v !== original)
               const lspClient = lspClientRef.current
               if (lspClient) {
                 pendingLspUpdateRef.current = lspClient

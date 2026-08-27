@@ -64,6 +64,15 @@ type ScriptPair struct {
 	Server string `json:"server"`
 }
 
+// LocalScriptUploaded is emitted after the watcher successfully uploads the
+// current local file. Editor windows use it to replace their in-memory Monaco
+// model with the exact content that the sync engine sent to the server.
+type LocalScriptUploaded struct {
+	Kind    string `json:"kind"`
+	Key     string `json:"key"`
+	Content string `json:"content"`
+}
+
 const (
 	watcherDebounce   = 500 * time.Millisecond
 	recentDownloadTTL = 3 * time.Second
@@ -436,18 +445,18 @@ func (e *Engine) bootstrap(ctx context.Context, dir string) error {
 		return err
 	}
 	if !e.permissionsReadySnapshot() {
-		if err := e.refreshPermissions(); err != nil {
+		if err := e.refreshPermissions(false); err != nil {
 			return err
 		}
 	} else {
 		log.Printf("[sync bootstrap] reusing already-loaded script permissions")
 	}
 	e.setProgress("Downloading", 0, 0, "")
-	// The NC socket can report connected before its cached script lists have
-	// arrived. Refreshing the weapon list here gives the first bootstrap a
-	// chance to populate those caches instead of treating 0/0 as success.
-	log.Printf("[sync bootstrap] fetching readable scripts after openrights")
-	replies, err := e.fetchScripts(ctx, true, func(done, total int) {
+	// The NC authentication path already populated the native script lists, just
+	// like the reference C++ TSyncManager::requestPull path. FetchScripts waits
+	// for that initial cache response; it must not request the weapon list again.
+	log.Printf("[sync bootstrap] fetching readable scripts from cached NC lists")
+	replies, err := e.fetchScripts(ctx, func(done, total int) {
 		e.setProgress("Downloading", done, total, "")
 	})
 	log.Printf("[sync bootstrap] readable script fetch finished replies=%d err=%v", len(replies), err)
@@ -540,10 +549,19 @@ func (e *Engine) markPermissionsStale() {
 	}
 }
 
-func (e *Engine) refreshPermissions() error {
+func (e *Engine) refreshPermissions(force bool) error {
 	started := time.Now()
-	log.Printf("[sync rights] refresh requested")
-	err := e.backend.RefreshSelfFolderRights()
+	action := "ensure"
+	if force {
+		action = "refresh"
+	}
+	log.Printf("[sync rights] %s requested", action)
+	var err error
+	if force {
+		err = e.backend.RefreshSelfFolderRights()
+	} else {
+		err = e.backend.EnsureSelfFolderRights()
+	}
 	e.mu.Lock()
 	if err != nil {
 		e.permissionsReady = false
@@ -555,10 +573,10 @@ func (e *Engine) refreshPermissions() error {
 	e.mu.Unlock()
 	e.emitStatus()
 	if err != nil {
-		log.Printf("[sync rights] refresh failed after %s: %v", time.Since(started), err)
-		return fmt.Errorf("refresh script permissions: %w", err)
+		log.Printf("[sync rights] %s failed after %s: %v", action, time.Since(started), err)
+		return fmt.Errorf("%s script permissions: %w", action, err)
 	}
-	log.Printf("[sync rights] refresh succeeded after %s; continuing with script fetch", time.Since(started))
+	log.Printf("[sync rights] %s succeeded after %s; continuing with script fetch", action, time.Since(started))
 	return nil
 }
 
@@ -726,6 +744,7 @@ func (e *Engine) pushLocalLocked(ctx context.Context, path string) {
 	e.hashes[path] = hash
 	e.mu.Unlock()
 	e.markSynced()
+	e.emitLocalScriptUploaded(ref, content)
 	e.emitStatus()
 }
 
@@ -783,7 +802,7 @@ func (e *Engine) reconcileLocked(ctx context.Context, refreshRights bool) {
 	// allow a stale server snapshot to overwrite it.
 	localBaseline := snapshotLocalScripts(cfg.OutputDir)
 	if refreshRights {
-		if err := e.refreshPermissions(); err != nil {
+		if err := e.refreshPermissions(true); err != nil {
 			log.Printf("sync manual permissions: %v", err)
 			return
 		}
@@ -800,7 +819,7 @@ func (e *Engine) reconcileLocked(ctx context.Context, refreshRights bool) {
 	// PLI_NC_WEAPONLISTGET during a reconcile: some NC servers disconnect when
 	// the full weapon list is requested again after the initial sync.
 	log.Printf("[sync reconcile] fetching readable scripts from cached NC lists")
-	replies, err := e.fetchScripts(ctx, false, func(done, total int) {
+	replies, err := e.fetchScripts(ctx, func(done, total int) {
 		e.setProgress("Downloading", done, total, "")
 	})
 	log.Printf("[sync reconcile] readable script fetch finished replies=%d err=%v", len(replies), err)
@@ -885,47 +904,11 @@ func traceCompareItem(index, total int) bool {
 	return index%50 == 0 || index >= total-5
 }
 
-const (
-	scriptListWarmupAttempts = 5
-	scriptListWarmupDelay    = 250 * time.Millisecond
-)
-
-// fetchScripts gives the NC server a short warm-up window after authentication
-// when refreshWeaponList is requested. Reconciles reuse the lists already
-// maintained by grclib instead of sending another full weapon-list request.
-func (e *Engine) fetchScripts(ctx context.Context, refreshWeaponList bool, progress func(done, total int)) ([]rclib.ScriptReply, error) {
-	var replies []rclib.ScriptReply
-	var err error
-	attempts := 1
-	if refreshWeaponList {
-		attempts = scriptListWarmupAttempts
-	}
-	for attempt := 1; attempt <= attempts; attempt++ {
-		if attempt > 1 {
-			timer := time.NewTimer(scriptListWarmupDelay)
-			select {
-			case <-ctx.Done():
-				if !timer.Stop() {
-					<-timer.C
-				}
-				return replies, ctx.Err()
-			case <-timer.C:
-			}
-		}
-		if refreshWeaponList {
-			if refreshErr := e.backend.RefreshWeapons(); refreshErr != nil {
-				// Never continue with a partial cache: a classes/NPC-only snapshot
-				// would make reconciliation remove valid local weapons.
-				return replies, fmt.Errorf("refresh weapons attempt=%d/%d: %w", attempt, attempts, refreshErr)
-			}
-		}
-		replies, err = e.backend.FetchAllScripts(ctx, e.backend.CanReadScript, progress)
-		if err != nil || len(replies) > 0 || attempt == attempts {
-			return replies, err
-		}
-		log.Printf("[sync fetch] script lists returned no readable replies; warming up attempt=%d/%d", attempt, attempts)
-	}
-	return replies, err
+// fetchScripts reads the NC caches already populated by authentication and by
+// live list-change callbacks. The reference C++ pull path follows the same
+// rule; a full weapon-list request belongs to the explicit list UI, not sync.
+func (e *Engine) fetchScripts(ctx context.Context, progress func(done, total int)) ([]rclib.ScriptReply, error) {
+	return e.backend.FetchAllScripts(ctx, e.backend.CanReadScript, progress)
 }
 
 func (e *Engine) setProgress(phase string, completed, total int, current string) {
@@ -1186,6 +1169,13 @@ func (e *Engine) isRecentDownload(path string) bool {
 	return false
 }
 func (e *Engine) markSynced() { e.mu.Lock(); e.lastSyncAt = e.now().Unix(); e.mu.Unlock() }
+
+func (e *Engine) emitLocalScriptUploaded(ref scriptRef, content string) {
+	if e.emit == nil {
+		return
+	}
+	e.emit("rc:syncLocalUploaded", LocalScriptUploaded{Kind: ref.kind, Key: ref.key, Content: content})
+}
 
 func (e *Engine) markReconcileCompleted() {
 	e.mu.Lock()

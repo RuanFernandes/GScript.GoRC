@@ -17,7 +17,7 @@ import (
 // ScriptBackend is the subset of *connection.Service the engine needs.
 type ScriptBackend interface {
 	// EnsureNCConnected waits for the NC socket to be connected and
-	// authenticated, retrying a transient disconnect within a bounded timeout.
+	// authenticated without retrying a failed or dropped NC session.
 	// Reconcile must call this before reading or writing the script snapshot.
 	EnsureNCConnected(context.Context) error
 
@@ -33,9 +33,12 @@ type ScriptBackend interface {
 	GetNPCs() ([]rclib.NPC, error)
 
 	// RefreshSelfFolderRights refreshes the current account's folder rights for
-	// the active server. CanReadScript/CanWriteScript use that cached snapshot
-	// and fail closed until a refresh succeeds.
+	// the active server. It is reserved for explicit refreshes after a known
+	// rights change.
 	RefreshSelfFolderRights() error
+	// EnsureSelfFolderRights reuses the loaded session snapshot and only asks
+	// the server for rights when no snapshot exists yet.
+	EnsureSelfFolderRights() error
 	CanReadScript(scriptType, name string) bool
 	CanWriteScript(scriptType, name string) bool
 
@@ -53,11 +56,6 @@ type ScriptBackend interface {
 	AddWeapon(name string) error
 	AddClass(name string) error
 	CreateNPC(name string, id int, npcType, scripter, level, x, y string) error
-
-	// RefreshWeapons re-requests the weapon list (packet 115). Classes/NPCs have
-	// no listget — their caches are server-auto-pushed at NC auth + live
-	// add/delete pushes, so the engine just reads GetClasses/GetNPCs.
-	RefreshWeapons() error
 
 	// FetchAllScripts pulls every script body (loops the lists + OpenScript).
 	FetchAllScripts(ctx context.Context, allowed func(scriptType, name string) bool, progress func(done, total int)) ([]rclib.ScriptReply, error)

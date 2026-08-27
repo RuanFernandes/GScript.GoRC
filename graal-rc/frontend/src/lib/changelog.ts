@@ -11,11 +11,21 @@ export interface ChangelogEntry {
 // the visible history from nullborne.com when the release service is reachable.
 const CHANGELOG_PT_BR: ChangelogEntry[] = [
   {
+    version: "4.1.3",
+    date: "27/08/2026",
+    title: "Correções de bugs",
+    summary: "Corrige um problema que podia desconectar o RC durante o uso.",
+    current: true,
+    changes: [
+      "Corrigido um problema que podia interromper a conexão do RC e deixá-lo desconectado durante o uso.",
+    ],
+  },
+  {
     version: "4.1.1",
     date: "22/08/2026",
     title: "Correção do Sync e dos builds Windows",
     summary: "Atualiza a GRCLib, corrige as rotas de atualização por arquitetura e remove o console auxiliar dos builds Windows.",
-    current: true,
+    current: false,
     changes: [
       "A GRCLib v1.0.46 corrige o parser das respostas de classes, eliminando os timeouts que travavam o Sync inicial.",
       "O atualizador valida a arquitetura antes de aceitar a rota de download, evitando instalar um artefato incompatível.",
@@ -320,8 +330,15 @@ const CHANGELOG_PT_BR: ChangelogEntry[] = [
 
 const CHANGELOG_EN: ChangelogEntry[] = [
   {
+    version: "4.1.3", date: "2026-08-27", title: "Bug fixes",
+    summary: "Fixes an issue that could disconnect RC during use.", current: true,
+    changes: [
+      "Fixed an issue that could interrupt the RC connection and leave it disconnected during use.",
+    ],
+  },
+  {
     version: "4.1.1", date: "2026-08-22", title: "Sync and Windows build fix",
-    summary: "Updates GRCLib, validates update routes by architecture and removes the auxiliary console from Windows builds.", current: true,
+    summary: "Updates GRCLib, validates update routes by architecture and removes the auxiliary console from Windows builds.", current: false,
     changes: [
       "GRCLib v1.0.46 fixes the class-response parser, eliminating the timeouts that stalled the initial Sync.",
       "The updater validates the architecture before accepting a download route, preventing incompatible artifacts from being installed.",
@@ -557,8 +574,15 @@ const CHANGELOG_EN: ChangelogEntry[] = [
 
 const CHANGELOG_ES: ChangelogEntry[] = [
   {
+    version: "4.1.3", date: "2026-08-27", title: "Correcciones de errores",
+    summary: "Corrige un problema que podía desconectar el RC durante el uso.", current: true,
+    changes: [
+      "Se corrigió un problema que podía interrumpir la conexión del RC y dejarlo desconectado durante el uso.",
+    ],
+  },
+  {
     version: "4.1.1", date: "2026-08-22", title: "Corrección de Sync y builds de Windows",
-    summary: "Actualiza GRCLib, valida las rutas de actualización por arquitectura y elimina la consola auxiliar de los builds de Windows.", current: true,
+    summary: "Actualiza GRCLib, valida las rutas de actualización por arquitectura y elimina la consola auxiliar de los builds de Windows.", current: false,
     changes: [
       "GRCLib v1.0.46 corrige el parser de respuestas de clases y elimina los timeouts que bloqueaban el Sync inicial.",
       "El actualizador valida la arquitectura antes de aceptar una ruta de descarga, evitando instalar artefactos incompatibles.",

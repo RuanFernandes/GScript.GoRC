@@ -209,21 +209,22 @@ var (
 	once    sync.Once
 	loadErr error
 
-	procConnect         *proc
-	procGetServers      *proc
-	procConnectToServer *proc
-	procDisconnect      *proc
-	procLastError       *proc
-	procIsConnected     *proc
-	procIsAuthenticated *proc
-	procSetNewProtocol  *proc
-	procIsNewProtocol   *proc
-	procFree            *proc
-	procProcessEvents   *proc
-	procOnConnected     *proc
-	procOnDisconnected  *proc
-	procOnPlayerJoined  *proc
-	procOnPlayerLeft    *proc
+	procConnect          *proc
+	procGetServers       *proc
+	procConnectToServer  *proc
+	procDisconnect       *proc
+	procLastError        *proc
+	procIsConnected      *proc
+	procIsAuthenticated  *proc
+	procSetNewProtocol   *proc
+	procIsNewProtocol    *proc
+	procFree             *proc
+	procProcessEvents    *proc
+	procOnConnected      *proc
+	procOnDisconnected   *proc
+	procOnDisconnectedEx *proc
+	procOnPlayerJoined   *proc
+	procOnPlayerLeft     *proc
 
 	procConnectToNcServer         *proc
 	procDisconnectNc              *proc
@@ -482,6 +483,10 @@ func registerAll(resolve func(name string) (*proc, error)) error {
 		}
 		return p
 	}
+	getOptional := func(name string) *proc {
+		p, _ := resolve(name)
+		return p
+	}
 	procConnect = get("rc_connect")
 	procGetServers = get("rc_get_servers")
 	procConnectToServer = get("rc_connect_to_server")
@@ -495,6 +500,10 @@ func registerAll(resolve func(name string) (*proc, error)) error {
 	procProcessEvents = get("rc_process_events")
 	procOnConnected = get("rc_on_connected")
 	procOnDisconnected = get("rc_on_disconnected")
+	// Older native builds only expose rc_on_disconnected. The reference client
+	// uses the extended callback when available because it carries the native
+	// handle that produced the event, allowing stale disconnects to be ignored.
+	procOnDisconnectedEx = getOptional("rc_on_disconnected_ex")
 	procOnPlayerJoined = get("rc_on_player_joined")
 	procOnPlayerLeft = get("rc_on_player_left")
 	procConnectToNcServer = get("rc_connect_to_nc_server")
@@ -618,9 +627,13 @@ const maxString = 16 << 20
 // healthy. Mirrors the try/catch around each event in grclib's
 // rc_process_events (grclib.cpp ~5042).
 func safeRecover(label string, userData uintptr) {
+	safeRecoverHandle(label, Handle(userData))
+}
+
+func safeRecoverHandle(label string, h Handle) {
 	if r := recover(); r != nil {
 		err := fmt.Errorf("callback %s panicked: %v", label, r)
-		recordCallbackFault(Handle(userData), err)
+		recordCallbackFault(h, err)
 		log.Printf("[rclib] %v\n%s", err, debug.Stack())
 	}
 }
@@ -682,6 +695,7 @@ func bptrToString(p *byte) string {
 type EventCallbacks struct {
 	Connected               func()
 	Disconnected            func(reason string)
+	DisconnectedEx          func(handle Handle, reason string)
 	PlayerJoined            func(account string, playerID int)
 	PlayerLeft              func(account string, playerID int)
 	PlayerPropChanged       func(playerID int, prop, value string)
@@ -719,6 +733,7 @@ type EventCallbacks struct {
 var (
 	cbConnected               = newCallback(connectedEntry)
 	cbDisconnected            = newCallback(disconnectedEntry)
+	cbDisconnectedEx          = newCallback(disconnectedExEntry)
 	cbPlayerJoined            = newCallback(playerJoinedEntry)
 	cbPlayerLeft              = newCallback(playerLeftEntry)
 	cbPlayerPropChanged       = newCallback(playerPropChangedEntry)
@@ -753,7 +768,21 @@ var (
 
 	routeMu sync.Mutex
 	routes  = map[Handle]*EventCallbacks{}
+
+	// Disconnect callbacks use a monotonically increasing token instead of the
+	// reusable native handle as user_data. Native grclib queues the callback and
+	// captures user_data at queue time; keeping the token bound to that callback
+	// prevents an old disconnect from being routed to a newer session that reused
+	// the same handle.
+	disconnectRoutes              = map[uintptr]*disconnectRoute{}
+	disconnectRouteTokens         = map[Handle]uintptr{}
+	nextDisconnectRouteID uintptr = 1
 )
+
+type disconnectRoute struct {
+	handle    Handle
+	callbacks *EventCallbacks
+}
 
 // connectedEntry is the C-callable shim for RC_OnConnected(user_data).
 func connectedEntry(userData uintptr) uintptr {
@@ -775,6 +804,36 @@ func disconnectedEntry(reason unsafe.Pointer, userData uintptr) uintptr {
 			c.Disconnected(msg)
 		}
 	})
+	return 0
+}
+
+// disconnectedExEntry is the C-callable shim for
+// RC_OnDisconnectedEx(handle, reason, user_data). The route token is unique to
+// one callback registration, while nativeHandle identifies the native session
+// that actually emitted the event.
+func disconnectedExEntry(nativeHandle unsafe.Pointer, reason unsafe.Pointer, userData uintptr) uintptr {
+	route := disconnectRouteFor(userData)
+	callbackHandle := Handle(uintptr(nativeHandle))
+	faultHandle := callbackHandle
+	if route != nil {
+		faultHandle = route.handle
+	}
+	defer safeRecoverHandle("on_disconnected_ex", faultHandle)
+
+	if route == nil {
+		return 0
+	}
+	if callbackHandle == 0 || callbackHandle != route.handle {
+		log.Printf("[rclib] ignoring stale disconnect callback handle=%#x route=%#x", uintptr(callbackHandle), uintptr(route.handle))
+		return 0
+	}
+
+	msg := bptrToString((*byte)(reason))
+	if route.callbacks.DisconnectedEx != nil {
+		route.callbacks.DisconnectedEx(callbackHandle, msg)
+	} else if route.callbacks.Disconnected != nil {
+		route.callbacks.Disconnected(msg)
+	}
 	return 0
 }
 
@@ -1153,10 +1212,34 @@ func routeFor(h Handle) *EventCallbacks {
 	return routes[h]
 }
 
+func disconnectRouteFor(token uintptr) *disconnectRoute {
+	routeMu.Lock()
+	defer routeMu.Unlock()
+	return disconnectRoutes[token]
+}
+
+// nextDisconnectRouteTokenLocked must be called with routeMu held. Tokens are
+// never intentionally reused during the process lifetime, so a queued native
+// callback can never become associated with a later registration.
+func nextDisconnectRouteTokenLocked() uintptr {
+	for {
+		token := nextDisconnectRouteID
+		nextDisconnectRouteID++
+		if token == 0 {
+			continue
+		}
+		if _, exists := disconnectRoutes[token]; !exists {
+			return token
+		}
+	}
+}
+
 // RegisterCallbacks subscribes the given callbacks to the handle's connection
-// events. The handle is passed back as the C user_data so events route to the
-// right callbacks (supports multiple concurrent handles). A failure removes the
-// Go route again; callers must not start an event pump after an error.
+// events. Most callbacks use the handle as C user_data. The extended
+// disconnect callback gets a unique registration token so a queued callback
+// from a previous session cannot be routed to a new callback set on the same
+// native handle. A failure removes the Go routes again; callers must not start
+// an event pump after an error.
 func RegisterCallbacks(h Handle, cbs *EventCallbacks) (err error) {
 	if cbs == nil {
 		return errors.New("event callbacks cannot be nil")
@@ -1164,10 +1247,17 @@ func RegisterCallbacks(h Handle, cbs *EventCallbacks) (err error) {
 	if err := load(); err != nil {
 		return err
 	}
+	var disconnectToken uintptr
 	defer func() {
 		if r := recover(); r != nil {
 			routeMu.Lock()
-			delete(routes, h)
+			if routes[h] == cbs {
+				delete(routes, h)
+			}
+			if disconnectRouteTokens[h] == disconnectToken {
+				delete(disconnectRouteTokens, h)
+				delete(disconnectRoutes, disconnectToken)
+			}
 			routeMu.Unlock()
 			err = fmt.Errorf("register callbacks panicked: %v", r)
 			log.Printf("[rclib] %v\n%s", err, debug.Stack())
@@ -1175,9 +1265,26 @@ func RegisterCallbacks(h Handle, cbs *EventCallbacks) (err error) {
 	}()
 	routeMu.Lock()
 	routes[h] = cbs
+	if previousToken := disconnectRouteTokens[h]; previousToken != 0 {
+		delete(disconnectRoutes, previousToken)
+		delete(disconnectRouteTokens, h)
+	}
+	if procOnDisconnectedEx != nil {
+		disconnectToken = nextDisconnectRouteTokenLocked()
+		disconnectRoutes[disconnectToken] = &disconnectRoute{handle: h, callbacks: cbs}
+		disconnectRouteTokens[h] = disconnectToken
+	}
 	routeMu.Unlock()
 	procOnConnected.Call(uintptr(h), cbConnected, uintptr(h))
-	procOnDisconnected.Call(uintptr(h), cbDisconnected, uintptr(h))
+	if procOnDisconnectedEx != nil {
+		// Keep the legacy slot clear. The native implementation gives the
+		// extended callback precedence, but clearing both makes the behavior
+		// deterministic across library versions.
+		procOnDisconnected.Call(uintptr(h), 0, 0)
+		procOnDisconnectedEx.Call(uintptr(h), cbDisconnectedEx, disconnectToken)
+	} else {
+		procOnDisconnected.Call(uintptr(h), cbDisconnected, uintptr(h))
+	}
 	procOnPlayerJoined.Call(uintptr(h), cbPlayerJoined, uintptr(h))
 	procOnPlayerLeft.Call(uintptr(h), cbPlayerLeft, uintptr(h))
 	procOnPlayerPropChanged.Call(uintptr(h), cbPlayerPropChanged, uintptr(h))
@@ -1217,6 +1324,10 @@ func UnregisterCallbacks(h Handle) (err error) {
 	// library is available.
 	routeMu.Lock()
 	delete(routes, h)
+	if token := disconnectRouteTokens[h]; token != 0 {
+		delete(disconnectRouteTokens, h)
+		delete(disconnectRoutes, token)
+	}
 	routeMu.Unlock()
 	_ = takeCallbackFault(h)
 	if err := load(); err != nil {
@@ -1230,6 +1341,9 @@ func UnregisterCallbacks(h Handle) (err error) {
 	}()
 	procOnConnected.Call(uintptr(h), 0, 0)
 	procOnDisconnected.Call(uintptr(h), 0, 0)
+	if procOnDisconnectedEx != nil {
+		procOnDisconnectedEx.Call(uintptr(h), 0, 0)
+	}
 	procOnPlayerJoined.Call(uintptr(h), 0, 0)
 	procOnPlayerLeft.Call(uintptr(h), 0, 0)
 	procOnPlayerPropChanged.Call(uintptr(h), 0, 0)
@@ -2293,9 +2407,8 @@ func UploadServerFlags(h Handle, content string) error {
 	return callHandleStr(h, procUploadServerFlags, content)
 }
 
-// SendNCPacket sends a raw NC packet (used to re-request the weapon list with
-// packet id 115, PLI_NC_WEAPONLISTGET, since grclib only sends it once at auth,
-// and as a silent keepalive to keep the NC socket alive).
+// SendNCPacket sends a raw NC packet. It is a low-level escape hatch for
+// protocol-specific callers and does not manage connection state.
 func SendNCPacket(h Handle, packetID int) error {
 	if err := load(); err != nil {
 		return err
