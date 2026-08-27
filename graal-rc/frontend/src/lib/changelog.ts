@@ -11,11 +11,22 @@ export interface ChangelogEntry {
 // the visible history from nullborne.com when the release service is reachable.
 const CHANGELOG_PT_BR: ChangelogEntry[] = [
   {
+    version: "4.2.1",
+    date: "27/08/2026",
+    title: "Correção visual do RC Chat",
+    summary: "Corrige a duplicação da aba RC Chat e recupera o preenchimento completo do painel de conversa.",
+    current: true,
+    changes: [
+      "Corrigida a duplicação da aba RC Chat após a atualização das tabs de plugins.",
+      "O painel do chat voltou a ocupar toda a altura disponível, sem deixar uma área vazia desnecessária abaixo.",
+    ],
+  },
+  {
     version: "4.2.0",
     date: "27/08/2026",
     title: "Tabs de plugins e estabilidade de conexão",
     summary: "Plugins agora podem criar telas dentro do RC, com controles interativos e as correções mais recentes de reconexão do NC.",
-    current: true,
+    current: false,
     changes: [
       "Plugins podem registrar, atualizar, abrir e fechar tabs no workspace principal do RC sem inserir HTML na interface do host.",
       "As views agora incluem cards, badges, textareas, checkboxes, barras de progresso e estados vazios, com ações tipadas devolvidas ao sandbox do plugin.",
@@ -344,8 +355,16 @@ const CHANGELOG_PT_BR: ChangelogEntry[] = [
 
 const CHANGELOG_EN: ChangelogEntry[] = [
   {
+    version: "4.2.1", date: "2026-08-27", title: "RC Chat visual fix",
+    summary: "Fixes the duplicated RC Chat tab and restores the chat panel's full available height.", current: true,
+    changes: [
+      "Fixed the duplicated RC Chat tab introduced after the plugin tabs update.",
+      "Restored the chat panel to the full available height instead of leaving an unnecessary blank area below it.",
+    ],
+  },
+  {
     version: "4.2.0", date: "2026-08-27", title: "Plugin workspace tabs and connection stability",
-    summary: "Plugins can now create screens inside RC with interactive controls, alongside the latest NC reconnect and script-opening fixes.", current: true,
+    summary: "Plugins can now create screens inside RC with interactive controls, alongside the latest NC reconnect and script-opening fixes.", current: false,
     changes: [
       "Plugins can register, update, open, and close tabs in the main RC workspace without injecting HTML into the host interface.",
       "Views now include cards, badges, textareas, checkboxes, progress indicators, and empty states, with typed control actions delivered back to the plugin sandbox.",
@@ -599,8 +618,16 @@ const CHANGELOG_EN: ChangelogEntry[] = [
 
 const CHANGELOG_ES: ChangelogEntry[] = [
   {
+    version: "4.2.1", date: "2026-08-27", title: "Corrección visual de RC Chat",
+    summary: "Corrige la pestaña RC Chat duplicada y recupera toda la altura disponible del panel de chat.", current: true,
+    changes: [
+      "Se corrigió la pestaña RC Chat duplicada introducida después de la actualización de las pestañas de plugins.",
+      "El panel de chat volvió a ocupar toda la altura disponible, sin dejar un espacio vacío innecesario debajo.",
+    ],
+  },
+  {
     version: "4.2.0", date: "2026-08-27", title: "Pestañas de plugins y estabilidad de conexión",
-    summary: "Los plugins ahora pueden crear pantallas dentro de RC con controles interactivos, junto con las últimas correcciones de reconexión de NC y apertura de scripts.", current: true,
+    summary: "Los plugins ahora pueden crear pantallas dentro de RC con controles interactivos, junto con las últimas correcciones de reconexión de NC y apertura de scripts.", current: false,
     changes: [
       "Los plugins pueden registrar, actualizar, abrir y cerrar pestañas en el espacio principal de RC sin insertar HTML en la interfaz del host.",
       "Las vistas ahora incluyen tarjetas, badges, textareas, checkboxes, indicadores de progreso y estados vacíos, con acciones tipadas devueltas al sandbox del plugin.",

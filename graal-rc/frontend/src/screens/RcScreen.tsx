@@ -616,6 +616,16 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
     if (activeWorkspace !== "chat" && !pluginTabs.some(tab => pluginTabKey(tab) === activeWorkspace)) setActiveWorkspace("chat")
   }, [activeWorkspace, pluginTabs])
 
+  const activeTabValue = activeWorkspace === "chat" ? activeChannel : activeWorkspace
+  const changeWorkspace = (value: string) => {
+    if (pluginTabs.some(tab => pluginTabKey(tab) === value)) {
+      setActiveWorkspace(value)
+      return
+    }
+    setActiveWorkspace("chat")
+    setActiveChannel(value)
+  }
+
   const openScriptManager = () => {
     void rcService.openScriptManager().catch(() => {
       toast.error(t("scripts.initialSyncBusy"))
@@ -848,12 +858,28 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
         />
         <div className="flex min-h-0 flex-1 flex-col p-3">
           <Tabs
-            value={activeWorkspace}
-            onValueChange={setActiveWorkspace}
+            value={activeTabValue}
+            onValueChange={changeWorkspace}
             className="flex min-h-0 flex-1 flex-col"
           >
             <TabsList>
-              <TabsTrigger value="chat">RC Chat</TabsTrigger>
+              {tabs.map((t, i) => (
+                <TabsTrigger
+                  key={t.channel || "server"}
+                  value={t.channel}
+                  draggable
+                  onDragStart={() => (dragIndex.current = i)}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={() => {
+                    if (dragIndex.current >= 0) reorderTabs(dragIndex.current, i)
+                    dragIndex.current = -1
+                  }}
+                  onDragEnd={() => (dragIndex.current = -1)}
+                  className="cursor-grab active:cursor-grabbing"
+                >
+                  {t.label}
+                </TabsTrigger>
+              ))}
               {pluginTabs.map(tab => (
                 <TabsTrigger key={pluginTabKey(tab)} value={pluginTabKey(tab)} title={`${tab.pluginId}: ${tab.title}`}>
                   {pluginTabIcon(tab.icon)}
@@ -861,48 +887,19 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
                 </TabsTrigger>
               ))}
             </TabsList>
-            <TabsContent value="chat" className="mt-2 min-h-0 flex-1">
-              <Tabs
-                value={activeChannel}
-                onValueChange={setActiveChannel}
-                className="flex min-h-0 flex-1 flex-col"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <TabsList>
-                    {tabs.map((t, i) => (
-                      <TabsTrigger
-                        key={t.channel || "server"}
-                        value={t.channel}
-                        draggable
-                        onDragStart={() => (dragIndex.current = i)}
-                        onDragOver={(e) => e.preventDefault()}
-                        onDrop={() => {
-                          if (dragIndex.current >= 0) reorderTabs(dragIndex.current, i)
-                          dragIndex.current = -1
-                        }}
-                        onDragEnd={() => (dragIndex.current = -1)}
-                        className="cursor-grab active:cursor-grabbing"
-                      >
-                        {t.label}
-                      </TabsTrigger>
-                    ))}
-                  </TabsList>
-                </div>
-                {tabs.map((t) => (
-                  <TabsContent key={t.channel || "server"} value={t.channel} className="mt-2 min-h-0 flex-1">
-                    <ChatPane
-                      messages={t.messages}
-                      settings={settings}
-                      onSend={(text) => send(t.channel, text)}
-                      history={inputHistory}
-                      players={players}
-                      serverName={displayServer || serverName}
-                      commandMacros={commandMacros}
-                    />
-                  </TabsContent>
-                ))}
-              </Tabs>
-            </TabsContent>
+            {tabs.map((t) => (
+              <TabsContent key={t.channel || "server"} value={t.channel} className="mt-2 min-h-0 flex-1">
+                <ChatPane
+                  messages={t.messages}
+                  settings={settings}
+                  onSend={(text) => send(t.channel, text)}
+                  history={inputHistory}
+                  players={players}
+                  serverName={displayServer || serverName}
+                  commandMacros={commandMacros}
+                />
+              </TabsContent>
+            ))}
             {pluginTabs.map(tab => (
               <TabsContent key={pluginTabKey(tab)} value={pluginTabKey(tab)} className="mt-2 min-h-0 flex-1">
                 <PluginTabScreen tab={tab} />
