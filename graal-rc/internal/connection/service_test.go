@@ -139,6 +139,93 @@ func TestNCManualDisconnectBlocksAutomaticAttemptUntilExplicitReconnect(t *testi
 	}
 }
 
+func TestNCScheduledAttemptWaitsForItsDeadline(t *testing.T) {
+	s := NewService()
+	s.mu.Lock()
+	s.ncConnectionAttempted = true
+	s.nextNCConnectAttempt = time.Now().Add(time.Second)
+	s.mu.Unlock()
+
+	if s.claimNCAttempt(false) {
+		t.Fatal("scheduled NC attempt ran before its deadline")
+	}
+
+	s.mu.Lock()
+	s.nextNCConnectAttempt = time.Now().Add(-time.Second)
+	s.mu.Unlock()
+	if !s.claimNCAttempt(false) {
+		t.Fatal("scheduled NC attempt was rejected after its deadline")
+	}
+
+	s.mu.Lock()
+	next := s.nextNCConnectAttempt
+	attempted := s.ncConnectionAttempted
+	s.mu.Unlock()
+	if !next.IsZero() || !attempted {
+		t.Fatalf("scheduled attempt state = next %v attempted %v", next, attempted)
+	}
+}
+
+func TestNCAutomaticReconnectIsLimitedToOneAttempt(t *testing.T) {
+	s := NewService()
+	s.mu.Lock()
+	s.ncConnectionAttempted = true
+	s.ncConnectionWasUp = true
+	s.mu.Unlock()
+
+	if !s.claimNCAutomaticReconnect() {
+		t.Fatal("automatic NC reconnect was not claimed after a disconnect")
+	}
+	if s.claimNCAutomaticReconnect() {
+		t.Fatal("automatic NC reconnect was claimed more than once")
+	}
+
+	// A successful reconnect starts a fresh drop window. This mirrors the pump
+	// observing IsNCConnected again after the scheduled native attempt.
+	s.mu.Lock()
+	s.ncConnectionWasUp = false
+	s.mu.Unlock()
+	s.markNCConnectionObserved()
+	s.mu.Lock()
+	secondAttemptReady := !s.ncAutomaticReconnectAttempted && s.ncConnectionWasUp
+	s.mu.Unlock()
+	if !secondAttemptReady {
+		t.Fatal("successful NC reconnect did not re-arm the next drop window")
+	}
+	if !s.claimNCAutomaticReconnect() {
+		t.Fatal("second NC drop did not receive its own automatic retry")
+	}
+	if s.claimNCAutomaticReconnect() {
+		t.Fatal("second NC drop was allowed more than one retry")
+	}
+
+	s.mu.Lock()
+	s.ncManuallyDisconnected = true
+	s.ncConnectionWasUp = true
+	s.ncAutomaticReconnectAttempted = false
+	s.mu.Unlock()
+	if s.claimNCAutomaticReconnect() {
+		t.Fatal("automatic NC reconnect ignored manual disconnect")
+	}
+}
+
+func TestNPCServerLocationQueryMatchesReferenceEncoding(t *testing.T) {
+	query, err := npcServerLocationQuery(10000)
+	if err != nil {
+		t.Fatalf("npcServerLocationQuery returned error: %v", err)
+	}
+	if got, want := string(query), "n0location"; got != want {
+		t.Fatalf("npcServerLocationQuery(10000) = %q, want %q", got, want)
+	}
+
+	if _, err := npcServerLocationQuery(-1); err == nil {
+		t.Fatal("npcServerLocationQuery accepted a negative player ID")
+	}
+	if _, err := npcServerLocationQuery(0x4000); err == nil {
+		t.Fatal("npcServerLocationQuery accepted an ID outside the 14-bit range")
+	}
+}
+
 func TestEnsureSelfFolderRightsRechecksAfterSerializedRefresh(t *testing.T) {
 	s := NewService()
 	s.rightsRefreshMu.Lock()

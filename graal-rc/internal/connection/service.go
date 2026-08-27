@@ -51,24 +51,27 @@ type Status struct {
 // Service manages the grclib connection handle and the credentials in use.
 // Methods are safe to call from Wails-bound goroutines.
 type Service struct {
-	mu                     sync.Mutex
-	handle                 rclib.Handle
-	creds                  Credentials
-	serverName             string // name of the server selected in ConnectToServer; "" when none
-	serverEpoch            uint64 // increments whenever the active server/session changes
-	lifecycleMu            sync.Mutex
-	lifecycleOp            *connectionOperation
-	pumpMu                 sync.Mutex
-	pumpCancel             context.CancelFunc
-	pumpDone               chan struct{}
-	pumpErr                error
-	ncConnectMu            sync.Mutex // serializes native NC connect/disconnect operations
-	ncConnectionAttempted  bool       // one automatic attempt per main-server session
-	ncManuallyDisconnected bool       // disabled by an explicit DisconnectNC call
-	ncRequestMu            sync.Mutex // serializes brief NC sends and synchronous mutations
-	ncHeartbeatMu          sync.Mutex
-	ncHeartbeatCancel      context.CancelFunc
-	ncHeartbeatDone        chan struct{}
+	mu                            sync.Mutex
+	handle                        rclib.Handle
+	creds                         Credentials
+	serverName                    string // name of the server selected in ConnectToServer; "" when none
+	serverEpoch                   uint64 // increments whenever the active server/session changes
+	lifecycleMu                   sync.Mutex
+	lifecycleOp                   *connectionOperation
+	pumpMu                        sync.Mutex
+	pumpCancel                    context.CancelFunc
+	pumpDone                      chan struct{}
+	pumpErr                       error
+	ncConnectMu                   sync.Mutex // serializes native NC connect/disconnect operations
+	ncConnectionAttempted         bool       // initial automatic attempt for this main-server session
+	ncManuallyDisconnected        bool       // disabled by an explicit DisconnectNC call
+	nextNCConnectAttempt          time.Time  // scheduled after refreshing the NPC-server location
+	ncConnectionWasUp             bool       // NC was observed connected at least once
+	ncAutomaticReconnectAttempted bool       // one retry consumed while this NC drop remains down
+	ncRequestMu                   sync.Mutex // serializes brief NC sends and synchronous mutations
+	ncHeartbeatMu                 sync.Mutex
+	ncHeartbeatCancel             context.CancelFunc
+	ncHeartbeatDone               chan struct{}
 	// scriptListsMu coalesces concurrent reads of the native NC script caches.
 	// GetScriptLists can be called from more than one Wails window and from
 	// several cache-change events at once, while grclib exposes one shared
@@ -1132,7 +1135,7 @@ type NCStatus struct {
 // connection + chat/IRC/data callbacks are delivered. A previous pump is
 // stopped first. It also lazily opens the NC (script) socket once the server
 // reports one (mirroring the reference client's pump loop), and starts the
-// lightweight NC heartbeat for the lifetime of this main-server session.
+// lightweight NC heartbeat for the lifetime of this session.
 func (s *Service) startPump(h rclib.Handle) {
 	s.stopPump()
 	s.resetNCConnectionState()
@@ -1209,6 +1212,10 @@ func (s *Service) failPump(h rclib.Handle, done chan struct{}, err error) {
 	if s.handle == h {
 		s.serverName = ""
 		s.serverEpoch++
+		s.ncConnectionAttempted = true
+		s.nextNCConnectAttempt = time.Time{}
+		s.ncConnectionWasUp = false
+		s.ncAutomaticReconnectAttempted = false
 		s.channels = nil
 		s.maxUpload = 0
 	}
@@ -1233,7 +1240,8 @@ func (s *Service) failPump(h rclib.Handle, done chan struct{}, err error) {
 }
 
 // ncConnectionTimeout bounds the wait for the asynchronous native NC
-// handshake. It does not trigger another connection attempt.
+// handshake and the location-refresh round trip used by an explicit
+// reconnect.
 const ncConnectionTimeout = 15 * time.Second
 
 const (
@@ -1241,11 +1249,13 @@ const (
 	// read-only NC round trip. It keeps the NC socket exercised without
 	// rebuilding any of the large weapon/class/NPC lists.
 	ncHeartbeatNPCID    = 10000
-	ncHeartbeatInterval = 3 * time.Minute
+	ncHeartbeatInterval = 5 * time.Minute
 	ncHeartbeatTimeout  = 15 * time.Second
 )
 
 const ncStatusPollInterval = 100 * time.Millisecond
+
+const ncReconnectLocationDelay = 500 * time.Millisecond
 
 // ncFetchConcurrency bounds the number of in-flight OpenScript requests during
 // a bulk fetch. Sixteen requests is the highest-throughput setting validated
@@ -1254,30 +1264,79 @@ const ncStatusPollInterval = 100 * time.Millisecond
 // The NC send path remains serialized by ncRequestMu/dllMu.
 const ncFetchConcurrency = 16
 
-// maybeConnectNC opens the NC socket once when the server exposes one to this
-// account (HasNCServer) and it is not yet connected. This intentionally mirrors
-// the reference client's ncConnectionAttempted latch: a failed or dropped NC
-// session remains disconnected until an explicit ConnectToNCServer call or a
-// new main-server session.
+// maybeConnectNC opens the NC socket when the server exposes one to this
+// account (HasNCServer). It performs the initial attempt once, and permits one
+// automatic retry after observing a connected NC socket go down. Both the
+// automatic retry and the explicit reconnect refresh the NPC-server location
+// before the native connection attempt.
 func (s *Service) maybeConnectNC(h rclib.Handle) {
-	if err := s.tryConnectNC(h, false); err != nil {
+	s.ncConnectMu.Lock()
+	defer s.ncConnectMu.Unlock()
+
+	if rclib.IsNCConnected(h) {
+		s.markNCConnectionObserved()
+		return
+	}
+	if s.claimNCAutomaticReconnect() {
+		log.Printf("[nc] automatic reconnect requested after disconnect")
+		if err := s.tryConnectNCLocked(h, true); err != nil {
+			log.Printf("[nc] automatic reconnect failed: %v", err)
+		}
+		return
+	}
+	if err := s.tryConnectNCLocked(h, false); err != nil {
 		log.Printf("[nc] connect failed: %v", err)
 	}
 }
 
-// claimNCAttempt applies the reference client's one-attempt latch. force is
-// reserved for an explicit ConnectToNCServer call, which is allowed to start a
-// fresh native attempt after a prior failure or manual disconnect.
+func (s *Service) markNCConnectionObserved() {
+	s.mu.Lock()
+	if s.ncAutomaticReconnectAttempted && !s.ncConnectionWasUp {
+		// A reconnect completed after the previous drop. The next drop gets its
+		// own single retry, while a failed retry remains latched below.
+		s.ncAutomaticReconnectAttempted = false
+	}
+	s.ncConnectionWasUp = true
+	s.mu.Unlock()
+}
+
+// claimNCAutomaticReconnect allows exactly one reconnect after the pump has
+// observed a live NC socket and then seen it go down. A pending manual/scheduled
+// reconnect always wins over this background retry.
+func (s *Service) claimNCAutomaticReconnect() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ncManuallyDisconnected || !s.nextNCConnectAttempt.IsZero() ||
+		!s.ncConnectionAttempted || !s.ncConnectionWasUp || s.ncAutomaticReconnectAttempted {
+		return false
+	}
+	s.ncAutomaticReconnectAttempted = true
+	return true
+}
+
+// claimNCAttempt applies the reference client's initial-attempt latch and its
+// scheduled reconnect state. force is used by an explicit reconnect or by the
+// single automatic retry after an observed NC drop.
 func (s *Service) claimNCAttempt(force bool) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !force && (s.ncManuallyDisconnected || s.ncConnectionAttempted) {
-		return false
-	}
 	if force {
 		s.ncManuallyDisconnected = false
+		s.ncConnectionAttempted = true
+		s.nextNCConnectAttempt = time.Time{}
+		return true
+	}
+	if s.ncManuallyDisconnected {
+		return false
+	}
+	now := time.Now()
+	automaticAttempt := s.nextNCConnectAttempt.IsZero() && !s.ncConnectionAttempted
+	scheduledAttempt := !s.nextNCConnectAttempt.IsZero() && !now.Before(s.nextNCConnectAttempt)
+	if !automaticAttempt && !scheduledAttempt {
+		return false
 	}
 	s.ncConnectionAttempted = true
+	s.nextNCConnectAttempt = time.Time{}
 	return true
 }
 
@@ -1289,17 +1348,22 @@ func (s *Service) resetNCConnectionState() {
 	s.mu.Lock()
 	s.ncConnectionAttempted = false
 	s.ncManuallyDisconnected = false
+	s.nextNCConnectAttempt = time.Time{}
+	s.ncConnectionWasUp = false
+	s.ncAutomaticReconnectAttempted = false
 	s.mu.Unlock()
 }
 
-// tryConnectNC performs one serialized native NC connect attempt. The pump
-// uses the one-shot path; force is used only by an explicit reconnect. The
-// native call may return before the asynchronous NC handshake completes, so
-// accepting it must still consume the automatic-attempt slot.
+// tryConnectNC performs one serialized NC lifecycle action. The pump uses the
+// one-shot/scheduled path; force refreshes the NPC-server endpoint before
+// scheduling the native connection.
 func (s *Service) tryConnectNC(h rclib.Handle, force bool) error {
 	s.ncConnectMu.Lock()
 	defer s.ncConnectMu.Unlock()
+	return s.tryConnectNCLocked(h, force)
+}
 
+func (s *Service) tryConnectNCLocked(h rclib.Handle, force bool) error {
 	if !rclib.IsConnected(h) || !rclib.IsAuthenticated(h) {
 		return nil
 	}
@@ -1312,12 +1376,28 @@ func (s *Service) tryConnectNC(h rclib.Handle, force bool) error {
 	if !s.claimNCAttempt(force) {
 		return nil
 	}
+	if force {
+		// The current NC session is being intentionally replaced. Do not count
+		// the old connection as the new session's observation if this reconnect
+		// fails; otherwise the same pump tick could schedule a second retry.
+		s.mu.Lock()
+		s.ncConnectionWasUp = false
+		s.mu.Unlock()
+	}
 	if force && rclib.IsNCConnected(h) {
 		// The C++ client's explicit /nc rc path always closes an existing NC
 		// socket before opening the replacement one.
 		if err := rclib.DisconnectNC(h); err != nil {
 			log.Printf("[nc] disconnect before reconnect failed: %v", err)
 		}
+	}
+	if force {
+		// The native library updates its cached NC endpoint when the main socket
+		// receives the NPCSERVERADDR reply. Give that request a short head start
+		// before rc_connect_to_nc_server reads the endpoint.
+		s.resetWeaponListState()
+		s.scheduleNCReconnectLocked(h)
+		return nil
 	}
 
 	// A reconnect starts a new native list-cache lifecycle. The old borrowed
@@ -1328,6 +1408,64 @@ func (s *Service) tryConnectNC(h rclib.Handle, force bool) error {
 		log.Printf("[nc] connect requested")
 	}
 	return err
+}
+
+// scheduleNCReconnectLocked mirrors TRemoteFrame::reconnectNPCServer. The
+// caller holds ncConnectMu. It first schedules a fallback connection using
+// the endpoint already cached by grclib, then asks the main RC socket for the
+// live (npcserver) location. When that request succeeds, the native endpoint
+// refresh is given 500 ms to arrive before the pump calls
+// rc_connect_to_nc_server.
+func (s *Service) scheduleNCReconnectLocked(h rclib.Handle) {
+	s.mu.Lock()
+	epoch := s.serverEpoch
+	s.nextNCConnectAttempt = time.Now()
+	s.mu.Unlock()
+
+	players, err := rclib.GetPlayers(h)
+	if err != nil {
+		log.Printf("[nc] get players for endpoint refresh failed: %v", err)
+		return
+	}
+	npcServerID := -1
+	for _, player := range players {
+		if strings.EqualFold(player.Account, "(npcserver)") {
+			npcServerID = player.ID
+			break
+		}
+	}
+	if npcServerID < 0 {
+		return
+	}
+
+	query, err := npcServerLocationQuery(npcServerID)
+	if err != nil {
+		log.Printf("[nc] invalid NPC-server player ID %d: %v", npcServerID, err)
+		return
+	}
+	if err := rclib.SendRawPacket(h, rclib.PacketNPCServerQuery, query); err != nil {
+		log.Printf("[nc] NPC-server location query failed: %v", err)
+		return
+	}
+
+	s.mu.Lock()
+	if s.handle == h && s.serverEpoch == epoch && !s.ncManuallyDisconnected {
+		s.nextNCConnectAttempt = time.Now().Add(ncReconnectLocationDelay)
+	}
+	s.mu.Unlock()
+}
+
+// npcServerLocationQuery uses the same two 7-bit player-id bytes and literal
+// command as the reference C++ client.
+func npcServerLocationQuery(playerID int) ([]byte, error) {
+	if playerID < 0 || playerID > 0x3fff {
+		return nil, fmt.Errorf("player ID %d is outside the 14-bit protocol range", playerID)
+	}
+	return []byte{
+		byte((playerID >> 7) + 32),
+		byte((playerID & 127) + 32),
+		'l', 'o', 'c', 'a', 't', 'i', 'o', 'n',
+	}, nil
 }
 
 // startNCHeartbeat starts one cancellable heartbeat loop for the current
@@ -1400,9 +1538,9 @@ func (s *Service) isCurrentNCHeartbeatSession(h rclib.Handle, epoch uint64) bool
 }
 
 // sendNCHeartbeat sends one deduplicated GetNPCFlags request and waits for the
-// matching callback. It never reconnects NC; the reference client's
-// reconnect policy remains explicit/one-shot, while this loop only prevents an
-// otherwise idle socket from going stale and provides a bounded failure signal.
+// matching callback. It never reconnects NC; reconnect policy remains owned by
+// the pump, while this loop only prevents an otherwise idle socket from going
+// stale and provides a bounded failure signal.
 func (s *Service) sendNCHeartbeat(ctx context.Context, h rclib.Handle, epoch uint64) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -1660,6 +1798,10 @@ func (s *Service) connectToServer(ctx context.Context, index int) error {
 		}
 		s.mu.Lock()
 		s.serverName = ""
+		s.ncConnectionAttempted = true
+		s.nextNCConnectAttempt = time.Time{}
+		s.ncConnectionWasUp = false
+		s.ncAutomaticReconnectAttempted = false
 		s.mu.Unlock()
 		s.clearSelfFolderRights()
 		s.resetWeaponListState()
@@ -1933,7 +2075,8 @@ func (s *Service) SetNewProtocol(enable bool) error {
 	return operationErr(operation.ctx)
 }
 
-// ConnectToNCServer explicitly opens the NC (script) socket.
+// ConnectToNCServer explicitly refreshes the NPC-server location and schedules
+// the NC (script) socket connection.
 func (s *Service) ConnectToNCServer() error {
 	operation := s.beginLifecycleOperation()
 	defer s.endLifecycleOperation(operation)
@@ -1961,9 +2104,15 @@ func (s *Service) connectToNC(ctx context.Context) error {
 	}
 	if err := operationErr(ctx); err != nil {
 		// A newer lifecycle operation canceled this attempt after the native
-		// call completed. Do not leave an NC socket from the canceled operation
-		// attached to the session it no longer owns.
+		// scheduling completed. Do not leave a delayed reconnect from the
+		// canceled operation attached to the session it no longer owns.
 		s.ncConnectMu.Lock()
+		s.mu.Lock()
+		if s.handle == h {
+			s.nextNCConnectAttempt = time.Time{}
+			s.ncConnectionWasUp = false
+		}
+		s.mu.Unlock()
 		disconnectErr := rclib.DisconnectNC(h)
 		s.ncConnectMu.Unlock()
 		if disconnectErr != nil {
@@ -1975,8 +2124,8 @@ func (s *Service) connectToNC(ctx context.Context) error {
 }
 
 // EnsureNCConnected waits for the NC socket to be connected and authenticated.
-// It may trigger the single automatic attempt when the pump has not done so
-// yet, but it never retries a failed or dropped NC session.
+// It may trigger the initial automatic attempt when the pump has not done so
+// yet; the pump owns the separate one-shot retry after an observed NC drop.
 func (s *Service) EnsureNCConnected(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -2054,6 +2203,8 @@ func (s *Service) DisconnectNC() error {
 	s.mu.Lock()
 	s.ncManuallyDisconnected = true
 	s.ncConnectionAttempted = true
+	s.nextNCConnectAttempt = time.Time{}
+	s.ncConnectionWasUp = false
 	s.mu.Unlock()
 	err := rclib.DisconnectNC(h)
 	s.ncConnectMu.Unlock()
@@ -2947,9 +3098,9 @@ func (s *Service) requireHandle() (rclib.Handle, error) {
 }
 
 // requireNC returns the active handle after checking that the NC (script)
-// socket is connected. If the reference client's one automatic attempt has not
-// happened yet, it is allowed to start it; a dropped/failed session is never
-// retried implicitly.
+// socket is connected. If the reference client's initial automatic attempt has
+// not happened yet, it is allowed to start it; the pump handles the one-shot
+// endpoint-refresh retry after a previously observed NC connection drops.
 func (s *Service) requireNC() (rclib.Handle, error) {
 	h, err := s.requireHandle()
 	if err != nil {
@@ -2966,6 +3117,40 @@ func (s *Service) requireNC() (rclib.Handle, error) {
 	}
 	if !rclib.IsNCConnected(h) {
 		return 0, errors.New("NC server is not connected")
+	}
+	return h, nil
+}
+
+// requireNCContext is the read path used by script opens. The script manager
+// can be populated from the native cache while NC is offline, so opening one
+// of those cached entries must wait for the automatic reconnect instead of
+// immediately surfacing a transient "NC is not connected" error.
+func (s *Service) requireNCContext(ctx context.Context) (rclib.Handle, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	h, err := s.requireHandle()
+	if err != nil {
+		return 0, err
+	}
+	if !rclib.HasNCServer(h) {
+		return 0, errors.New("this account has no NC rights on this server")
+	}
+	if rclib.IsNCConnected(h) && rclib.IsNCAuthenticated(h) {
+		return h, nil
+	}
+	if err := s.EnsureNCConnected(ctx); err != nil {
+		return 0, err
+	}
+
+	// Re-read the handle after waiting: a lifecycle operation may have changed
+	// the active session while the reconnect was in progress.
+	h, err = s.requireHandle()
+	if err != nil {
+		return 0, err
+	}
+	if !rclib.IsNCConnected(h) || !rclib.IsNCAuthenticated(h) {
+		return 0, errNCUnavailable
 	}
 	return h, nil
 }
@@ -3496,7 +3681,7 @@ func (s *Service) openScriptContext(ctx context.Context, scriptType, key, name s
 	if err := s.requireScriptPermission(scriptType, name, 'r'); err != nil {
 		return rclib.ScriptReply{}, err
 	}
-	h, err := s.requireNC()
+	h, err := s.requireNCContext(ctx)
 	if err != nil {
 		return rclib.ScriptReply{}, err
 	}
@@ -4054,6 +4239,9 @@ func (s *Service) logout() {
 	s.serverEpoch++
 	s.ncConnectionAttempted = false
 	s.ncManuallyDisconnected = false
+	s.nextNCConnectAttempt = time.Time{}
+	s.ncConnectionWasUp = false
+	s.ncAutomaticReconnectAttempted = false
 	s.channels = nil
 	s.maxUpload = 0
 	s.mu.Unlock()

@@ -82,6 +82,21 @@ export interface PluginPanel {
   html?: string
 }
 
+export type PluginUITabIcon = "dashboard" | "terminal" | "settings" | "puzzle"
+
+export interface PluginUITabOptions {
+  id: string
+  title: string
+  icon?: PluginUITabIcon
+  order?: number
+  open?: boolean
+  view: PluginUIView
+}
+
+export interface PluginUITabInfo extends PluginUITabOptions {
+  pluginId: string
+}
+
 export interface PluginRemoteFile {
   path: string
   name: string
@@ -116,11 +131,17 @@ export type PluginFileEditorHandler = (file: Pick<PluginRemoteFile, "path" | "na
 export type PluginUIPrimitive = string | number | boolean | null
 export type PluginUIView =
   | {type: "stack" | "row"; children: PluginUIView[]; gap?: number}
+  | {type: "card"; title?: string; description?: string; children: PluginUIView[]}
   | {type: "text" | "heading"; text: string; tone?: "default" | "muted" | "danger" | "success"}
+  | {type: "badge"; text: string; tone?: "default" | "muted" | "danger" | "success"}
   | {type: "divider"}
   | {type: "button"; id: string; label: string; action: string; disabled?: boolean; variant?: "default" | "secondary" | "danger"}
   | {type: "input"; id: string; label: string; value?: string; placeholder?: string; action?: string}
+  | {type: "textarea"; id: string; label: string; value?: string; placeholder?: string; rows?: number; action?: string}
+  | {type: "checkbox"; id: string; label: string; value?: boolean; action?: string}
   | {type: "select"; id: string; label: string; value?: string; options: Array<{label: string; value: string}>; action?: string}
+  | {type: "progress"; value: number; max?: number; label?: string}
+  | {type: "empty"; title: string; description?: string}
   | {type: "code"; language?: string; value: string}
   | {type: "table"; columns: Array<{key: string; label: string}>; rows: Array<Record<string, PluginUIPrimitive>>}
 
@@ -142,8 +163,21 @@ export interface PluginUIWindow {
   close(): Promise<void>
 }
 
+export interface PluginUITab {
+  readonly id: string
+  update(view: PluginUIView): void
+  open(): void
+  close(): void
+}
+
 export interface PluginUIAction {
   windowId: string
+  action: string
+  value?: PluginUIPrimitive
+}
+
+export interface PluginUITabAction {
+  tabId: string
   action: string
   value?: PluginUIPrimitive
 }

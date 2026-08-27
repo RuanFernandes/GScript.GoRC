@@ -251,11 +251,14 @@ func TestCreateTemplate(t *testing.T) {
 	if info.Manifest.ID != "com.gorc.my-discord-logger" || info.Manifest.Main != "dist/index.js" {
 		t.Fatalf("unexpected template: %+v", info.Manifest)
 	}
+	if len(info.Manifest.Permissions.APIs) != 1 || info.Manifest.Permissions.APIs[0] != "ui.tabs" {
+		t.Fatalf("template does not request the tab UI permission: %+v", info.Manifest.Permissions)
+	}
 	b, err := os.ReadFile(filepath.Join(info.Directory, info.Manifest.Main))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(b) == "" || !strings.Contains(string(b), "extends Plugin") || !strings.Contains(string(b), "new GorcMyDiscordLogger()") {
+	if string(b) == "" || !strings.Contains(string(b), "extends Plugin") || !strings.Contains(string(b), "new GorcMyDiscordLogger()") || !strings.Contains(string(b), "this.ui.tabs.register") {
 		t.Fatalf("template bundle is empty or invalid: %q", string(b))
 	}
 	source, err := os.ReadFile(filepath.Join(info.Directory, "src", "index.ts"))

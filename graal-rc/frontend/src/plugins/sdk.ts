@@ -1,4 +1,4 @@
-import type {PluginCommand, PluginEventName, PluginFileEditor, PluginFileEditorHandler, PluginMonacoCompletion, PluginMonacoCompletionContext, PluginMonacoDiagnostic, PluginMonacoDocumentContext, PluginNotification, PluginPanel, PluginPeer, PluginRemoteFile, PluginScriptDocument, PluginScriptIndex, PluginSocketClose, PluginSocketMessage, PluginUIAction, PluginUIView, PluginUIWindow, PluginUIWindowOptions} from "./types"
+import type {PluginCommand, PluginEventName, PluginFileEditor, PluginFileEditorHandler, PluginMonacoCompletion, PluginMonacoCompletionContext, PluginMonacoDiagnostic, PluginMonacoDocumentContext, PluginNotification, PluginPanel, PluginPeer, PluginRemoteFile, PluginScriptDocument, PluginScriptIndex, PluginSocketClose, PluginSocketMessage, PluginUIAction, PluginUITab, PluginUITabAction, PluginUITabOptions, PluginUIView, PluginUIWindow, PluginUIWindowOptions} from "./types"
 
 export type PluginCommandHandler = (args: string[]) => void | Promise<void>
 export type PluginHttpBody = string | Record<string, unknown> | unknown[] | number | boolean | null
@@ -49,6 +49,11 @@ export interface PluginFileBrowser {
 export interface PluginUI {
   windows: {
     open(options: PluginUIWindowOptions): Promise<PluginUIWindow>
+  }
+  tabs: {
+    register(options: PluginUITabOptions): PluginUITab
+    onAction(listener: (action: PluginUITabAction) => void | Promise<void>): () => void
+    onClosed(listener: (tabId: string) => void): () => void
   }
   onAction(listener: (action: PluginUIAction) => void | Promise<void>): () => void
   onClosed(listener: (windowId: string) => void): () => void

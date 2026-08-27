@@ -1,6 +1,6 @@
 import {Events} from "@wailsio/runtime"
 import {rcService} from "@/services/rcService"
-import type {PluginCommand, PluginEvent, PluginFileEditor, PluginHttpRequestEvent, PluginNotification, PluginPanel, PluginUIWindowOptions, PluginUIView} from "./types"
+import type {PluginCommand, PluginEvent, PluginFileEditor, PluginHttpRequestEvent, PluginNotification, PluginPanel, PluginUITabInfo, PluginUITabOptions, PluginUIWindowOptions, PluginUIView, PluginUIPrimitive} from "./types"
 import type {PluginInfo} from "./types"
 
 type RuntimeMessage =
@@ -11,6 +11,10 @@ type RuntimeMessage =
   | {type: "command"; command: PluginCommand}
   | {type: "commandRemoved"; id: string}
   | {type: "panel"; panel: PluginPanel}
+  | {type: "tab"; tab: PluginUITabOptions}
+  | {type: "tabUpdate"; tabId: string; view: PluginUIView}
+  | {type: "tabRemoved"; tabId: string}
+  | {type: "tabOpen"; tabId: string}
   | {type: "notification"; notification: PluginNotification}
   | {type: "fileEditor"; editor: PluginFileEditor}
   | {type: "fileEditorRemoved"; id: string}
@@ -52,6 +56,7 @@ type PluginFrame = {
   pluginSubscriptions: Set<string>
   commandKeys: Set<string>
   panelKeys: Set<string>
+  tabKeys: Set<string>
   socketIds: Set<string>
   expressRouteIds: Set<string>
   httpRequestIds: Set<string>
@@ -73,6 +78,7 @@ export class PluginRuntime {
   private readonly commands = new Map<string, PluginCommand>()
   private readonly commandOwners = new Map<string, PluginFrame>()
   private readonly panels = new Map<string, PluginPanel>()
+  private readonly tabs = new Map<string, {plugin: PluginFrame; tab: PluginUITabInfo}>()
   private readonly fileEditors = new Map<string, {plugin: PluginFrame; editor: PluginFileEditor}>()
   private readonly pluginRPCWaiters = new Map<string, {resolve: (value: unknown) => void; reject: (error: Error) => void; timer: number}>()
   private readonly monacoProviders = new Map<string, {plugin: PluginFrame; kind: "diagnostics" | "completions"; language: string}>()
@@ -156,6 +162,7 @@ export class PluginRuntime {
     this.commands.clear()
     this.commandOwners.clear()
     this.panels.clear()
+    this.tabs.clear()
     this.fileEditors.clear()
     this.monacoProviders.clear()
     for (const waiter of this.pluginRPCWaiters.values()) {
@@ -164,11 +171,25 @@ export class PluginRuntime {
     }
     this.pluginRPCWaiters.clear()
     this.notifyCommandChange()
+    this.notifyTabChange()
     await Promise.all(frames.map(frame => frame.dispose()))
   }
 
   getCommands(): PluginCommand[] { return [...this.commands.values()] }
   getPanels(): PluginPanel[] { return [...this.panels.values()] }
+  getTabs(): PluginUITabInfo[] {
+    return [...this.tabs.values()]
+      .map(({tab}) => tab)
+      .sort((left, right) => (left.order ?? 0) - (right.order ?? 0) || left.title.localeCompare(right.title) || `${left.pluginId}:${left.id}`.localeCompare(`${right.pluginId}:${right.id}`))
+  }
+
+  sendTabAction(pluginId: string, tabId: string, action: string, value: PluginUIPrimitive): boolean {
+    const key = `${pluginId}:${tabId}`
+    const registration = this.tabs.get(key)
+    if (!registration?.plugin.ready || !registration.plugin.frame.contentWindow) return false
+    registration.plugin.frame.contentWindow.postMessage({type: "tabAction", tabId, action, value}, "*")
+    return true
+  }
 
   executeCommand(name: string, args: string[] = []): boolean {
     const query = name.trim().replace(/^\/+/, "").toLowerCase()
@@ -264,6 +285,7 @@ export class PluginRuntime {
     pluginFrame.pluginSubscriptions = new Set()
     pluginFrame.commandKeys = new Set()
     pluginFrame.panelKeys = new Set()
+    pluginFrame.tabKeys = new Set()
     pluginFrame.socketIds = new Set()
     pluginFrame.expressRouteIds = new Set()
     pluginFrame.httpRequestIds = new Set()
@@ -323,6 +345,7 @@ export class PluginRuntime {
         rcService.pluginCall(info.manifest.id, "express.close", []).catch(() => undefined),
         rcService.pluginCall(info.manifest.id, "filebrowser.editor.closeAll", []).catch(() => undefined),
         rcService.pluginCall(info.manifest.id, "ui.window.closeAll", []).catch(() => undefined),
+        rcService.pluginCall(info.manifest.id, "ui.tabs.closeAll", []).catch(() => undefined),
         rcService.pluginCall(info.manifest.id, "monaco.language.closeAll", []).catch(() => undefined),
       ])
       for (const key of pluginFrame.commandKeys) {
@@ -333,6 +356,10 @@ export class PluginRuntime {
       for (const key of pluginFrame.panelKeys) {
         if (this.panels.get(key)) this.panels.delete(key)
       }
+      for (const key of pluginFrame.tabKeys) {
+        if (this.tabs.get(key)?.plugin !== pluginFrame) continue
+        this.tabs.delete(key)
+      }
       for (const key of pluginFrame.fileEditorKeys) {
         if (this.fileEditors.get(key)?.plugin !== pluginFrame) continue
         this.fileEditors.delete(key)
@@ -341,6 +368,7 @@ export class PluginRuntime {
         if (this.monacoProviders.get(key)?.plugin === pluginFrame) this.monacoProviders.delete(key)
       }
       this.notifyCommandChange()
+      this.notifyTabChange()
       for (const waiter of pluginFrame.lifecycleWaiters.values()) window.clearTimeout(waiter.timer)
       pluginFrame.lifecycleWaiters.clear()
       removeMessageListener()
@@ -456,6 +484,54 @@ export class PluginRuntime {
       const key = `${plugin.info.manifest.id}:${message.panel.id}`
       plugin.panelKeys.add(key)
       this.panels.set(key, message.panel)
+      return
+    }
+    if (message.type === "tab") {
+      try {
+        await rcService.pluginCall(plugin.info.manifest.id, "ui.tabs.register", [message.tab])
+      } catch (error) {
+        await this.log(plugin.info.manifest.id, "error", `Tab registration failed: ${error instanceof Error ? error.message : String(error)}`)
+        return
+      }
+      const key = `${plugin.info.manifest.id}:${message.tab.id}`
+      const current = this.tabs.get(key)
+      if (current && current.plugin !== plugin) return
+      const tab: PluginUITabInfo = {...message.tab, pluginId: plugin.info.manifest.id}
+      plugin.tabKeys.add(key)
+      this.tabs.set(key, {plugin, tab})
+      this.notifyTabChange()
+      if (message.tab.open) this.requestTabOpen(plugin.info.manifest.id, message.tab.id)
+      void this.log(plugin.info.manifest.id, "info", `Registered RC tab ${message.tab.id}`).catch(() => {})
+      return
+    }
+    if (message.type === "tabUpdate") {
+      const key = `${plugin.info.manifest.id}:${message.tabId}`
+      const registration = this.tabs.get(key)
+      if (registration?.plugin !== plugin) return
+      try {
+        await rcService.pluginCall(plugin.info.manifest.id, "ui.tabs.update", [message.tabId, message.view])
+      } catch (error) {
+        await this.log(plugin.info.manifest.id, "error", `Tab update failed: ${error instanceof Error ? error.message : String(error)}`)
+        return
+      }
+      registration.tab = {...registration.tab, view: message.view}
+      this.notifyTabChange()
+      return
+    }
+    if (message.type === "tabRemoved") {
+      const key = `${plugin.info.manifest.id}:${message.tabId}`
+      const registration = this.tabs.get(key)
+      if (registration?.plugin !== plugin) return
+      await rcService.pluginCall(plugin.info.manifest.id, "ui.tabs.close", [message.tabId]).catch(() => undefined)
+      plugin.tabKeys.delete(key)
+      this.tabs.delete(key)
+      this.notifyTabChange()
+      plugin.frame.contentWindow?.postMessage({type: "tabClosed", tabId: message.tabId}, "*")
+      return
+    }
+    if (message.type === "tabOpen") {
+      const key = `${plugin.info.manifest.id}:${message.tabId}`
+      if (this.tabs.get(key)?.plugin === plugin) this.requestTabOpen(plugin.info.manifest.id, message.tabId)
       return
     }
     if (message.type === "fileEditor") {
@@ -759,6 +835,14 @@ export class PluginRuntime {
     window.dispatchEvent(new Event("gorc:plugin-commands"))
   }
 
+  private notifyTabChange(): void {
+    window.dispatchEvent(new Event("gorc:plugin-tabs"))
+  }
+
+  private requestTabOpen(pluginId: string, tabId: string): void {
+    window.dispatchEvent(new CustomEvent("gorc:plugin-tab-open", {detail: {pluginId, tabId}}))
+  }
+
   private async fail(id: string): Promise<void> {
     const plugin = this.frames.get(id)
     if (!plugin) return
@@ -825,6 +909,8 @@ function createRuntimeDocument(): string {
     const pluginRpcHandlers = new Map();
     const uiActionHandlers = [];
     const uiClosedHandlers = [];
+    const uiTabActionHandlers = [];
+    const uiTabClosedHandlers = [];
     const monacoDiagnostics = new Map();
     const monacoCompletions = new Map();
     const automationCleanups = new Set();
@@ -1078,6 +1164,16 @@ function createRuntimeDocument(): string {
       update: view => rpc('ui.window.update', [info.id, view]),
       close: () => rpc('ui.window.close', [info.id])
     });
+    const createUITab = options => {
+      const tab = {
+        id: options.id,
+        update: view => { parent.postMessage({type:'tabUpdate', tabId: options.id, view}, '*'); },
+        open: () => { parent.postMessage({type:'tabOpen', tabId: options.id}, '*'); },
+        close: () => { parent.postMessage({type:'tabRemoved', tabId: options.id}, '*'); }
+      };
+      parent.postMessage({type:'tab', tab: options}, '*');
+      return tab;
+    };
     const createFileBrowser = () => ({
       readText: path => rpc('filebrowser.readText', [path]),
       writeText: (path, content, options = {}) => rpc('filebrowser.writeText', [{path, content, expectedRevision: options.expectedRevision}]),
@@ -1095,6 +1191,23 @@ function createRuntimeDocument(): string {
     const createUI = () => ({
       windows: {
         open: options => rpc('ui.window.open', [options]).then(createUIWindow)
+      },
+      tabs: {
+        register: options => createUITab(options),
+        onAction: handler => {
+          uiTabActionHandlers.push(handler);
+          return () => {
+            const index = uiTabActionHandlers.indexOf(handler);
+            if (index >= 0) uiTabActionHandlers.splice(index, 1);
+          };
+        },
+        onClosed: handler => {
+          uiTabClosedHandlers.push(handler);
+          return () => {
+            const index = uiTabClosedHandlers.indexOf(handler);
+            if (index >= 0) uiTabClosedHandlers.splice(index, 1);
+          };
+        }
       },
       onAction: handler => {
         uiActionHandlers.push(handler);
@@ -1268,6 +1381,8 @@ function createRuntimeDocument(): string {
       pluginRpcHandlers.clear();
       uiActionHandlers.length = 0;
       uiClosedHandlers.length = 0;
+      uiTabActionHandlers.length = 0;
+      uiTabClosedHandlers.length = 0;
       parent.postMessage({type:'lifecycleResult', requestId:event.data.requestId, ok:!failure, error:failure ? String(failure) : undefined}, '*');
     };
     window.addEventListener('message', event => {
@@ -1305,6 +1420,12 @@ function createRuntimeDocument(): string {
       }
       if (event.data?.type === 'uiClosed') {
         uiClosedHandlers.forEach(fn => Promise.resolve(fn(event.data.windowId)).catch(reportError));
+      }
+      if (event.data?.type === 'tabAction') {
+        uiTabActionHandlers.forEach(fn => Promise.resolve(fn({tabId:event.data.tabId, action:event.data.action, value:event.data.value})).catch(reportError));
+      }
+      if (event.data?.type === 'tabClosed') {
+        uiTabClosedHandlers.forEach(fn => Promise.resolve(fn(event.data.tabId)).catch(reportError));
       }
       if (event.data?.type === 'monacoRequest') {
         const handlers = event.data.kind === 'diagnostics' ? monacoDiagnostics : monacoCompletions;

@@ -168,7 +168,7 @@ func (m *Manager) CreateTemplate(name string) (PluginInfo, error) {
 	} else if !os.IsNotExist(err) {
 		return PluginInfo{}, err
 	}
-	manifest := Manifest{ID: id, Name: strings.TrimSpace(name), Version: "0.1.0", APIVersion: APIVersion, Main: "dist/index.js", Description: "Plugin created by GoRC.", Permissions: Permissions{}}
+	manifest := Manifest{ID: id, Name: strings.TrimSpace(name), Version: "0.1.0", APIVersion: APIVersion, Main: "dist/index.js", Description: "Plugin created by GoRC.", Permissions: Permissions{APIs: []string{"ui.tabs"}}}
 	if err := os.MkdirAll(filepath.Join(directory, "dist"), 0o700); err != nil {
 		return PluginInfo{}, err
 	}
@@ -184,8 +184,8 @@ func (m *Manager) CreateTemplate(name string) (PluginInfo, error) {
 		return PluginInfo{}, err
 	}
 	className := pluginClassName(manifest.Name)
-	source := []byte(fmt.Sprintf("export default class %s extends Plugin {\n  onLoad() {\n    this.commands.register({ id: \"about\", label: %s }, args => {\n      console.log(\"Command arguments:\", args)\n    })\n  }\n}\n", className, label))
-	bundle := []byte(fmt.Sprintf("class %s extends Plugin {\n  onLoad() {\n    this.commands.register({ id: \"about\", label: %s }, args => {\n      console.log(\"Command arguments:\", args)\n    })\n  }\n}\n\nnew %s()\n", className, label, className))
+	source := []byte(fmt.Sprintf("export default class %s extends Plugin {\n  onLoad() {\n    this.commands.register({ id: \"about\", label: %s }, args => {\n      console.log(\"Command arguments:\", args)\n    })\n\n    this.ui.tabs.register({\n      id: \"dashboard\",\n      title: %s,\n      icon: \"dashboard\",\n      view: {\n        type: \"stack\",\n        children: [\n          { type: \"heading\", text: %s },\n          { type: \"text\", text: \"Replace this view with your plugin workspace.\", tone: \"muted\" },\n          { type: \"button\", id: \"hello\", label: \"Test action\", action: \"hello\" }\n        ]\n      }\n    })\n  }\n}\n", className, label, label, label))
+	bundle := []byte(fmt.Sprintf("class %s extends Plugin {\n  onLoad() {\n    this.commands.register({ id: \"about\", label: %s }, args => {\n      console.log(\"Command arguments:\", args)\n    })\n\n    this.ui.tabs.register({\n      id: \"dashboard\",\n      title: %s,\n      icon: \"dashboard\",\n      view: {\n        type: \"stack\",\n        children: [\n          { type: \"heading\", text: %s },\n          { type: \"text\", text: \"Replace this view with your plugin workspace.\", tone: \"muted\" },\n          { type: \"button\", id: \"hello\", label: \"Test action\", action: \"hello\" }\n        ]\n      }\n    })\n  }\n}\n\nnew %s()\n", className, label, label, label, className))
 	if err := fileutil.AtomicWriteFile(filepath.Join(directory, manifest.Main), bundle, 0o600); err != nil {
 		return PluginInfo{}, err
 	}
@@ -341,6 +341,17 @@ interface PluginPanel {
   html?: string
 }
 
+type PluginUITabIcon = "dashboard" | "terminal" | "settings" | "puzzle"
+
+interface PluginUITabOptions {
+  id: string
+  title: string
+  icon?: PluginUITabIcon
+  order?: number
+  open?: boolean
+  view: PluginUIView
+}
+
 interface PluginRemoteFile {
   path: string
   name: string
@@ -375,11 +386,17 @@ type PluginFileEditorHandler = (file: Pick<PluginRemoteFile, "path" | "name" | "
 type PluginUIPrimitive = string | number | boolean | null
 type PluginUIView =
   | {type: "stack" | "row"; children: PluginUIView[]; gap?: number}
+  | {type: "card"; title?: string; description?: string; children: PluginUIView[]}
   | {type: "text" | "heading"; text: string; tone?: "default" | "muted" | "danger" | "success"}
+  | {type: "badge"; text: string; tone?: "default" | "muted" | "danger" | "success"}
   | {type: "divider"}
   | {type: "button"; id: string; label: string; action: string; disabled?: boolean; variant?: "default" | "secondary" | "danger"}
   | {type: "input"; id: string; label: string; value?: string; placeholder?: string; action?: string}
+  | {type: "textarea"; id: string; label: string; value?: string; placeholder?: string; rows?: number; action?: string}
+  | {type: "checkbox"; id: string; label: string; value?: boolean; action?: string}
   | {type: "select"; id: string; label: string; value?: string; options: Array<{label: string; value: string}>; action?: string}
+  | {type: "progress"; value: number; max?: number; label?: string}
+  | {type: "empty"; title: string; description?: string}
   | {type: "code"; language?: string; value: string}
   | {type: "table"; columns: Array<{key: string; label: string}>; rows: Array<Record<string, PluginUIPrimitive>>}
 
@@ -397,6 +414,12 @@ interface PluginUIWindow extends PluginUIWindowOptions {
 
 interface PluginUIAction {
   windowId: string
+  action: string
+  value?: PluginUIPrimitive
+}
+
+interface PluginUITabAction {
+  tabId: string
   action: string
   value?: PluginUIPrimitive
 }
@@ -485,6 +508,11 @@ interface PluginContext {
   }
   readonly ui: {
     windows: {open(options: PluginUIWindowOptions): Promise<PluginUIWindow>}
+    tabs: {
+      register(options: PluginUITabOptions): {id: string; update(view: PluginUIView): void; open(): void; close(): void}
+      onAction(listener: (action: PluginUITabAction) => void | Promise<void>): () => void
+      onClosed(listener: (tabId: string) => void): () => void
+    }
     onAction(listener: (action: PluginUIAction) => void | Promise<void>): () => void
     onClosed(listener: (windowId: string) => void): () => void
   }

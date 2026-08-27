@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       custom_tag:
-        description: "Release tag to build (for example v4.1.1)"
+        description: "Release tag to build (for example v4.2.0)"
         required: true
-        default: "v4.1.1"
+        default: "v4.2.0"
 
 permissions:
   contents: write
@@ -382,6 +382,11 @@ jobs:
     needs: [version, windows, linux-amd64, linux-386, macos]
     runs-on: ubuntu-24.04
     steps:
+      - name: Check out release notes
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
+
       - name: Download all release artifacts
         uses: actions/download-artifact@v4
         with:
@@ -400,5 +405,5 @@ jobs:
           gh release create '${{ needs.version.outputs.tag }}' release/nullbornes-rc-* release/SHA256SUMS.txt \
             --repo "$GITHUB_REPOSITORY" \
             --title "Graal Remote Control ${{ needs.version.outputs.tag }}" \
-            --notes "Cross-platform native matrix release for Windows x64/x86, Linux x64/386 and macOS x64/arm64." \
+            --notes-file RELEASE_NOTES.md \
             --verify-tag

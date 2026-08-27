@@ -289,6 +289,7 @@ var (
 	procGetNPCFlags          *proc
 	procSetNPCFlags          *proc
 	procSendNCPacket         *proc
+	procSendRawPacket        *proc
 	procWarpNPC              *proc
 
 	// Server-side text configs (server options / folder config / server flags).
@@ -336,6 +337,11 @@ var (
 const (
 	DefaultListserverHost = "listserver.graalonline.com"
 	DefaultListserverPort = 14922
+
+	// PacketNPCServerQuery asks the main RC socket for the current NPC-server
+	// location. The reply updates grclib's cached NC endpoint, including its
+	// dedicated port, before rc_connect_to_nc_server is called.
+	PacketNPCServerQuery = 94
 )
 
 // proc wraps a resolved grclib symbol so call sites stay identical across OSes.
@@ -565,6 +571,7 @@ func registerAll(resolve func(name string) (*proc, error)) error {
 	procGetNPCFlags = get("rc_get_npc_flags")
 	procSetNPCFlags = get("rc_set_npc_flags")
 	procSendNCPacket = get("rc_send_nc_packet")
+	procSendRawPacket = get("rc_send_raw_packet")
 	procWarpNPC = get("rc_warp_npc")
 	procRequestServerOptions = get("rc_request_server_options")
 	procRequestFolderConfig = get("rc_request_folder_config")
@@ -2422,6 +2429,48 @@ func SendNCPacket(h Handle, packetID int) error {
 	// so the byte is never read.
 	var dummy [1]byte
 	r1, _, _ := procSendNCPacket.Call(uintptr(h), nativePacketID, uintptr(unsafe.Pointer(&dummy[0])), 0)
+	runtime.KeepAlive(&dummy[0])
+	if r1 == 0 {
+		return errors.New(LastError(h))
+	}
+	return nil
+}
+
+// SendRawPacket sends a packet on the main RC socket. Unlike SendNCPacket,
+// this is used for protocol requests that must be handled by the main server,
+// such as PLI_NPCSERVERQUERY. The byte payload is length-delimited and may
+// contain NUL bytes.
+func SendRawPacket(h Handle, packetID int, data []byte) error {
+	if err := load(); err != nil {
+		return err
+	}
+	nativePacketID, err := nativeInt(packetID)
+	if err != nil {
+		return fmt.Errorf("packet ID: %w", err)
+	}
+	nativeLength, err := nativeInt(len(data))
+	if err != nil {
+		return fmt.Errorf("packet data length: %w", err)
+	}
+	if len(data) > maxNativeBytes {
+		return fmt.Errorf("packet data size %d exceeds limit %d", len(data), maxNativeBytes)
+	}
+
+	// grclib rejects a NULL data pointer even for a zero-length payload. Keep a
+	// valid pointer in that case; the explicit length prevents it from being
+	// read by the native function.
+	var dummy [1]byte
+	dataPtr := unsafe.Pointer(&dummy[0])
+	if len(data) > 0 {
+		dataPtr = unsafe.Pointer(&data[0])
+	}
+	r1, _, _ := procSendRawPacket.Call(
+		uintptr(h),
+		nativePacketID,
+		uintptr(dataPtr),
+		nativeLength,
+	)
+	runtime.KeepAlive(data)
 	runtime.KeepAlive(&dummy[0])
 	if r1 == 0 {
 		return errors.New(LastError(h))

@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"math"
 	"net/url"
 	"strings"
 
@@ -29,6 +31,15 @@ type PluginUIWindowInfo struct {
 	View     any    `json:"view"`
 }
 
+type PluginUITabOptions struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	Icon  string `json:"icon,omitempty"`
+	Order int    `json:"order,omitempty"`
+	Open  bool   `json:"open,omitempty"`
+	View  any    `json:"view"`
+}
+
 type pluginUIWindowState struct {
 	Info   PluginUIWindowInfo
 	Window *application.WebviewWindow
@@ -42,7 +53,255 @@ func validatePluginUIView(view any) error {
 	if len(b) > maxPluginUIViewBytes {
 		return errors.New("plugin UI view exceeds 1 MiB")
 	}
+	var root any
+	if err := json.Unmarshal(b, &root); err != nil {
+		return errors.New("plugin UI view must contain a JSON object")
+	}
+	nodes := 0
+	if err := validatePluginUIViewNode(root, 0, &nodes); err != nil {
+		return err
+	}
 	return nil
+}
+
+func validatePluginUIValue(value any) error {
+	b, err := json.Marshal(value)
+	if err != nil || len(b) > maxPluginUIViewBytes {
+		return errors.New("plugin UI action value is invalid")
+	}
+	var decoded any
+	if err := json.Unmarshal(b, &decoded); err != nil {
+		return errors.New("plugin UI action value is invalid")
+	}
+	switch decoded.(type) {
+	case nil, string, bool, float64:
+		return nil
+	default:
+		return errors.New("plugin UI action value must be a primitive")
+	}
+}
+
+const (
+	maxPluginUIViewDepth = 16
+	maxPluginUIViewNodes = 512
+	maxPluginUITextBytes = 16 << 10
+)
+
+func validatePluginUIViewNode(raw any, depth int, nodes *int) error {
+	if depth > maxPluginUIViewDepth {
+		return errors.New("plugin UI view is too deeply nested")
+	}
+	*nodes = *nodes + 1
+	if *nodes > maxPluginUIViewNodes {
+		return errors.New("plugin UI view contains too many nodes")
+	}
+	object, ok := raw.(map[string]any)
+	if !ok {
+		return errors.New("plugin UI view nodes must be JSON objects")
+	}
+	typeName, ok := object["type"].(string)
+	if !ok || strings.TrimSpace(typeName) == "" {
+		return errors.New("plugin UI view node type is required")
+	}
+	text := func(key string, required bool) error {
+		value, exists := object[key]
+		if !exists {
+			if required {
+				return fmt.Errorf("plugin UI %s is required", key)
+			}
+			return nil
+		}
+		stringValue, valid := value.(string)
+		if !valid || len(stringValue) > maxPluginUITextBytes {
+			return fmt.Errorf("plugin UI %s is invalid", key)
+		}
+		return nil
+	}
+	controlID := func() error {
+		value, ok := object["id"].(string)
+		if !ok || strings.TrimSpace(value) == "" || len(value) > 128 || strings.ContainsAny(value, "\r\n") {
+			return errors.New("plugin UI control id is invalid")
+		}
+		return nil
+	}
+	children := func() error {
+		values, ok := object["children"].([]any)
+		if !ok || len(values) == 0 {
+			return errors.New("plugin UI children are required")
+		}
+		for _, child := range values {
+			if err := validatePluginUIViewNode(child, depth+1, nodes); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	switch typeName {
+	case "stack", "row", "card":
+		if typeName == "card" {
+			if err := text("title", false); err != nil {
+				return err
+			}
+			if err := text("description", false); err != nil {
+				return err
+			}
+		}
+		return children()
+	case "text", "heading":
+		return text("text", true)
+	case "badge":
+		return text("text", true)
+	case "divider":
+		return nil
+	case "button":
+		if err := controlID(); err != nil {
+			return err
+		}
+		if err := text("label", true); err != nil {
+			return err
+		}
+		return text("action", true)
+	case "input", "textarea":
+		if err := controlID(); err != nil {
+			return err
+		}
+		if err := text("label", true); err != nil {
+			return err
+		}
+		if _, exists := object["value"]; exists {
+			if err := text("value", false); err != nil {
+				return err
+			}
+		}
+		if action, exists := object["action"]; exists {
+			if _, ok := action.(string); !ok {
+				return errors.New("plugin UI action is invalid")
+			}
+		}
+		return nil
+	case "checkbox":
+		if err := controlID(); err != nil {
+			return err
+		}
+		if err := text("label", true); err != nil {
+			return err
+		}
+		if value, exists := object["value"]; exists {
+			if _, ok := value.(bool); !ok {
+				return errors.New("plugin UI checkbox value is invalid")
+			}
+		}
+		if action, exists := object["action"]; exists {
+			if _, ok := action.(string); !ok {
+				return errors.New("plugin UI action is invalid")
+			}
+		}
+		return nil
+	case "select":
+		if err := controlID(); err != nil {
+			return err
+		}
+		if err := text("label", true); err != nil {
+			return err
+		}
+		options, ok := object["options"].([]any)
+		if !ok || len(options) == 0 || len(options) > 128 {
+			return errors.New("plugin UI select options are invalid")
+		}
+		for _, rawOption := range options {
+			option, ok := rawOption.(map[string]any)
+			if !ok {
+				return errors.New("plugin UI select option is invalid")
+			}
+			if label, ok := option["label"].(string); !ok || strings.TrimSpace(label) == "" || len(label) > maxPluginUITextBytes {
+				return errors.New("plugin UI select option label is invalid")
+			}
+			if value, ok := option["value"].(string); !ok || len(value) > maxPluginUITextBytes {
+				return errors.New("plugin UI select option value is invalid")
+			}
+		}
+		return nil
+	case "progress":
+		value, ok := object["value"].(float64)
+		if !ok || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+			return errors.New("plugin UI progress value is invalid")
+		}
+		maxValue := 100.0
+		if rawMax, exists := object["max"]; exists {
+			var valid bool
+			maxValue, valid = rawMax.(float64)
+			if !valid || math.IsNaN(maxValue) || math.IsInf(maxValue, 0) || maxValue <= 0 {
+				return errors.New("plugin UI progress maximum is invalid")
+			}
+		}
+		if value > maxValue {
+			return errors.New("plugin UI progress value exceeds maximum")
+		}
+		return text("label", false)
+	case "empty":
+		if err := text("title", true); err != nil {
+			return err
+		}
+		return text("description", false)
+	case "code":
+		return text("value", true)
+	case "table":
+		columns, ok := object["columns"].([]any)
+		if !ok || len(columns) == 0 || len(columns) > 128 {
+			return errors.New("plugin UI table columns are invalid")
+		}
+		for _, rawColumn := range columns {
+			column, ok := rawColumn.(map[string]any)
+			if !ok {
+				return errors.New("plugin UI table column is invalid")
+			}
+			key, keyOK := column["key"].(string)
+			label, labelOK := column["label"].(string)
+			if !keyOK || strings.TrimSpace(key) == "" || len(key) > 128 || !labelOK || strings.TrimSpace(label) == "" || len(label) > maxPluginUITextBytes {
+				return errors.New("plugin UI table column is invalid")
+			}
+		}
+		rows, ok := object["rows"].([]any)
+		if !ok || len(rows) > 512 {
+			return errors.New("plugin UI table rows are invalid")
+		}
+		for _, rawRow := range rows {
+			row, ok := rawRow.(map[string]any)
+			if !ok {
+				return errors.New("plugin UI table row is invalid")
+			}
+			for _, value := range row {
+				switch value.(type) {
+				case nil, string, bool, float64:
+				default:
+					return errors.New("plugin UI table cell is invalid")
+				}
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported plugin UI node type %q", typeName)
+	}
+}
+
+func validatePluginUITabOptions(options PluginUITabOptions) error {
+	options.ID = strings.TrimSpace(options.ID)
+	options.Title = strings.TrimSpace(options.Title)
+	if options.ID == "" || len(options.ID) > 128 || strings.ContainsAny(options.ID, "\\/:\r\n") {
+		return errors.New("plugin UI tab id is invalid")
+	}
+	if options.Title == "" || len(options.Title) > 200 || strings.ContainsAny(options.Title, "\r\n") {
+		return errors.New("plugin UI tab title is invalid")
+	}
+	switch options.Icon {
+	case "", "dashboard", "terminal", "settings", "puzzle":
+	default:
+		return errors.New("plugin UI tab icon is invalid")
+	}
+	if options.Order < -100000 || options.Order > 100000 {
+		return errors.New("plugin UI tab order is invalid")
+	}
+	return validatePluginUIView(options.View)
 }
 
 func validatePluginUIWindowOptions(options PluginUIWindowOptions) error {
@@ -249,7 +508,7 @@ func (a *App) PluginUIAction(pluginID, windowID, action string, value any) error
 	if pluginID == "" || windowID == "" || action == "" || len(action) > 128 || strings.ContainsAny(action, "\r\n") {
 		return errors.New("invalid plugin UI action")
 	}
-	if err := validatePluginUIView(value); err != nil {
+	if err := validatePluginUIValue(value); err != nil {
 		return err
 	}
 	if a.plugins == nil {

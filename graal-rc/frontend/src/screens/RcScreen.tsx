@@ -5,7 +5,7 @@
 // TRemoteFrame.
 import {useCallback, useEffect, useMemo, useRef, useState} from "react"
 import {Events} from "@wailsio/runtime"
-import {Bell, BellRing, BookmarkPlus, Command, LogOut, Plus, Search, ScrollText, Send, Settings, Trash2, UserRound, X} from "lucide-react"
+import {Bell, BellRing, BookmarkPlus, Command, LayoutDashboard, LogOut, Plus, Puzzle, Search, ScrollText, Send, Settings, Terminal, Trash2, UserRound, X} from "lucide-react"
 import {toast} from "sonner"
 
 import {Button} from "@/components/ui/button"
@@ -34,6 +34,9 @@ import {useLanguage} from "@/hooks/useLanguage"
 import {usePrivateMessages} from "@/hooks/usePrivateMessages"
 import {useCommandMacros} from "@/hooks/useCommandMacros"
 import {useOperationalNotifications} from "@/hooks/useOperationalNotifications"
+import {pluginRuntime} from "@/plugins/runtime"
+import type {PluginUITabIcon, PluginUITabInfo} from "@/plugins/types"
+import {PluginTabScreen} from "@/screens/PluginTabScreen"
 
 interface RcScreenProps {
   serverName: string
@@ -53,6 +56,18 @@ function ncLabel(s: NCStatus, playerCount: number, t: (key: string, vars?: Recor
   }
   if (s.connected) return t("rc.connecting")
   return t("rc.ncOff")
+}
+
+function pluginTabKey(tab: Pick<PluginUITabInfo, "pluginId" | "id">): string {
+  return `plugin:${tab.pluginId}:${tab.id}`
+}
+
+function pluginTabIcon(icon: PluginUITabIcon | undefined) {
+  if (icon === "dashboard") return <LayoutDashboard />
+  if (icon === "terminal") return <Terminal />
+  if (icon === "settings") return <Settings />
+  if (icon === "puzzle") return <Puzzle />
+  return null
 }
 
 type MacroParameterDraft = CommandMacroParameter & {id: string}
@@ -568,7 +583,38 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
   const [changelogOpen, setChangelogOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const [notificationsOpen, setNotificationsOpen] = useState(false)
+  const [pluginTabs, setPluginTabs] = useState<PluginUITabInfo[]>(() => pluginRuntime.getTabs())
+  const [activeWorkspace, setActiveWorkspace] = useState(() => {
+    const initialTab = pluginRuntime.getTabs().find(tab => tab.open)
+    return initialTab ? pluginTabKey(initialTab) : "chat"
+  })
   const notificationCenter = useOperationalNotifications()
+
+  useEffect(() => {
+    let disposed = false
+    const refreshTabs = () => {
+      if (!disposed) setPluginTabs(pluginRuntime.getTabs())
+    }
+    const openTab = (event: Event) => {
+      const detail = (event as CustomEvent<{pluginId?: string; tabId?: string}>).detail
+      if (!detail?.pluginId || !detail.tabId) return
+      const tab = pluginRuntime.getTabs().find(item => item.pluginId === detail.pluginId && item.id === detail.tabId)
+      if (tab) setActiveWorkspace(pluginTabKey(tab))
+    }
+    refreshTabs()
+    window.addEventListener("gorc:plugin-tabs", refreshTabs)
+    window.addEventListener("gorc:plugin-tab-open", openTab)
+    void pluginRuntime.refresh().then(refreshTabs).catch(() => {})
+    return () => {
+      disposed = true
+      window.removeEventListener("gorc:plugin-tabs", refreshTabs)
+      window.removeEventListener("gorc:plugin-tab-open", openTab)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (activeWorkspace !== "chat" && !pluginTabs.some(tab => pluginTabKey(tab) === activeWorkspace)) setActiveWorkspace("chat")
+  }, [activeWorkspace, pluginTabs])
 
   const openScriptManager = () => {
     void rcService.openScriptManager().catch(() => {
@@ -802,42 +848,64 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
         />
         <div className="flex min-h-0 flex-1 flex-col p-3">
           <Tabs
-            value={activeChannel}
-            onValueChange={setActiveChannel}
+            value={activeWorkspace}
+            onValueChange={setActiveWorkspace}
             className="flex min-h-0 flex-1 flex-col"
           >
-            <div className="flex items-center justify-between gap-2">
-              <TabsList>
-                {tabs.map((t, i) => (
-                  <TabsTrigger
-                    key={t.channel || "server"}
-                    value={t.channel}
-                    draggable
-                    onDragStart={() => (dragIndex.current = i)}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={() => {
-                      if (dragIndex.current >= 0) reorderTabs(dragIndex.current, i)
-                      dragIndex.current = -1
-                    }}
-                    onDragEnd={() => (dragIndex.current = -1)}
-                    className="cursor-grab active:cursor-grabbing"
-                  >
-                    {t.label}
-                  </TabsTrigger>
+            <TabsList>
+              <TabsTrigger value="chat">RC Chat</TabsTrigger>
+              {pluginTabs.map(tab => (
+                <TabsTrigger key={pluginTabKey(tab)} value={pluginTabKey(tab)} title={`${tab.pluginId}: ${tab.title}`}>
+                  {pluginTabIcon(tab.icon)}
+                  {tab.title}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+            <TabsContent value="chat" className="mt-2 min-h-0 flex-1">
+              <Tabs
+                value={activeChannel}
+                onValueChange={setActiveChannel}
+                className="flex min-h-0 flex-1 flex-col"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <TabsList>
+                    {tabs.map((t, i) => (
+                      <TabsTrigger
+                        key={t.channel || "server"}
+                        value={t.channel}
+                        draggable
+                        onDragStart={() => (dragIndex.current = i)}
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={() => {
+                          if (dragIndex.current >= 0) reorderTabs(dragIndex.current, i)
+                          dragIndex.current = -1
+                        }}
+                        onDragEnd={() => (dragIndex.current = -1)}
+                        className="cursor-grab active:cursor-grabbing"
+                      >
+                        {t.label}
+                      </TabsTrigger>
+                    ))}
+                  </TabsList>
+                </div>
+                {tabs.map((t) => (
+                  <TabsContent key={t.channel || "server"} value={t.channel} className="mt-2 min-h-0 flex-1">
+                    <ChatPane
+                      messages={t.messages}
+                      settings={settings}
+                      onSend={(text) => send(t.channel, text)}
+                      history={inputHistory}
+                      players={players}
+                      serverName={displayServer || serverName}
+                      commandMacros={commandMacros}
+                    />
+                  </TabsContent>
                 ))}
-              </TabsList>
-            </div>
-            {tabs.map((t) => (
-              <TabsContent key={t.channel || "server"} value={t.channel} className="mt-2 min-h-0 flex-1">
-                <ChatPane
-                  messages={t.messages}
-                  settings={settings}
-                  onSend={(text) => send(t.channel, text)}
-                  history={inputHistory}
-                  players={players}
-                  serverName={displayServer || serverName}
-                  commandMacros={commandMacros}
-                />
+              </Tabs>
+            </TabsContent>
+            {pluginTabs.map(tab => (
+              <TabsContent key={pluginTabKey(tab)} value={pluginTabKey(tab)} className="mt-2 min-h-0 flex-1">
+                <PluginTabScreen tab={tab} />
               </TabsContent>
             ))}
           </Tabs>

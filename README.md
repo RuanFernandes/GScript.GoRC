@@ -23,6 +23,7 @@ through typed library calls.
 
 - [What it does](#what-it-does)
 - [Highlights](#highlights)
+- [Plugin tabs](#plugin-tabs)
 - [Screenshots](#screenshots)
 - [How it works](#how-it-works)
 - [Project layout](#project-layout)
@@ -54,6 +55,8 @@ operations a staff member needs:
   and visualize the schema as an ER diagram, then commit changes back atomically.
 - **Scripting editor** — a Monaco-based editor with syntax highlighting for the
   server scripting language, a remote theme gallery, and configurable fonts.
+- **Plugin workspace** — extend the connected RC with host-rendered tabs and
+  windows, interactive controls, commands, events, and capability-checked APIs.
 
 Everything runs in independent native windows that share one live session.
 
@@ -68,7 +71,49 @@ Everything runs in independent native windows that share one live session.
   (DPAPI on Windows) and are never exposed to the UI layer.
 - **Parity with the reference tooling**, plus modern UX: inline editing, ER diagrams,
   SQL autocomplete, drag-and-drop uploads, and a themeable editor.
+- **Safe plugin surfaces.** Plugins can add first-class RC tabs from a declarative
+  view tree without injecting HTML into the host UI; every capability remains
+  sandboxed and requires explicit manifest approval.
 - **Cross-platform releases** via GitHub Actions.
+
+### Plugin tabs
+
+Plugins can add a workspace tab to the connected RC with the `ui.tabs` capability.
+Tabs are scoped to the plugin, use serializable views, and can update their content
+or react to button, input, select, textarea, and checkbox actions without touching
+the RC DOM:
+
+```ts
+const tab = this.ui.tabs.register({
+  id: "status",
+  title: "Server status",
+  icon: "dashboard",
+  open: true,
+  view: {
+    type: "stack",
+    children: [
+      {type: "heading", text: "Server status"},
+      {type: "badge", text: "Ready", tone: "success"},
+      {type: "button", id: "refresh", label: "Refresh", action: "refresh"},
+    ],
+  },
+})
+
+this.ui.tabs.onAction(async ({tabId, action}) => {
+  if (tabId !== tab.id || action !== "refresh") return
+  tab.update({type: "text", text: new Date().toISOString(), tone: "muted"})
+})
+```
+
+Declare and approve the capability in `manifest.json`:
+
+```json
+{"permissions": {"apis": ["ui.tabs"]}}
+```
+
+The existing `ui.windows` API remains available for separate host-rendered
+windows. The plugin API stays at version 1 because this release adds capabilities
+without breaking existing plugins.
 
 ## Screenshots
 

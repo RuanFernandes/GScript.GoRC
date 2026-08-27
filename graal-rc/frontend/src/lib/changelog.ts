@@ -11,11 +11,25 @@ export interface ChangelogEntry {
 // the visible history from nullborne.com when the release service is reachable.
 const CHANGELOG_PT_BR: ChangelogEntry[] = [
   {
+    version: "4.2.0",
+    date: "27/08/2026",
+    title: "Tabs de plugins e estabilidade de conexão",
+    summary: "Plugins agora podem criar telas dentro do RC, com controles interativos e as correções mais recentes de reconexão do NC.",
+    current: true,
+    changes: [
+      "Plugins podem registrar, atualizar, abrir e fechar tabs no workspace principal do RC sem inserir HTML na interface do host.",
+      "As views agora incluem cards, badges, textareas, checkboxes, barras de progresso e estados vazios, com ações tipadas devolvidas ao sandbox do plugin.",
+      "O template de plugin já inclui um exemplo de tab funcionando e solicita a permissão ui.tabs para servir como ponto de partida.",
+      "As views declarativas e os payloads de tabs são validados e limitados pelo host, mantendo compatibilidade com plugins que usam ui.windows.",
+      "A recuperação do NC atualiza o endpoint dedicado do NPC-server antes de uma tentativa única de reconexão após cada queda observada, e abrir um script aguarda a sessão NC voltar em vez de falhar imediatamente.",
+    ],
+  },
+  {
     version: "4.1.3",
     date: "27/08/2026",
     title: "Correções de bugs",
     summary: "Corrige um problema que podia desconectar o RC durante o uso.",
-    current: true,
+    current: false,
     changes: [
       "Corrigido um problema que podia interromper a conexão do RC e deixá-lo desconectado durante o uso.",
     ],
@@ -330,8 +344,19 @@ const CHANGELOG_PT_BR: ChangelogEntry[] = [
 
 const CHANGELOG_EN: ChangelogEntry[] = [
   {
+    version: "4.2.0", date: "2026-08-27", title: "Plugin workspace tabs and connection stability",
+    summary: "Plugins can now create screens inside RC with interactive controls, alongside the latest NC reconnect and script-opening fixes.", current: true,
+    changes: [
+      "Plugins can register, update, open, and close tabs in the main RC workspace without injecting HTML into the host interface.",
+      "Views now include cards, badges, textareas, checkboxes, progress indicators, and empty states, with typed control actions delivered back to the plugin sandbox.",
+      "The generated plugin template includes a working tab example and requests the ui.tabs permission as a clear starting point.",
+      "Declarative views and tab payloads are validated and bounded by the host while existing ui.windows plugins remain compatible.",
+      "NC recovery refreshes the dedicated NPC-server endpoint before one reconnect attempt after each observed drop, and opening a script waits for the restored NC session instead of failing immediately.",
+    ],
+  },
+  {
     version: "4.1.3", date: "2026-08-27", title: "Bug fixes",
-    summary: "Fixes an issue that could disconnect RC during use.", current: true,
+    summary: "Fixes an issue that could disconnect RC during use.", current: false,
     changes: [
       "Fixed an issue that could interrupt the RC connection and leave it disconnected during use.",
     ],
@@ -574,8 +599,19 @@ const CHANGELOG_EN: ChangelogEntry[] = [
 
 const CHANGELOG_ES: ChangelogEntry[] = [
   {
+    version: "4.2.0", date: "2026-08-27", title: "Pestañas de plugins y estabilidad de conexión",
+    summary: "Los plugins ahora pueden crear pantallas dentro de RC con controles interactivos, junto con las últimas correcciones de reconexión de NC y apertura de scripts.", current: true,
+    changes: [
+      "Los plugins pueden registrar, actualizar, abrir y cerrar pestañas en el espacio principal de RC sin insertar HTML en la interfaz del host.",
+      "Las vistas ahora incluyen tarjetas, badges, textareas, checkboxes, indicadores de progreso y estados vacíos, con acciones tipadas devueltas al sandbox del plugin.",
+      "La plantilla de plugin incluye un ejemplo funcional de pestaña y solicita el permiso ui.tabs como punto de partida.",
+      "Las vistas declarativas y los payloads de pestañas son validados y limitados por el host, manteniendo la compatibilidad con plugins que usan ui.windows.",
+      "La recuperación de NC actualiza el endpoint dedicado del NPC-server antes de un único intento de reconexión después de cada caída observada, y abrir un script espera a que vuelva la sesión NC en lugar de fallar de inmediato.",
+    ],
+  },
+  {
     version: "4.1.3", date: "2026-08-27", title: "Correcciones de errores",
-    summary: "Corrige un problema que podía desconectar el RC durante el uso.", current: true,
+    summary: "Corrige un problema que podía desconectar el RC durante el uso.", current: false,
     changes: [
       "Se corrigió un problema que podía interrumpir la conexión del RC y dejarlo desconectado durante el uso.",
     ],

@@ -794,7 +794,9 @@ func (a *App) PluginCall(id, method string, args []any) (any, error) {
 	if strings.HasPrefix(method, "monaco.") {
 		api = "monaco"
 	}
-	if strings.HasPrefix(method, "ui.") {
+	if strings.HasPrefix(method, "ui.tabs.") {
+		api = "ui.tabs"
+	} else if strings.HasPrefix(method, "ui.") {
 		api = "ui.window"
 	}
 	if err := a.plugins.RequireAPI(id, api); err != nil {
@@ -1092,6 +1094,41 @@ func (a *App) PluginCall(id, method string, args []any) (any, error) {
 		return nil, a.PluginUIWindowClose(id, windowID)
 	case "ui.window.closeAll":
 		return nil, a.PluginUIWindowCloseAll(id)
+	case "ui.tabs.register":
+		var options PluginUITabOptions
+		if err := pluginJSONArg(args, 0, &options); err != nil {
+			return nil, err
+		}
+		if err := validatePluginUITabOptions(options); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	case "ui.tabs.update":
+		tabID, err := pluginStringArg(args, 0)
+		if err != nil {
+			return nil, err
+		}
+		if len(args) < 2 {
+			return nil, errors.New("plugin UI tab view is required")
+		}
+		if strings.TrimSpace(tabID) == "" || len(tabID) > 128 || strings.ContainsAny(tabID, "\\/:\r\n") {
+			return nil, errors.New("plugin UI tab id is invalid")
+		}
+		if err := validatePluginUIView(args[1]); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	case "ui.tabs.close", "ui.tabs.open":
+		tabID, err := pluginStringArg(args, 0)
+		if err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(tabID) == "" || len(tabID) > 128 || strings.ContainsAny(tabID, "\\/:\r\n") {
+			return nil, errors.New("plugin UI tab id is invalid")
+		}
+		return nil, nil
+	case "ui.tabs.closeAll":
+		return nil, nil
 	default:
 		return nil, errors.New("unknown plugin action: " + method)
 	}
@@ -1341,7 +1378,8 @@ func (a *App) Logout() {
 	a.refreshServerChrome()
 }
 
-// ConnectToNCServer explicitly opens the NC (script) socket.
+// ConnectToNCServer refreshes the NPC-server endpoint and schedules the NC
+// (script) socket connection.
 func (a *App) ConnectToNCServer() error { return a.sessions.ConnectToNCServer() }
 
 // DisconnectNC closes the NC socket.
