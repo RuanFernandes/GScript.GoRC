@@ -342,6 +342,9 @@ const (
 	// location. The reply updates grclib's cached NC endpoint, including its
 	// dedicated port, before rc_connect_to_nc_server is called.
 	PacketNPCServerQuery = 94
+	// PacketNCNPCGet is the empty NC keepalive packet sent by the reference
+	// RemoteControl client while the NC socket is authenticated.
+	PacketNCNPCGet = 103
 )
 
 // proc wraps a resolved grclib symbol so call sites stay identical across OSes.

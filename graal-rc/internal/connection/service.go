@@ -66,12 +66,10 @@ type Service struct {
 	ncConnectionAttempted         bool       // initial automatic attempt for this main-server session
 	ncManuallyDisconnected        bool       // disabled by an explicit DisconnectNC call
 	nextNCConnectAttempt          time.Time  // scheduled after refreshing the NPC-server location
+	nextNCKeepalive               time.Time  // next empty PLI_NC_NPCGET packet, guarded by mu
 	ncConnectionWasUp             bool       // NC was observed connected at least once
 	ncAutomaticReconnectAttempted bool       // one retry consumed while this NC drop remains down
 	ncRequestMu                   sync.Mutex // serializes brief NC sends and synchronous mutations
-	ncHeartbeatMu                 sync.Mutex
-	ncHeartbeatCancel             context.CancelFunc
-	ncHeartbeatDone               chan struct{}
 	// scriptListsMu coalesces concurrent reads of the native NC script caches.
 	// GetScriptLists can be called from more than one Wails window and from
 	// several cache-change events at once, while grclib exposes one shared
@@ -1134,8 +1132,8 @@ type NCStatus struct {
 // startPump spawns a goroutine that pumps rc_process_events for the handle so
 // connection + chat/IRC/data callbacks are delivered. A previous pump is
 // stopped first. It also lazily opens the NC (script) socket once the server
-// reports one (mirroring the reference client's pump loop), and starts the
-// lightweight NC heartbeat for the lifetime of this session.
+// reports one (mirroring the reference client's pump loop) and sends the
+// lightweight keepalive from that same pump.
 func (s *Service) startPump(h rclib.Handle) {
 	s.stopPump()
 	s.resetNCConnectionState()
@@ -1147,7 +1145,6 @@ func (s *Service) startPump(h rclib.Handle) {
 	s.pumpDone = done
 	s.pumpErr = nil
 	s.pumpMu.Unlock()
-	s.startNCHeartbeat(h)
 	go func() {
 		defer func() {
 			s.finishPump(done)
@@ -1185,6 +1182,7 @@ func (s *Service) pumpTick(h rclib.Handle) (err error) {
 		return err
 	}
 	s.maybeConnectNC(h)
+	s.processNCKeepalive(h)
 	s.settleChannelLeaves()
 	return nil
 }
@@ -1206,7 +1204,6 @@ func (s *Service) failPump(h rclib.Handle, done chan struct{}, err error) {
 		return
 	}
 
-	s.stopNCHeartbeat()
 	pumpErr := fmt.Errorf("event pump stopped: %w", err)
 	s.mu.Lock()
 	if s.handle == h {
@@ -1214,6 +1211,7 @@ func (s *Service) failPump(h rclib.Handle, done chan struct{}, err error) {
 		s.serverEpoch++
 		s.ncConnectionAttempted = true
 		s.nextNCConnectAttempt = time.Time{}
+		s.nextNCKeepalive = time.Time{}
 		s.ncConnectionWasUp = false
 		s.ncAutomaticReconnectAttempted = false
 		s.channels = nil
@@ -1245,12 +1243,11 @@ func (s *Service) failPump(h rclib.Handle, done chan struct{}, err error) {
 const ncConnectionTimeout = 15 * time.Second
 
 const (
-	// Control-NPC is present on every server and GetNPCFlags is a small,
-	// read-only NC round trip. It keeps the NC socket exercised without
-	// rebuilding any of the large weapon/class/NPC lists.
-	ncHeartbeatNPCID    = 10000
-	ncHeartbeatInterval = 3 * time.Minute
-	ncHeartbeatTimeout  = 15 * time.Second
+	// The reference C++ client sends this empty NC packet once per minute while
+	// the NC socket is authenticated. It is a protocol keepalive, not a script
+	// or NPC query, so it does not allocate a pending request or wait for a
+	// callback.
+	ncKeepaliveInterval = time.Minute
 )
 
 const ncStatusPollInterval = 100 * time.Millisecond
@@ -1324,6 +1321,7 @@ func (s *Service) claimNCAttempt(force bool) bool {
 		s.ncManuallyDisconnected = false
 		s.ncConnectionAttempted = true
 		s.nextNCConnectAttempt = time.Time{}
+		s.nextNCKeepalive = time.Time{}
 		return true
 	}
 	if s.ncManuallyDisconnected {
@@ -1349,6 +1347,7 @@ func (s *Service) resetNCConnectionState() {
 	s.ncConnectionAttempted = false
 	s.ncManuallyDisconnected = false
 	s.nextNCConnectAttempt = time.Time{}
+	s.nextNCKeepalive = time.Time{}
 	s.ncConnectionWasUp = false
 	s.ncAutomaticReconnectAttempted = false
 	s.mu.Unlock()
@@ -1382,6 +1381,7 @@ func (s *Service) tryConnectNCLocked(h rclib.Handle, force bool) error {
 		// fails; otherwise the same pump tick could schedule a second retry.
 		s.mu.Lock()
 		s.ncConnectionWasUp = false
+		s.nextNCKeepalive = time.Time{}
 		s.mu.Unlock()
 	}
 	if force && rclib.IsNCConnected(h) {
@@ -1468,130 +1468,47 @@ func npcServerLocationQuery(playerID int) ([]byte, error) {
 	}, nil
 }
 
-// startNCHeartbeat starts one cancellable heartbeat loop for the current
-// main-server session. It is deliberately independent from the event pump:
-// the pump must remain free to process the NPC flags callback that completes
-// each heartbeat request.
-func (s *Service) startNCHeartbeat(h rclib.Handle) {
-	s.stopNCHeartbeat()
-
-	s.mu.Lock()
-	epoch := s.serverEpoch
-	s.mu.Unlock()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	s.ncHeartbeatMu.Lock()
-	s.ncHeartbeatCancel = cancel
-	s.ncHeartbeatDone = done
-	s.ncHeartbeatMu.Unlock()
-
-	go func() {
-		defer close(done)
-		s.runNCHeartbeat(ctx, h, epoch)
-	}()
-}
-
-// stopNCHeartbeat cancels the heartbeat and waits for its goroutine to leave
-// before the handle can be reused by another server/session.
-func (s *Service) stopNCHeartbeat() {
-	s.ncHeartbeatMu.Lock()
-	cancel := s.ncHeartbeatCancel
-	done := s.ncHeartbeatDone
-	s.ncHeartbeatCancel = nil
-	s.ncHeartbeatDone = nil
-	s.ncHeartbeatMu.Unlock()
-
-	if cancel != nil {
-		cancel()
-	}
-	if done != nil {
-		<-done
-	}
-}
-
-func (s *Service) runNCHeartbeat(ctx context.Context, h rclib.Handle, epoch uint64) {
-	ticker := time.NewTicker(ncHeartbeatInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if !s.isCurrentNCHeartbeatSession(h, epoch) {
-				return
-			}
-			if err := s.sendNCHeartbeat(ctx, h, epoch); err != nil && !errors.Is(err, context.Canceled) {
-				log.Printf("[nc heartbeat] Control-NPC flags failed: %v", err)
-			} else if err == nil {
-				log.Printf("[nc heartbeat] Control-NPC flags ok")
-			}
-		}
-	}
-}
-
-func (s *Service) isCurrentNCHeartbeatSession(h rclib.Handle, epoch uint64) bool {
+// claimNCKeepalive mirrors the reference client's nextNcKeepalive state. The
+// first authenticated observation arms the deadline; it does not send
+// immediately. Losing authentication clears the deadline so the next login
+// starts a fresh one-minute window.
+func (s *Service) claimNCKeepalive(now time.Time, authenticated bool) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.handle == h && s.serverEpoch == epoch
+	if !authenticated {
+		s.nextNCKeepalive = time.Time{}
+		return false
+	}
+	if s.nextNCKeepalive.IsZero() {
+		s.nextNCKeepalive = now.Add(ncKeepaliveInterval)
+		return false
+	}
+	if now.Before(s.nextNCKeepalive) {
+		return false
+	}
+	s.nextNCKeepalive = now.Add(ncKeepaliveInterval)
+	return true
 }
 
-// sendNCHeartbeat sends one deduplicated GetNPCFlags request and waits for the
-// matching callback. It never reconnects NC; reconnect policy remains owned by
-// the pump, while this loop only prevents an otherwise idle socket from going
-// stale and provides a bounded failure signal.
-func (s *Service) sendNCHeartbeat(ctx context.Context, h rclib.Handle, epoch uint64) error {
-	if err := ctx.Err(); err != nil {
-		return err
+// processNCKeepalive sends the same empty PLI_NC_NPCGET packet as the C++
+// client. It runs on the event-pump goroutine, after rc_process_events, and
+// deliberately does not wait for an NPC response.
+func (s *Service) processNCKeepalive(h rclib.Handle) {
+	if !s.claimNCKeepalive(time.Now(), rclib.IsNCAuthenticated(h)) {
+		return
 	}
-	if !s.isCurrentNCHeartbeatSession(h, epoch) {
-		return context.Canceled
+	s.ncRequestMu.Lock()
+	err := rclib.SendNCPacket(h, rclib.PacketNCNPCGet)
+	s.ncRequestMu.Unlock()
+	if err != nil {
+		log.Printf("[nc heartbeat] empty NPCGET failed: %v", err)
+		return
 	}
-	if !rclib.IsConnected(h) || !rclib.IsAuthenticated(h) || !rclib.HasNCServer(h) {
-		return nil
-	}
-	if !rclib.IsNCConnected(h) || !rclib.IsNCAuthenticated(h) {
-		return nil
-	}
-
-	key := pendingKey("npcflags", strconv.Itoa(ncHeartbeatNPCID))
-	waiter, isNew := s.registerPending(key)
-	if isNew {
-		if err := ctx.Err(); err != nil {
-			s.cancelPending(key, waiter, err)
-			return err
-		}
-		s.ncRequestMu.Lock()
-		err := rclib.GetNPCFlags(h, ncHeartbeatNPCID)
-		s.ncRequestMu.Unlock()
-		if err != nil {
-			s.cancelPending(key, waiter, err)
-			return err
-		}
-	}
-
-	timer := time.NewTimer(ncHeartbeatTimeout)
-	defer timer.Stop()
-	select {
-	case <-waiter.done:
-		return waiter.err
-	case <-ctx.Done():
-		if isNew {
-			s.cancelPending(key, waiter, ctx.Err())
-		}
-		return ctx.Err()
-	case <-timer.C:
-		if isNew {
-			s.cancelPending(key, waiter, fmt.Errorf("timeout after %s", ncHeartbeatTimeout))
-		}
-		return fmt.Errorf("timeout after %s", ncHeartbeatTimeout)
-	}
+	log.Printf("[nc heartbeat] empty NPCGET sent")
 }
 
 // stopPump stops the active event pump, if any.
 func (s *Service) stopPump() {
-	s.stopNCHeartbeat()
 	s.pumpMu.Lock()
 	cancel := s.pumpCancel
 	done := s.pumpDone
@@ -1800,6 +1717,7 @@ func (s *Service) connectToServer(ctx context.Context, index int) error {
 		s.serverName = ""
 		s.ncConnectionAttempted = true
 		s.nextNCConnectAttempt = time.Time{}
+		s.nextNCKeepalive = time.Time{}
 		s.ncConnectionWasUp = false
 		s.ncAutomaticReconnectAttempted = false
 		s.mu.Unlock()
@@ -2110,6 +2028,7 @@ func (s *Service) connectToNC(ctx context.Context) error {
 		s.mu.Lock()
 		if s.handle == h {
 			s.nextNCConnectAttempt = time.Time{}
+			s.nextNCKeepalive = time.Time{}
 			s.ncConnectionWasUp = false
 		}
 		s.mu.Unlock()
@@ -2204,6 +2123,7 @@ func (s *Service) DisconnectNC() error {
 	s.ncManuallyDisconnected = true
 	s.ncConnectionAttempted = true
 	s.nextNCConnectAttempt = time.Time{}
+	s.nextNCKeepalive = time.Time{}
 	s.ncConnectionWasUp = false
 	s.mu.Unlock()
 	err := rclib.DisconnectNC(h)
@@ -4240,6 +4160,7 @@ func (s *Service) logout() {
 	s.ncConnectionAttempted = false
 	s.ncManuallyDisconnected = false
 	s.nextNCConnectAttempt = time.Time{}
+	s.nextNCKeepalive = time.Time{}
 	s.ncConnectionWasUp = false
 	s.ncAutomaticReconnectAttempted = false
 	s.channels = nil

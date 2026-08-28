@@ -17,7 +17,7 @@
         PackageDisplayName="Graal Remote Control"
         PublisherName="CN=RuanFernandes"
         PublisherDisplayName="RuanFernandes"
-        Version="4.2.2.0"
+        Version="4.2.3.0"
         PackageDescription="Graal Remote Control client">
         <Capabilities>
             <Capability Name="runFullTrust" />

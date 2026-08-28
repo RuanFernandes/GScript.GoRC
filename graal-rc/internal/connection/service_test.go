@@ -226,6 +226,33 @@ func TestNPCServerLocationQueryMatchesReferenceEncoding(t *testing.T) {
 	}
 }
 
+func TestNCKeepaliveMatchesReferenceSchedule(t *testing.T) {
+	s := NewService()
+	started := time.Date(2026, time.August, 28, 12, 0, 0, 0, time.UTC)
+
+	if s.claimNCKeepalive(started, true) {
+		t.Fatal("first authenticated NC observation sent a keepalive immediately")
+	}
+	if got := s.nextNCKeepalive; !got.Equal(started.Add(ncKeepaliveInterval)) {
+		t.Fatalf("first keepalive deadline = %v, want %v", got, started.Add(ncKeepaliveInterval))
+	}
+	if s.claimNCKeepalive(started.Add(ncKeepaliveInterval-time.Nanosecond), true) {
+		t.Fatal("keepalive was sent before its deadline")
+	}
+	if !s.claimNCKeepalive(started.Add(ncKeepaliveInterval), true) {
+		t.Fatal("keepalive was not sent at its deadline")
+	}
+	if got := s.nextNCKeepalive; !got.Equal(started.Add(2 * ncKeepaliveInterval)) {
+		t.Fatalf("next keepalive deadline = %v, want %v", got, started.Add(2*ncKeepaliveInterval))
+	}
+	if s.claimNCKeepalive(started.Add(2*ncKeepaliveInterval-time.Nanosecond), false) {
+		t.Fatal("unauthenticated NC state sent a keepalive")
+	}
+	if !s.nextNCKeepalive.IsZero() {
+		t.Fatalf("unauthenticated NC state left deadline %v", s.nextNCKeepalive)
+	}
+}
+
 func TestEnsureSelfFolderRightsRechecksAfterSerializedRefresh(t *testing.T) {
 	s := NewService()
 	s.rightsRefreshMu.Lock()
