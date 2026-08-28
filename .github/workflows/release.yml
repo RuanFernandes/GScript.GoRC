@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       custom_tag:
-        description: "Release tag to build (for example v4.2.1)"
+        description: "Release tag to build (for example v4.2.2)"
         required: true
-        default: "v4.2.1"
+        default: "v4.2.2"
 
 permissions:
   contents: write

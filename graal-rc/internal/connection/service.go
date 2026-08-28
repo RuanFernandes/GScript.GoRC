@@ -1249,7 +1249,7 @@ const (
 	// read-only NC round trip. It keeps the NC socket exercised without
 	// rebuilding any of the large weapon/class/NPC lists.
 	ncHeartbeatNPCID    = 10000
-	ncHeartbeatInterval = 5 * time.Minute
+	ncHeartbeatInterval = 3 * time.Minute
 	ncHeartbeatTimeout  = 15 * time.Second
 )
 
