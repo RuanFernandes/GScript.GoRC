@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"runtime/debug"
 	"sort"
 	"strconv"
@@ -51,25 +52,33 @@ type Status struct {
 // Service manages the grclib connection handle and the credentials in use.
 // Methods are safe to call from Wails-bound goroutines.
 type Service struct {
-	mu                            sync.Mutex
-	handle                        rclib.Handle
-	creds                         Credentials
-	serverName                    string // name of the server selected in ConnectToServer; "" when none
-	serverEpoch                   uint64 // increments whenever the active server/session changes
-	lifecycleMu                   sync.Mutex
-	lifecycleOp                   *connectionOperation
-	pumpMu                        sync.Mutex
-	pumpCancel                    context.CancelFunc
-	pumpDone                      chan struct{}
-	pumpErr                       error
-	ncConnectMu                   sync.Mutex // serializes native NC connect/disconnect operations
-	ncConnectionAttempted         bool       // initial automatic attempt for this main-server session
-	ncManuallyDisconnected        bool       // disabled by an explicit DisconnectNC call
-	nextNCConnectAttempt          time.Time  // scheduled after refreshing the NPC-server location
-	nextNCKeepalive               time.Time  // next empty PLI_NC_NPCGET packet, guarded by mu
-	ncConnectionWasUp             bool       // NC was observed connected at least once
-	ncAutomaticReconnectAttempted bool       // one retry consumed while this NC drop remains down
-	ncRequestMu                   sync.Mutex // serializes brief NC sends and synchronous mutations
+	mu                       sync.Mutex
+	handle                   rclib.Handle
+	creds                    Credentials
+	serverName               string // name of the server selected in ConnectToServer; "" when none
+	serverEpoch              uint64 // increments whenever the active server/session changes
+	serverEndpoint           string
+	lastServerName           string // original listserver identity, retained after a transport drop
+	newProtocol              bool
+	sessionDone              chan struct{} // closed on a server/session transition; guarded by mu
+	fileTransferDispatchMu   sync.RWMutex  // prevents queued file sends crossing a lifecycle operation
+	lifecycleMu              sync.Mutex
+	lifecycleOp              *connectionOperation
+	pumpMu                   sync.Mutex
+	pumpCancel               context.CancelFunc
+	pumpDone                 chan struct{}
+	pumpErr                  error
+	ncConnectMu              sync.Mutex // serializes native NC connect/disconnect operations
+	ncConnectionAttempted    bool       // initial automatic attempt for this main-server session
+	ncManuallyDisconnected   bool       // disabled by an explicit DisconnectNC call
+	nextNCConnectAttempt     time.Time  // scheduled after refreshing the NPC-server location
+	nextNCKeepalive          time.Time  // next empty PLI_NC_NPCGET packet, guarded by mu
+	ncConnectionWasUp        bool       // NC was observed connected at least once
+	ncReconnectAttempts      int
+	nextNCAutomaticReconnect time.Time
+	ncAttemptDeadline        time.Time
+	ncAuthenticatedSince     time.Time
+	ncRequestMu              sync.Mutex // serializes brief NC sends and synchronous mutations
 	// scriptListsMu coalesces concurrent reads of the native NC script caches.
 	// GetScriptLists can be called from more than one Wails window and from
 	// several cache-change events at once, while grclib exposes one shared
@@ -136,12 +145,12 @@ type Service struct {
 	// pendingFiles correlates a file download request (by remote path) to its
 	// content bytes, delivered asynchronously via the FileReceived callback.
 	// grclib has one active File Browser transfer slot: starting another request
-	// clears the native transfer state for the previous one. fileDownloadMu is
+	// clears the native transfer state for the previous one. fileDownloadSlot is
 	// held from request dispatch until the matching callback arrives so normal
 	// downloads and thumbnail previews cannot overwrite each other.
-	fileDownloadMu sync.Mutex
-	pendingFilesMu sync.Mutex
-	pendingFiles   map[string]*fileWait
+	fileDownloadSlot chan struct{} // cancellation-aware single-transfer gate, guarded by mu
+	pendingFilesMu   sync.Mutex
+	pendingFiles     map[string]*fileWait
 	// channels is the authoritative set of joined IRC channels, derived from the
 	// join/left marker lines. It is the single source of truth for which IRC
 	// tabs the frontend should show; the frontend reconciles its tabs against a
@@ -1208,12 +1217,12 @@ func (s *Service) failPump(h rclib.Handle, done chan struct{}, err error) {
 	s.mu.Lock()
 	if s.handle == h {
 		s.serverName = ""
-		s.serverEpoch++
+		s.invalidateSessionLocked()
 		s.ncConnectionAttempted = true
 		s.nextNCConnectAttempt = time.Time{}
 		s.nextNCKeepalive = time.Time{}
 		s.ncConnectionWasUp = false
-		s.ncAutomaticReconnectAttempted = false
+		s.resetNCRetryLocked()
 		s.channels = nil
 		s.maxUpload = 0
 	}
@@ -1262,20 +1271,32 @@ const ncReconnectLocationDelay = 500 * time.Millisecond
 const ncFetchConcurrency = 16
 
 // maybeConnectNC opens the NC socket when the server exposes one to this
-// account (HasNCServer). It performs the initial attempt once, and permits one
-// automatic retry after observing a connected NC socket go down. Both the
+// account (HasNCServer). Failed handshakes and later drops receive a bounded
+// number of retries with exponential backoff and jitter. Both the
 // automatic retry and the explicit reconnect refresh the NPC-server location
 // before the native connection attempt.
 func (s *Service) maybeConnectNC(h rclib.Handle) {
 	s.ncConnectMu.Lock()
 	defer s.ncConnectMu.Unlock()
+	s.mu.Lock()
+	active := s.handle == h && s.serverName != "" && !sessionCanceled(s.sessionDone)
+	s.mu.Unlock()
+	if !active {
+		return
+	}
 
-	if rclib.IsNCConnected(h) {
+	if !rclib.IsConnected(h) || !rclib.IsAuthenticated(h) || !rclib.HasNCServer(h) {
+		return
+	}
+	if rclib.IsNCConnected(h) && rclib.IsNCAuthenticated(h) {
 		s.markNCConnectionObserved()
 		return
 	}
 	if s.claimNCAutomaticReconnect() {
-		log.Printf("[nc] automatic reconnect requested after disconnect")
+		s.mu.Lock()
+		attempt := s.ncReconnectAttempts
+		s.mu.Unlock()
+		log.Printf("[nc] automatic reconnect requested attempt=%d max=%d", attempt, ncMaxReconnectAttempts)
 		if err := s.tryConnectNCLocked(h, true); err != nil {
 			log.Printf("[nc] automatic reconnect failed: %v", err)
 		}
@@ -1286,34 +1307,9 @@ func (s *Service) maybeConnectNC(h rclib.Handle) {
 	}
 }
 
-func (s *Service) markNCConnectionObserved() {
-	s.mu.Lock()
-	if s.ncAutomaticReconnectAttempted && !s.ncConnectionWasUp {
-		// A reconnect completed after the previous drop. The next drop gets its
-		// own single retry, while a failed retry remains latched below.
-		s.ncAutomaticReconnectAttempted = false
-	}
-	s.ncConnectionWasUp = true
-	s.mu.Unlock()
-}
-
-// claimNCAutomaticReconnect allows exactly one reconnect after the pump has
-// observed a live NC socket and then seen it go down. A pending manual/scheduled
-// reconnect always wins over this background retry.
-func (s *Service) claimNCAutomaticReconnect() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.ncManuallyDisconnected || !s.nextNCConnectAttempt.IsZero() ||
-		!s.ncConnectionAttempted || !s.ncConnectionWasUp || s.ncAutomaticReconnectAttempted {
-		return false
-	}
-	s.ncAutomaticReconnectAttempted = true
-	return true
-}
-
 // claimNCAttempt applies the reference client's initial-attempt latch and its
 // scheduled reconnect state. force is used by an explicit reconnect or by the
-// single automatic retry after an observed NC drop.
+// bounded automatic recovery loop.
 func (s *Service) claimNCAttempt(force bool) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1349,7 +1345,7 @@ func (s *Service) resetNCConnectionState() {
 	s.nextNCConnectAttempt = time.Time{}
 	s.nextNCKeepalive = time.Time{}
 	s.ncConnectionWasUp = false
-	s.ncAutomaticReconnectAttempted = false
+	s.resetNCRetryLocked()
 	s.mu.Unlock()
 }
 
@@ -1388,7 +1384,7 @@ func (s *Service) tryConnectNCLocked(h rclib.Handle, force bool) error {
 		// The C++ client's explicit /nc rc path always closes an existing NC
 		// socket before opening the replacement one.
 		if err := rclib.DisconnectNC(h); err != nil {
-			log.Printf("[nc] disconnect before reconnect failed: %v", err)
+			return fmt.Errorf("disconnect NC before reconnect: %w", err)
 		}
 	}
 	if force {
@@ -1403,9 +1399,20 @@ func (s *Service) tryConnectNCLocked(h rclib.Handle, force bool) error {
 	// A reconnect starts a new native list-cache lifecycle. The old borrowed
 	// weapon pointers must never be used as the snapshot for this socket.
 	s.resetWeaponListState()
+	s.mu.Lock()
+	s.ncAttemptDeadline = time.Now().Add(ncConnectionTimeout)
+	s.mu.Unlock()
 	err := rclib.ConnectToNCServer(h)
 	if err == nil {
 		log.Printf("[nc] connect requested")
+	} else {
+		s.mu.Lock()
+		s.ncAttemptDeadline = time.Time{}
+		if rejectedConnectionReason(err.Error()) {
+			s.ncReconnectAttempts = ncMaxReconnectAttempts
+			s.nextNCAutomaticReconnect = time.Time{}
+		}
+		s.mu.Unlock()
 	}
 	return err
 }
@@ -1494,6 +1501,12 @@ func (s *Service) claimNCKeepalive(now time.Time, authenticated bool) bool {
 // client. It runs on the event-pump goroutine, after rc_process_events, and
 // deliberately does not wait for an NPC response.
 func (s *Service) processNCKeepalive(h rclib.Handle) {
+	s.mu.Lock()
+	active := s.handle == h && s.serverName != "" && !sessionCanceled(s.sessionDone)
+	s.mu.Unlock()
+	if !active {
+		return
+	}
 	if !s.claimNCKeepalive(time.Now(), rclib.IsNCAuthenticated(h)) {
 		return
 	}
@@ -1555,13 +1568,32 @@ func unregisterCallbacks(h rclib.Handle) {
 func (s *Service) Login(creds Credentials) ([]rclib.Server, error) {
 	operation := s.beginLifecycleOperation()
 	defer s.endLifecycleOperation(operation)
-	return s.login(operation.ctx, creds)
+	s.fileTransferDispatchMu.Lock()
+	defer s.fileTransferDispatchMu.Unlock()
+	servers, err := s.login(operation.ctx, creds)
+	if err == nil {
+		s.mu.Lock()
+		s.lastServerName = ""
+		s.newProtocol = false
+		s.mu.Unlock()
+	}
+	return servers, err
 }
 
 func (s *Service) login(ctx context.Context, creds Credentials) ([]rclib.Server, error) {
 	if creds.Account == "" || creds.Password == "" {
 		return nil, errors.New("account and password are required")
 	}
+	if err := operationErr(ctx); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	s.invalidateSessionLocked()
+	s.serverName = ""
+	s.serverEndpoint = ""
+	s.mu.Unlock()
+	s.cancelWaiters(errConnectionSessionChanged)
+	s.stopPump()
 
 	host := creds.Host
 	port := creds.Port
@@ -1610,7 +1642,9 @@ func (s *Service) login(ctx context.Context, creds Credentials) ([]rclib.Server,
 	previous := s.handle
 	s.handle = h
 	s.creds = creds
-	s.serverEpoch++
+	s.serverName = ""
+	s.serverEndpoint = ""
+	s.startSessionLocked()
 	s.channels = nil
 	s.maxUpload = 0
 	s.mu.Unlock()
@@ -1631,12 +1665,16 @@ func (s *Service) login(ctx context.Context, creds Credentials) ([]rclib.Server,
 // the list at login), so this reuses the stored handle.
 func (s *Service) GetServers() ([]rclib.Server, error) {
 	s.mu.Lock()
-	h := s.handle
+	scope := sessionScope{handle: s.handle, epoch: s.serverEpoch, done: s.sessionDone}
 	s.mu.Unlock()
-	if h == 0 {
+	if scope.handle == 0 {
 		return nil, errors.New("not connected: log in first")
 	}
-	return rclib.GetServers(h)
+	servers, err := rclib.GetServers(scope.handle)
+	if sessionErr := s.checkSession(scope); sessionErr != nil {
+		return nil, sessionErr
+	}
+	return servers, err
 }
 
 // ConnectToServer authenticates to the server at the given list index on the
@@ -1647,28 +1685,41 @@ func (s *Service) GetServers() ([]rclib.Server, error) {
 func (s *Service) ConnectToServer(index int) error {
 	operation := s.beginLifecycleOperation()
 	defer s.endLifecycleOperation(operation)
+	s.fileTransferDispatchMu.Lock()
+	defer s.fileTransferDispatchMu.Unlock()
+	s.mu.Lock()
+	s.lastServerName = ""
+	s.mu.Unlock()
 	return s.connectToServer(operation.ctx, index)
 }
 
-func (s *Service) connectToServer(ctx context.Context, index int) error {
+func (s *Service) connectToServer(ctx context.Context, index int) (resultErr error) {
 	if err := operationErr(ctx); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	h := s.handle
 	nickname := s.creds.Nickname
+	if h != 0 {
+		s.startSessionLocked()
+		s.serverName = ""
+		s.serverEndpoint = ""
+	}
+	epoch := s.serverEpoch
 	s.mu.Unlock()
 	if h == 0 {
 		return errors.New("not connected: log in first")
 	}
-	s.stopPump()
+	defer func() {
+		if resultErr != nil {
+			s.disconnectSession(h, epoch, "connection attempt failed")
+		}
+	}()
 	s.cancelWaiters(errConnectionSessionChanged)
+	s.stopPump()
 	s.clearSelfFolderRights()
 	s.clearServerTextCache()
 	s.mu.Lock()
-	s.serverEpoch++
-	epoch := s.serverEpoch
-	s.serverName = ""
 	s.maxUpload = 0
 	s.channels = nil
 	s.mu.Unlock()
@@ -1694,9 +1745,11 @@ func (s *Service) connectToServer(ctx context.Context, index int) error {
 	// App layer can brand window/tray titles with it once connected. Strip the
 	// single-letter type prefix (e.g. "H Testbed3d" → "Testbed3d") — mirrors the
 	// reference client's getServerListName and the frontend serverDisplay helper.
-	var serverName string
+	var serverName, serverIdentity, serverEndpoint string
 	if servers, err := rclib.GetServers(h); err == nil && index >= 0 && index < len(servers) {
 		serverName = displayServerName(servers[index].Name)
+		serverIdentity = servers[index].Name
+		serverEndpoint = net.JoinHostPort(servers[index].IP, strconv.Itoa(servers[index].Port))
 	}
 
 	connected := make(chan struct{}, 1)
@@ -1713,24 +1766,28 @@ func (s *Service) connectToServer(ctx context.Context, index int) error {
 		case disconnected <- reason:
 		default:
 		}
-		s.mu.Lock()
-		s.serverName = ""
-		s.ncConnectionAttempted = true
-		s.nextNCConnectAttempt = time.Time{}
-		s.nextNCKeepalive = time.Time{}
-		s.ncConnectionWasUp = false
-		s.ncAutomaticReconnectAttempted = false
-		s.mu.Unlock()
+		if !s.disconnectSession(h, epoch, reason) {
+			return
+		}
 		s.clearSelfFolderRights()
 		s.resetWeaponListState()
 		s.clearChatHistory()
-		s.clearServerTextCacheIfCurrent(epoch)
+		s.clearServerTextCache()
 		s.emitEvent("rc:disconnected", reason)
 		s.emitEvent("rc:fbReset")
 		s.emitEvent("rc:channels", s.resetChannels())
 	}
 	if err := rclib.RegisterCallbacks(h, &rclib.EventCallbacks{
 		Connected: func() {
+			s.mu.Lock()
+			if s.handle != h || s.serverEpoch != epoch || sessionCanceled(s.sessionDone) {
+				s.mu.Unlock()
+				return
+			}
+			s.serverName = serverName
+			s.serverEndpoint = serverEndpoint
+			s.lastServerName = serverIdentity
+			s.mu.Unlock()
 			select {
 			case connected <- struct{}{}:
 			default:
@@ -1932,7 +1989,18 @@ func (s *Service) connectToServer(ctx context.Context, index int) error {
 			return err
 		}
 		s.mu.Lock()
+		if s.serverEpoch != epoch || sessionCanceled(s.sessionDone) {
+			s.mu.Unlock()
+			select {
+			case reason := <-disconnected:
+				return errors.New(reason)
+			default:
+			}
+			return errConnectionSessionChanged
+		}
 		s.serverName = serverName
+		s.serverEndpoint = serverEndpoint
+		s.lastServerName = serverIdentity
 		s.mu.Unlock()
 		// Warm the current server's openrights snapshot after the authenticated
 		// connection has been handed back to the caller. The request is a
@@ -1990,6 +2058,9 @@ func (s *Service) SetNewProtocol(enable bool) error {
 	if err := rclib.SetNewProtocol(h, enable); err != nil {
 		return err
 	}
+	s.mu.Lock()
+	s.newProtocol = enable
+	s.mu.Unlock()
 	return operationErr(operation.ctx)
 }
 
@@ -2017,7 +2088,13 @@ func (s *Service) connectToNC(ctx context.Context) error {
 	if !rclib.HasNCServer(h) {
 		return errors.New("this account has no NC rights on this server")
 	}
-	if err := s.tryConnectNC(h, true); err != nil {
+	s.ncConnectMu.Lock()
+	s.mu.Lock()
+	s.resetNCRetryLocked()
+	s.mu.Unlock()
+	err := s.tryConnectNCLocked(h, true)
+	s.ncConnectMu.Unlock()
+	if err != nil {
 		return err
 	}
 	if err := operationErr(ctx); err != nil {
@@ -2030,6 +2107,7 @@ func (s *Service) connectToNC(ctx context.Context) error {
 			s.nextNCConnectAttempt = time.Time{}
 			s.nextNCKeepalive = time.Time{}
 			s.ncConnectionWasUp = false
+			s.resetNCRetryLocked()
 		}
 		s.mu.Unlock()
 		disconnectErr := rclib.DisconnectNC(h)
@@ -2044,7 +2122,7 @@ func (s *Service) connectToNC(ctx context.Context) error {
 
 // EnsureNCConnected waits for the NC socket to be connected and authenticated.
 // It may trigger the initial automatic attempt when the pump has not done so
-// yet; the pump owns the separate one-shot retry after an observed NC drop.
+// yet; the pump owns the separate bounded retry policy.
 func (s *Service) EnsureNCConnected(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -2125,6 +2203,7 @@ func (s *Service) DisconnectNC() error {
 	s.nextNCConnectAttempt = time.Time{}
 	s.nextNCKeepalive = time.Time{}
 	s.ncConnectionWasUp = false
+	s.resetNCRetryLocked()
 	s.mu.Unlock()
 	err := rclib.DisconnectNC(h)
 	s.ncConnectMu.Unlock()
@@ -2137,20 +2216,16 @@ func (s *Service) DisconnectNC() error {
 
 // NCStatus returns the NC socket snapshot for the active handle.
 func (s *Service) NCStatus() NCStatus {
-	s.mu.Lock()
-	h := s.handle
-	s.mu.Unlock()
-	if h == 0 {
-		return NCStatus{}
-	}
-	mainConnected := rclib.IsConnected(h)
-	mainAuthenticated := mainConnected && rclib.IsAuthenticated(h)
-	ncConnected := mainAuthenticated && rclib.IsNCConnected(h)
-	return NCStatus{
-		HasNc:         mainAuthenticated && rclib.HasNCServer(h),
-		Connected:     ncConnected,
-		Authenticated: ncConnected && rclib.IsNCAuthenticated(h),
-	}
+	return s.ncStatus(func(h rclib.Handle) NCStatus {
+		mainConnected := rclib.IsConnected(h)
+		mainAuthenticated := mainConnected && rclib.IsAuthenticated(h)
+		ncConnected := mainAuthenticated && rclib.IsNCConnected(h)
+		return NCStatus{
+			HasNc:         mainAuthenticated && rclib.HasNCServer(h),
+			Connected:     ncConnected,
+			Authenticated: ncConnected && rclib.IsNCAuthenticated(h),
+		}
+	})
 }
 
 // IrcLogin starts the IRC session for the active handle.
@@ -2205,13 +2280,15 @@ func (s *Service) SetNickname(nickname string) error {
 
 // GetPlayers returns the cached player list for the active server.
 func (s *Service) GetPlayers() ([]rclib.Player, error) {
-	s.mu.Lock()
-	h := s.handle
-	s.mu.Unlock()
-	if h == 0 {
-		return nil, errors.New("not connected: log in first")
+	scope, err := s.captureSession()
+	if err != nil {
+		return nil, err
 	}
-	return rclib.GetPlayers(h)
+	players, err := rclib.GetPlayers(scope.handle)
+	if sessionErr := s.checkSession(scope); sessionErr != nil {
+		return nil, sessionErr
+	}
+	return players, err
 }
 
 // SendPrivateMessage sends a private message to a single player id on the
@@ -3001,6 +3078,8 @@ func (s *Service) handleScriptReceived(scriptType, name string, id int, script s
 func (s *Service) requireHandle() (rclib.Handle, error) {
 	s.mu.Lock()
 	h := s.handle
+	scope := sessionScope{handle: h, epoch: s.serverEpoch, done: s.sessionDone}
+	active := s.serverName != "" && !sessionCanceled(s.sessionDone)
 	s.mu.Unlock()
 	if h == 0 {
 		return 0, errors.New("not connected: log in first")
@@ -3011,22 +3090,28 @@ func (s *Service) requireHandle() (rclib.Handle, error) {
 	if pumpErr != nil {
 		return 0, fmt.Errorf("connection event pump unavailable: %w", pumpErr)
 	}
+	if !active {
+		return 0, errConnectionSessionChanged
+	}
 	if !rclib.IsConnected(h) || !rclib.IsAuthenticated(h) {
 		return 0, errors.New("server connection is no longer authenticated")
+	}
+	if err := s.checkSession(scope); err != nil {
+		return 0, err
 	}
 	return h, nil
 }
 
 // requireNC returns the active handle after checking that the NC (script)
 // socket is connected. If the reference client's initial automatic attempt has
-// not happened yet, it is allowed to start it; the pump handles the one-shot
-// endpoint-refresh retry after a previously observed NC connection drops.
+// not happened yet, it is allowed to start it; the pump handles endpoint refresh
+// and bounded retries when a connection fails.
 func (s *Service) requireNC() (rclib.Handle, error) {
 	h, err := s.requireHandle()
 	if err != nil {
 		return 0, err
 	}
-	if rclib.IsNCConnected(h) {
+	if rclib.IsNCConnected(h) && rclib.IsNCAuthenticated(h) {
 		return h, nil
 	}
 	if !rclib.HasNCServer(h) {
@@ -3035,8 +3120,8 @@ func (s *Service) requireNC() (rclib.Handle, error) {
 	if err := s.tryConnectNC(h, false); err != nil {
 		return 0, fmt.Errorf("NC server not connected: %w", err)
 	}
-	if !rclib.IsNCConnected(h) {
-		return 0, errors.New("NC server is not connected")
+	if !rclib.IsNCConnected(h) || !rclib.IsNCAuthenticated(h) {
+		return 0, errors.New("NC server is not authenticated")
 	}
 	return h, nil
 }
@@ -3230,21 +3315,31 @@ func (s *Service) GetScriptLists(onlyReadable bool) (ScriptLists, error) {
 // IsNCConnected reports whether the NC (script) socket is up. Used by the sync
 // engine to gate server I/O.
 func (s *Service) IsNCConnected() bool {
+	scope, err := s.captureSession()
+	if err != nil {
+		return false
+	}
 	h, err := s.requireHandle()
 	if err != nil || h == 0 {
 		return false
 	}
-	return rclib.IsNCConnected(h)
+	connected := rclib.IsNCConnected(h)
+	return connected && s.checkSession(scope) == nil
 }
 
 // IsNCAuthenticated reports whether the NC handshake completed. A connected
 // socket can still be warming its weapon/class/NPC caches for a short moment.
 func (s *Service) IsNCAuthenticated() bool {
+	scope, err := s.captureSession()
+	if err != nil {
+		return false
+	}
 	h, err := s.requireHandle()
 	if err != nil || h == 0 {
 		return false
 	}
-	return rclib.IsNCAuthenticated(h)
+	authenticated := rclib.IsNCAuthenticated(h)
+	return authenticated && s.checkSession(scope) == nil
 }
 
 // FetchAllScripts pulls every weapon/class/npc script body from the server.
@@ -3253,9 +3348,13 @@ func (s *Service) IsNCAuthenticated() bool {
 // waits on its own pending reply channel, so many requests are in flight at
 // once rather than strictly sequential — a large server that took a minute
 // serially now takes seconds. A single hung script times out (scriptTimeout,
-// 15s) and is skipped+logged; it never aborts the fetch. progress (optional)
+// 15s) does not abort other reads, but marks the snapshot incomplete. progress (optional)
 // reports done/total so the UI can show a background bar.
 func (s *Service) FetchAllScripts(ctx context.Context, allowed func(scriptType, name string) bool, progress func(done, total int)) ([]rclib.ScriptReply, error) {
+	scope, err := s.captureSession()
+	if err != nil {
+		return nil, err
+	}
 	if err := s.EnsureNCConnected(ctx); err != nil {
 		return nil, err
 	}
@@ -3272,6 +3371,9 @@ func (s *Service) FetchAllScripts(ctx context.Context, allowed func(scriptType, 
 	}
 	npcs, err := s.GetNPCs()
 	if err != nil {
+		return nil, err
+	}
+	if err := s.checkSession(scope); err != nil {
 		return nil, err
 	}
 	log.Printf("[sync fetch] script lists received weapons=%d classes=%d npcs=%d", len(weapons), len(classes), len(npcs))
@@ -3318,6 +3420,9 @@ func (s *Service) FetchAllScripts(ctx context.Context, allowed func(scriptType, 
 	log.Printf("[sync fetch] permission filter kept=%d skipped=%d", total, skipped)
 
 	replies, fetchErr := s.fetchScriptJobs(ctx, jobs, progress)
+	if err := s.checkSession(scope); err != nil {
+		return nil, err
+	}
 	// A dropped NC can leave a valid-looking partial reply slice while the
 	// workers are unwinding. Never let that slice become a reconciliation
 	// snapshot: the caller must retry after the socket is restored.
@@ -3366,6 +3471,8 @@ func runScriptFetchJobs(ctx context.Context, jobs []scriptFetchJob, workerCount 
 	var outMu sync.Mutex
 	var fetchErrMu sync.Mutex
 	var terminalFetchErr error
+	var firstFetchErr error
+	failed := 0
 	var wg sync.WaitGroup
 	var done int32
 	wg.Add(workerCount)
@@ -3392,14 +3499,18 @@ func runScriptFetchJobs(ctx context.Context, jobs []scriptFetchJob, workerCount 
 						out = append(out, r)
 						outMu.Unlock()
 					} else {
-						if errors.Is(err, errNCUnavailable) {
-							fetchErrMu.Lock()
+						fetchErrMu.Lock()
+						failed++
+						if firstFetchErr == nil {
+							firstFetchErr = fmt.Errorf("%s:%s: %w", j.stype, j.key, err)
+						}
+						if errors.Is(err, errNCUnavailable) || errors.Is(err, errConnectionSessionChanged) {
 							if terminalFetchErr == nil {
 								terminalFetchErr = err
 							}
-							fetchErrMu.Unlock()
 							cancel()
 						}
+						fetchErrMu.Unlock()
 						log.Printf("sync fetch %s:%s failed: %v", j.stype, j.key, err)
 					}
 					if progress != nil {
@@ -3428,6 +3539,9 @@ sendJobs:
 	fetchErrMu.Unlock()
 	if deferredErr != nil {
 		return out, deferredErr
+	}
+	if failed > 0 {
+		return out, errors.Join(fmt.Errorf("%w: %d of %d script reads failed: %w", ErrIncompleteScriptSnapshot, failed, total, firstFetchErr), ctx.Err())
 	}
 	return out, ctx.Err()
 }
@@ -3598,11 +3712,18 @@ func (s *Service) openScriptContext(ctx context.Context, scriptType, key, name s
 	if !rclib.IsUsableScriptName(name) {
 		return rclib.ScriptReply{}, fmt.Errorf("%s script name is empty or invalid", scriptType)
 	}
+	scope, err := s.captureSession()
+	if err != nil {
+		return rclib.ScriptReply{}, err
+	}
 	if err := s.requireScriptPermission(scriptType, name, 'r'); err != nil {
 		return rclib.ScriptReply{}, err
 	}
 	h, err := s.requireNCContext(ctx)
 	if err != nil {
+		return rclib.ScriptReply{}, err
+	}
+	if err := s.checkSession(scope); err != nil {
 		return rclib.ScriptReply{}, err
 	}
 	pending := pendingKey(scriptType, key)
@@ -3620,6 +3741,11 @@ func (s *Service) openScriptContext(ctx context.Context, scriptType, key, name s
 	// sharing this key joins the existing waiter and does not send a duplicate.
 	if isNew {
 		s.ncRequestMu.Lock()
+		if err := s.checkSession(scope); err != nil {
+			s.ncRequestMu.Unlock()
+			s.cancelPending(pending, waiter, err)
+			return rclib.ScriptReply{}, err
+		}
 		switch scriptType {
 		case "weapon":
 			err = rclib.RequestWeaponScript(h, key)
@@ -3657,7 +3783,15 @@ func (s *Service) openScriptContext(ctx context.Context, scriptType, key, name s
 	for {
 		select {
 		case <-waiter.done:
+			if err := s.checkSession(scope); err != nil {
+				return rclib.ScriptReply{}, err
+			}
 			return waiter.reply, waiter.err
+		case <-scope.done:
+			if isNew {
+				s.cancelPending(pending, waiter, errConnectionSessionChanged)
+			}
+			return rclib.ScriptReply{}, errConnectionSessionChanged
 		case <-ctx.Done():
 			if isNew {
 				s.cancelPending(pending, waiter, ctx.Err())
@@ -4091,25 +4225,58 @@ func (s *Service) MaxUploadFileSize() int64 {
 // DownloadFile requests a file and waits for its content via the FileReceived
 // callback (correlated by remote path). Returns the raw bytes.
 func (s *Service) DownloadFile(path string) ([]byte, error) {
-	// The native reference client is single-transfer. Keep this lock across the
-	// asynchronous wait, not only around FileBrowserDownload, because the native
-	// request resets its pending path whenever a new transfer starts.
-	s.fileDownloadMu.Lock()
-	defer s.fileDownloadMu.Unlock()
+	return s.DownloadFileContext(context.Background(), path)
+}
 
-	h, err := s.requireHandle()
+// DownloadFileContext supports canceling both the transfer queue and the caller's
+// wait. Once dispatched, a canceled caller leaves the native transfer slot owned
+// until its response, session cancellation or timeout. The protocol has no abort
+// primitive; releasing that slot early could route old bytes into a new request.
+func (s *Service) DownloadFileContext(ctx context.Context, path string) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	scope, err := s.captureSession()
 	if err != nil {
+		return nil, err
+	}
+	release, err := s.acquireFileDownload(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.lockFileDispatch(ctx, scope); err != nil {
+		release()
+		return nil, err
+	}
+	h, err := s.requireHandle()
+	if err == nil {
+		err = s.checkSession(scope)
+	}
+	if err == nil {
+		err = ctx.Err()
+	}
+	if err != nil {
+		s.fileTransferDispatchMu.RUnlock()
+		release()
 		return nil, err
 	}
 	waiter, isNew := s.registerFile(path)
 	if isNew {
 		if err := rclib.FileBrowserDownload(h, path); err != nil {
 			s.cancelFile(path, waiter, err)
+			s.fileTransferDispatchMu.RUnlock()
+			release()
 			return nil, err
 		}
 	}
+	s.fileTransferDispatchMu.RUnlock()
+	go s.finishFileTransfer(scope, path, waiter, release)
+
 	select {
 	case <-waiter.done:
+		if err := s.checkSession(scope); err != nil {
+			return nil, err
+		}
 		if waiter.err != nil {
 			return nil, waiter.err
 		}
@@ -4117,11 +4284,23 @@ func (s *Service) DownloadFile(path string) ([]byte, error) {
 			return nil, errors.New("server returned no file content")
 		}
 		return waiter.content, nil
-	case <-time.After(downloadTimeout):
-		if isNew {
-			s.cancelFile(path, waiter, errors.New("file download timed out (no response from server)"))
-		}
-		return nil, errors.New("file download timed out (no response from server)")
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-scope.done:
+		return nil, errConnectionSessionChanged
+	}
+}
+
+func (s *Service) finishFileTransfer(scope sessionScope, path string, waiter *fileWait, release func()) {
+	defer release()
+	timer := time.NewTimer(downloadTimeout)
+	defer timer.Stop()
+	select {
+	case <-waiter.done:
+	case <-scope.done:
+		s.cancelFile(path, waiter, errConnectionSessionChanged)
+	case <-timer.C:
+		s.cancelFile(path, waiter, errors.New("file download timed out (no response from server)"))
 	}
 }
 
@@ -4146,27 +4325,32 @@ func (s *Service) UploadFile(path string, content []byte) error {
 func (s *Service) Logout() {
 	operation := s.beginLifecycleOperation()
 	defer s.endLifecycleOperation(operation)
+	s.fileTransferDispatchMu.Lock()
+	defer s.fileTransferDispatchMu.Unlock()
 	s.logout()
 }
 
 func (s *Service) logout() {
-	s.stopPump()
 	s.mu.Lock()
 	h := s.handle
 	s.handle = 0
 	s.creds = Credentials{}
 	s.serverName = ""
-	s.serverEpoch++
+	s.serverEndpoint = ""
+	s.lastServerName = ""
+	s.newProtocol = false
+	s.invalidateSessionLocked()
 	s.ncConnectionAttempted = false
 	s.ncManuallyDisconnected = false
 	s.nextNCConnectAttempt = time.Time{}
 	s.nextNCKeepalive = time.Time{}
 	s.ncConnectionWasUp = false
-	s.ncAutomaticReconnectAttempted = false
+	s.resetNCRetryLocked()
 	s.channels = nil
 	s.maxUpload = 0
 	s.mu.Unlock()
 	s.cancelWaiters(errConnectionSessionChanged)
+	s.stopPump()
 	s.clearPumpError()
 	s.emitEvent("rc:fbReset")
 	if h != 0 {
@@ -4180,33 +4364,8 @@ func (s *Service) logout() {
 
 // Status returns a snapshot of the current session state.
 func (s *Service) Status() Status {
-	s.pumpMu.Lock()
-	pumpFailed := s.pumpErr != nil
-	s.pumpMu.Unlock()
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	st := Status{
-		Account:    s.creds.Account,
-		Nickname:   s.creds.Nickname,
-		ServerName: s.serverName,
-	}
-	if dllPath, err := rclib.DLLPath(); err == nil {
-		st.Loaded = true
-		st.DLLPath = dllPath
-	}
-	if s.handle != 0 && !pumpFailed {
-		st.Connected = rclib.IsConnected(s.handle)
-		st.Authenticated = st.Connected && rclib.IsAuthenticated(s.handle)
-	}
-	s.rightsMu.RLock()
-	st.RealAccount = s.selfRightsAccount
-	st.CommunityName = s.selfRightsCommunityName
-	st.Rights = s.selfStaffRights
-	st.RightsReady = s.selfRightsLoaded
-	st.CanBanPlayers = s.selfRightsLoaded && s.selfStaffRights&(1<<banPlayersRightBit) != 0
-	st.ScriptWriteAccess = s.selfRightsLoaded && s.selfRights.HasWriteAccessForScriptTypes("weapon", "class", "npc")
-	s.rightsMu.RUnlock()
-	return st
+	return s.status(rclib.DLLPath, func(h rclib.Handle) (connected, authenticated bool) {
+		connected = rclib.IsConnected(h)
+		return connected, connected && rclib.IsAuthenticated(h)
+	})
 }

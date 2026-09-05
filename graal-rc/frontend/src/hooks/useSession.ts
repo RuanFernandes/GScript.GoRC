@@ -25,8 +25,9 @@ export interface UseSessionResult {
   addAccount: (req: LoginRequest, nickname: string) => Promise<boolean>
   refresh: () => Promise<void>
   connect: (index: number) => Promise<boolean>
-  markConnected: (index: number) => void
+  markConnected: (index: number, serverName?: string) => void
   logout: () => Promise<void>
+  reset: () => void
 }
 
 export function useSession(service: RcService): UseSessionResult {
@@ -99,9 +100,9 @@ export function useSession(service: RcService): UseSessionResult {
     toast.success(t("session.serverListRefreshed"))
   }, [run, service, t])
 
-  const markConnected = useCallback((index: number): void => {
+  const markConnected = useCallback((index: number, serverName?: string): void => {
     const server = servers[index]
-    const label = server ? serverDisplay(server.name).label : t("session.serverFallback", {index})
+    const label = serverName ? serverDisplay(serverName).label : server ? serverDisplay(server.name).label : t("session.serverFallback", {index})
     setConnectedServer(label)
     setStatusText(t("session.connectedTo", {server: label}))
     setBusy(false)
@@ -134,15 +135,20 @@ export function useSession(service: RcService): UseSessionResult {
     [markConnected, service, servers, t]
   )
 
-  const logout = useCallback(async (): Promise<void> => {
-    await service.logout()
+  const reset = useCallback((): void => {
+    setBusy(false)
     setPhase("idle")
     setServers([])
     setSelectedIndex(0)
     setStatusText("")
     setConnectedServer("")
     setActiveAccount("")
-  }, [service])
+  }, [])
+
+  const logout = useCallback(async (): Promise<void> => {
+    await service.logout()
+    reset()
+  }, [service, reset])
 
   const select = useCallback((index: number) => setSelectedIndex(index), [])
 
@@ -162,7 +168,8 @@ export function useSession(service: RcService): UseSessionResult {
       connect,
       markConnected,
       logout,
+      reset,
     }),
-    [phase, servers, selectedIndex, statusText, busy, connectedServer, activeAccount, select, loginWithAccount, addAccount, refresh, connect, markConnected, logout]
+    [phase, servers, selectedIndex, statusText, busy, connectedServer, activeAccount, select, loginWithAccount, addAccount, refresh, connect, markConnected, logout, reset]
   )
 }

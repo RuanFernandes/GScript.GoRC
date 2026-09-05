@@ -11,6 +11,9 @@ func (a *App) shutdown() {
 	}
 	lifecycle := lifecycleFor(a)
 	lifecycle.shutdownOnce.Do(func() {
+		lifecycle.beginStop()
+		defer a.stopNativeMonitor()
+		a.recovery.stop()
 		lifecycle.stopBackground()
 
 		// Engine.Stop waits for active reconciliation work. It must happen before

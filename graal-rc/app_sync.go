@@ -486,6 +486,14 @@ func (a *App) stopSyncEngine() {
 	a.stopSyncEngineLocked()
 }
 
+func (a *App) stopSyncEngineIfCurrent(expected *sync.Engine) {
+	syncEngineTransitionMu.Lock()
+	defer syncEngineTransitionMu.Unlock()
+	if a.currentSyncEngine() == expected {
+		a.stopSyncEngineLocked()
+	}
+}
+
 func (a *App) stopSyncEngineLocked() {
 	if a.graalScriptLSP != nil {
 		a.graalScriptLSP.SetEnabled(false)

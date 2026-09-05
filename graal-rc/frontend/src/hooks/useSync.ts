@@ -86,7 +86,7 @@ export function useSync(): UseSyncResult {
         const s = JSON.parse(e.data) as SyncStatus
         setStatus(s)
         // A finished reconcile updates lastSyncAt — clear the progress bar.
-        if (s.lastSyncAt) setProgress(null)
+        if (!s.progress.active) setProgress(null)
       } catch {
         // ignore
       }

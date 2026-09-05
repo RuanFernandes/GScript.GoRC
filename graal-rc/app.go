@@ -27,6 +27,7 @@ import (
 	"graal-rc/internal/connection"
 	"graal-rc/internal/credentials"
 	deploylib "graal-rc/internal/deploy"
+	"graal-rc/internal/drafts"
 	gallerylib "graal-rc/internal/gallery"
 	"graal-rc/internal/graalscript"
 	pluginlib "graal-rc/internal/plugins"
@@ -46,10 +47,16 @@ var (
 // frontend. It delegates session logic to the connection Service and account
 // storage to the credentials Vault (Single Responsibility).
 type App struct {
-	app       *application.App
-	sessions  *connection.Service
-	vault     *credentials.Vault
-	mcpServer *http.Server
+	app               *application.App
+	sessions          *connection.Service
+	vault             *credentials.Vault
+	mcpServer         *http.Server
+	draftsMu          sync.Mutex
+	draftStore        *drafts.Store
+	recovery          connectionRecovery
+	sessionActionMu   sync.RWMutex
+	nativeMonitorStop chan struct{}
+	nativeMonitorDone chan struct{}
 
 	// mainWindow is the account/server/RC window; hidden to the tray instead of
 	// quit when a server session is active. quitting bypasses the hide hook.
@@ -314,6 +321,7 @@ func (a *App) dialogParentWindow() application.Window {
 // ordering (the chat burst otherwise scrambles).
 func (a *App) attach(app *application.App) {
 	a.app = app
+	a.startNativeMonitor()
 	a.startMCPServer()
 	if a.plugins != nil {
 		a.plugins.SetRuntimeEmitter(func(name string, data any) {
@@ -331,12 +339,19 @@ func (a *App) attach(app *application.App) {
 		// screen can never coexist with stale editor/file-browser context.
 		if name == "rc:disconnected" || name == "rc:pumpError" {
 			a.closeSessionWindows()
-			if name == "rc:pumpError" {
-				// Stop server-scoped sync work independently of the frontend. The
-				// native pump can fail while a secondary window is open or while
-				// the webview is still transitioning, and no background worker
-				// should keep issuing requests against that handle.
-				go a.stopSyncEngine()
+			if engine := a.currentSyncEngine(); engine != nil {
+				lifecycleFor(a).startBackground(func(<-chan struct{}) { a.stopSyncEngineIfCurrent(engine) })
+			}
+			reason := ""
+			if len(data) > 0 {
+				reason, _ = data[0].(string)
+			}
+			recovering := name == "rc:disconnected" && a.beginConnectionRecovery(reason)
+			data = []any{reason, recovering, a.recovery.snapshot().Revision}
+		}
+		if name == "rc:connected" {
+			if identity, err := a.sessions.SessionIdentity(); err == nil {
+				data = []any{identity.ServerName}
 			}
 		}
 		if name == "rc:pm" && len(data) >= 4 {
@@ -362,10 +377,8 @@ func (a *App) attach(app *application.App) {
 					if text, ok := data[0].(string); ok {
 						// The RC message callback runs on the main socket pump. Chat
 						// activity reconciliation performs a second request to fetch
-						// the changed script, so it must not run inline here or it can
-						// deadlock the pump and prevent the chat event from being
-						// delivered. HandleChatLine serializes concurrent work itself.
-						go eng.HandleChatLine(text)
+						// the changed script. Queue it without waiting for that I/O.
+						eng.EnqueueChatLine(text)
 					}
 				}
 			}
@@ -1239,6 +1252,10 @@ func (a *App) ListAccounts() ([]AccountSummary, error) {
 // reading its password from the vault. The password never crosses to the
 // frontend.
 func (a *App) LoginWithAccount(accountName, nickname string) ([]rclib.Server, error) {
+	a.stopConnectionRecovery()
+	defer a.allowConnectionRecovery()
+	a.sessionActionMu.Lock()
+	defer a.sessionActionMu.Unlock()
 	nickname = strings.TrimSpace(nickname)
 	if nickname == "" {
 		return nil, errNicknameRequired
@@ -1255,6 +1272,10 @@ func (a *App) LoginWithAccount(accountName, nickname string) ([]rclib.Server, er
 // AddAccount logs in with the supplied credentials and, on success, persists
 // them to the vault. On failure nothing is saved.
 func (a *App) AddAccount(req LoginRequest, nickname string) ([]rclib.Server, error) {
+	a.stopConnectionRecovery()
+	defer a.allowConnectionRecovery()
+	a.sessionActionMu.Lock()
+	defer a.sessionActionMu.Unlock()
 	nickname = strings.TrimSpace(nickname)
 	if nickname == "" {
 		return nil, errNicknameRequired
@@ -1346,6 +1367,10 @@ func (a *App) GetServers() ([]rclib.Server, error) { return a.sessions.GetServer
 // ConnectToServer authenticates to the server at the given index. On success it
 // brands the window titles and tray tooltip with the server name.
 func (a *App) ConnectToServer(index int) error {
+	a.stopConnectionRecovery()
+	defer a.allowConnectionRecovery()
+	a.sessionActionMu.Lock()
+	defer a.sessionActionMu.Unlock()
 	// A running sync engine uses the shared connection backend. Tear it down
 	// before switching the underlying NC session; otherwise an in-flight poll
 	// from the previous server can continue after the handle starts serving the
@@ -1370,6 +1395,10 @@ func (a *App) SetNewProtocol(enable bool) error { return a.sessions.SetNewProtoc
 
 // Logout drops the active session and restores default window/tray titles.
 func (a *App) Logout() {
+	a.stopConnectionRecovery()
+	defer a.allowConnectionRecovery()
+	a.sessionActionMu.Lock()
+	defer a.sessionActionMu.Unlock()
 	a.stopSyncEngine()
 	a.closeSessionWindows()
 	a.clearGallerySession()
@@ -2135,6 +2164,10 @@ func (a *App) OpenRemoteFile(remotePath string) (string, error) {
 		}
 		return "plugin", nil
 	}
+	identity, err := a.sessions.SessionIdentity()
+	if err != nil {
+		return "", err
+	}
 	content, err := a.sessions.DownloadFile(remotePath)
 	if err != nil {
 		return "", err
@@ -2185,11 +2218,16 @@ func (a *App) OpenRemoteFile(remotePath string) (string, error) {
 		a.emitPluginEvent("filebrowser.file.opened", pluginFileEvent{Path: remotePath, Name: name, Extension: "." + ext, Size: int64(len(content)), Kind: "database"})
 		return "database", nil
 	case textExts[ext]:
+		a.sessionWindowsMu.Lock()
+		defer a.sessionWindowsMu.Unlock()
+		if !a.sessions.IsSessionCurrent(identity) {
+			return "", errors.New("server session changed while opening editor")
+		}
 		a.openMu.Lock()
 		a.textCache[remotePath] = content
 		a.textOriginalCache[remotePath] = append([]byte(nil), content...)
 		a.openMu.Unlock()
-		if err := a.openTextWindow(remotePath); err != nil {
+		if err := a.openTextWindow(remotePath, identity); err != nil {
 			return "", err
 		}
 		a.emitPluginEvent("filebrowser.file.opened", pluginFileEvent{Path: remotePath, Name: name, Extension: "." + ext, Size: int64(len(content)), Kind: "text"})
@@ -2214,15 +2252,24 @@ func (a *App) OpenRemoteFile(remotePath string) (string, error) {
 // regardless of type — even binary files are shown as text (may be garbage, but
 // that's the point: force a text view).
 func (a *App) OpenRemoteFileAsText(remotePath string) error {
+	identity, err := a.sessions.SessionIdentity()
+	if err != nil {
+		return err
+	}
 	content, err := a.sessions.DownloadFile(remotePath)
 	if err != nil {
 		return err
+	}
+	a.sessionWindowsMu.Lock()
+	defer a.sessionWindowsMu.Unlock()
+	if !a.sessions.IsSessionCurrent(identity) {
+		return errors.New("server session changed while opening editor")
 	}
 	a.openMu.Lock()
 	a.textCache[remotePath] = content
 	a.textOriginalCache[remotePath] = append([]byte(nil), content...)
 	a.openMu.Unlock()
-	return a.openTextWindow(remotePath)
+	return a.openTextWindow(remotePath, identity)
 }
 
 // GetTextFile returns the cached text content for a .txt editor window.
@@ -2272,7 +2319,7 @@ func (a *App) SaveTextFile(remotePath, content string) error {
 }
 
 // openTextWindow opens (or focuses) the plain-text editor for remotePath.
-func (a *App) openTextWindow(remotePath string) error {
+func (a *App) openTextWindow(remotePath string, identity connection.SessionIdentity) error {
 	mapKey := "textfile:" + remotePath
 	a.editorMu.Lock()
 	if w, ok := a.editorWindows[mapKey]; ok {
@@ -2282,10 +2329,14 @@ func (a *App) openTextWindow(remotePath string) error {
 		return nil
 	}
 	a.editorMu.Unlock()
+	draft, err := a.prepareEditorDraft(identity, "textfile", remotePath)
+	if err != nil {
+		return err
+	}
 	w := a.newWebviewWindow(application.WebviewWindowOptions{
 		Name:             sanitizeWindowName("textfile", remotePath),
-		Title:            editorTitle(a.sessions.Status().ServerName, "textfile", filepath.Base(remotePath)),
-		URL:              "/#textfile?p=" + url.QueryEscape(remotePath),
+		Title:            editorTitle(identity.ServerName, "textfile", filepath.Base(remotePath)),
+		URL:              "/#textfile?p=" + url.QueryEscape(remotePath) + "&d=" + draft.Token + "&dk=" + draft.Key,
 		Width:            820,
 		Height:           620,
 		Frameless:        true,
@@ -3141,6 +3192,10 @@ func (a *App) OpenScriptEditor(scriptType, key string) error {
 		return nil
 	}
 	a.editorMu.Unlock()
+	identity, err := a.sessions.SessionIdentity()
+	if err != nil {
+		return err
+	}
 
 	// Fetch before opening so a no-permission / no-response script never spawns a
 	// blank editor window.
@@ -3151,6 +3206,24 @@ func (a *App) OpenScriptEditor(scriptType, key string) error {
 	if (scriptType == "npc" || scriptType == "npcflags" || scriptType == "npcattr") && reply.Name == "" {
 		reply.Name = a.npcNameByID(key)
 	}
+	a.sessionWindowsMu.Lock()
+	defer a.sessionWindowsMu.Unlock()
+	if !a.sessions.IsSessionCurrent(identity) {
+		return errors.New("server session changed while opening editor")
+	}
+	// Another open may have completed while this request fetched the script.
+	a.editorMu.Lock()
+	if w, ok := a.editorWindows[mapKey]; ok {
+		w.Show()
+		w.Focus()
+		a.editorMu.Unlock()
+		return nil
+	}
+	a.editorMu.Unlock()
+	draft, err := a.prepareEditorDraft(identity, scriptType, key)
+	if err != nil {
+		return err
+	}
 
 	a.editorCacheMu.Lock()
 	a.editorCache[mapKey] = reply
@@ -3158,8 +3231,8 @@ func (a *App) OpenScriptEditor(scriptType, key string) error {
 
 	w := a.newWebviewWindow(application.WebviewWindowOptions{
 		Name:             sanitizeWindowName(scriptType, key),
-		Title:            scriptEditorTitle(a.sessions.Status().ServerName, scriptType, displayScriptKey(scriptType, key, reply.Name)),
-		URL:              "/#editor?t=" + scriptType + "&k=" + url.QueryEscape(key),
+		Title:            scriptEditorTitle(identity.ServerName, scriptType, displayScriptKey(scriptType, key, reply.Name)),
+		URL:              "/#editor?t=" + scriptType + "&k=" + url.QueryEscape(key) + "&d=" + draft.Token + "&dk=" + draft.Key,
 		Width:            820,
 		Height:           620,
 		Frameless:        true,

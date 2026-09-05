@@ -14,6 +14,7 @@ import {AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogHead
 import {Button} from "@/components/ui/button"
 import {ScriptGalleryDialog, type ScriptGalleryType} from "@/components/ScriptGalleryDialog"
 import {useCodingSettings} from "@/hooks/useCodingSettings"
+import {useEditorDraft} from "@/hooks/useEditorDraft"
 import {ensureTheme, toMonacoThemeName} from "@/lib/monacoThemes"
 import {registerGraalScript} from "@/lib/monacoGraalScript"
 import {GraalScriptLspClient, graalScriptDocumentUri, registerGraalScriptLsp, type GraalScriptDiagnostic} from "@/lib/graalScriptLsp"
@@ -83,6 +84,9 @@ export function ScriptEditorWindowScreen() {
   const {t} = useLanguage()
   const parsed = useRef(parseEditorParams())
   const {settings} = useCodingSettings()
+  const {draft, draftError} = useEditorDraft()
+  const [draftRestored, setDraftRestored] = useState(false)
+  const [draftRemoteChanged, setDraftRemoteChanged] = useState(false)
   const [content, setContent] = useState<string>("")
   const [scriptName, setScriptName] = useState("")
   const [original, setOriginal] = useState<string>("")
@@ -108,6 +112,8 @@ export function ScriptEditorWindowScreen() {
   // with a stale closure) always saves the LATEST text — without this, the mount-
   // time doSave closure captures an empty/stale content and saves nothing.
   const contentRef = useRef("")
+  const originalRef = useRef("")
+  const savingRef = useRef(false)
   const [editorReady, setEditorReady] = useState(false)
   const [remoteDef, setRemoteDef] = useState<unknown>(null)
   const [customDefs, setCustomDefs] = useState<Record<string, unknown>>({})
@@ -158,15 +164,25 @@ export function ScriptEditorWindowScreen() {
   // window). Read it from the backend cache.
   useEffect(() => {
     let cancelled = false
-    rcService
-      .getLoadedScript(kind, key)
-      .then((reply) => {
+    draft
+      .readContent()
+      .then(async (reply) => {
+        const text = latestSyncedContentRef.current ?? reply?.text ?? ""
+        const recovered = readOnly ? {text, recovered: false, remoteChanged: false} : await draft.open(text)
         if (cancelled) return
-        const text = latestSyncedContentRef.current ?? reply?.script ?? ""
+        const currentServer = latestSyncedContentRef.current ?? text
+        const nextContent = recovered.recovered ? recovered.text : currentServer
+        const remoteChanged = recovered.remoteChanged || recovered.recovered && currentServer !== text
+        if (currentServer !== text) draft.rebase(currentServer)
         setScriptName(reply?.name ?? "")
-        setContent(text)
-        contentRef.current = text
-        setOriginal(text)
+        setContent(nextContent)
+        contentRef.current = nextContent
+        originalRef.current = currentServer
+        setOriginal(currentServer)
+        setDirty(nextContent !== currentServer)
+        setDraftRestored(recovered.recovered)
+        setDraftRemoteChanged(remoteChanged)
+        setShowChanges(remoteChanged)
       })
       .catch((err: unknown) => {
         if (!cancelled) setLoadError(err instanceof Error ? err.message : String(err))
@@ -177,11 +193,10 @@ export function ScriptEditorWindowScreen() {
     return () => {
       cancelled = true
     }
-  }, [kind, key])
+  }, [kind, key, readOnly, draft])
 
-  // A local-sync upload is authoritative for this script. Keep an already-open
-  // Monaco model in step with the exact bytes that were sent to the server,
-  // including when the event arrives while the initial payload is loading.
+  // Sync updates the baseline. An editor with unsaved changes keeps its text
+  // and opens a comparison instead of replacing the Monaco model.
   useEffect(() => {
     const off = Events.On("rc:syncLocalUploaded", (e: {data: string}) => {
       try {
@@ -190,6 +205,17 @@ export function ScriptEditorWindowScreen() {
 
         const next = update.content
         latestSyncedContentRef.current = next
+        if (contentRef.current !== originalRef.current) {
+          // A sync upload must never replace work still being edited here.
+          originalRef.current = next
+          setOriginal(next)
+          draft.rebase(next)
+          setDirty(contentRef.current !== next)
+          setDraftRestored(true)
+          setDraftRemoteChanged(true)
+          setShowChanges(true)
+          return
+        }
         const editor = editorRef.current
         if (editor && editor.getValue() !== next) {
           pendingExternalContentRef.current = next
@@ -202,6 +228,8 @@ export function ScriptEditorWindowScreen() {
           pendingExternalContentRef.current = null
         }
         contentRef.current = next
+        originalRef.current = next
+        void draft.saved(next, draft.revision).catch(() => {})
         setContent(next)
         setOriginal(next)
         setDirty(false)
@@ -210,7 +238,7 @@ export function ScriptEditorWindowScreen() {
       }
     })
     return () => off()
-  }, [kind, key])
+  }, [kind, key, draft])
 
   // Sync conflicts are broadcast to every window. Only the editor matching
   // the conflicted script claims the inline review surface.
@@ -232,8 +260,8 @@ export function ScriptEditorWindowScreen() {
   // to prompt (the hook lives in Go because that's where window close is
   // observed).
   useEffect(() => {
-    rcService.setEditorDirty(kind, key, dirty).catch(() => {})
-  }, [kind, key, dirty])
+    draft.setDirty(dirty).catch(() => {})
+  }, [draft, dirty])
 
   // When the backend cancels a close (window has unsaved changes) it emits this
   // event; show the Save / Discard / Cancel prompt. Only react to our own
@@ -252,10 +280,10 @@ export function ScriptEditorWindowScreen() {
   // re-prompt — just ask the backend to close the window.
   useEffect(() => {
     if (closingAfterSave && !dirty) {
-      rcService.closeScriptEditor(kind, key).catch(() => {})
+      draft.setDirty(false).then(() => draft.close()).catch(() => {})
       setClosingAfterSave(false)
     }
-  }, [closingAfterSave, dirty, kind, key])
+  }, [closingAfterSave, dirty, draft])
 
   const diagnosticsBeforeSave = useCallback(async (): Promise<GraalScriptDiagnostic[]> => {
     const client = lspClientRef.current
@@ -282,43 +310,40 @@ export function ScriptEditorWindowScreen() {
   }, [])
 
   const doSave = useCallback(async (action: SaveAction = "save", allowErrors = false): Promise<boolean> => {
-    if (readOnly) return false
-    if (!allowErrors) {
-      const diagnostics = await diagnosticsBeforeSave()
-      const blockingDiagnostics = diagnostics.filter(isSaveBlockingDiagnostic)
-      if (blockingDiagnostics.length > 0) {
-        pendingSaveActionRef.current = action
-        setSaveDiagnostics(blockingDiagnostics)
-        setConfirmSaveWithErrors(true)
-        return false
-      }
-    }
-
-    const text = contentRef.current
+    if (readOnly || savingRef.current) return false
+    savingRef.current = true
     setSaving(true)
     try {
-      if (kind === "weapon") {
-        await rcService.saveWeapon(key, text)
-      } else if (kind === "class") {
-        await rcService.saveClass(key, text)
-      } else if (kind === "npc") {
-        await rcService.saveNPC(Number(key), text)
-      } else if (kind === "npcflags") {
-        await rcService.saveNPCFlags(Number(key), text)
-      } else if (kind === "options" || kind === "folder_config" || kind === "flags") {
-        await rcService.uploadServerText(kind, text)
+      if (!allowErrors) {
+        const diagnostics = await diagnosticsBeforeSave()
+        const blockingDiagnostics = diagnostics.filter(isSaveBlockingDiagnostic)
+        if (blockingDiagnostics.length > 0) {
+          pendingSaveActionRef.current = action
+          setSaveDiagnostics(blockingDiagnostics)
+          setConfirmSaveWithErrors(true)
+          return false
+        }
       }
+
+      const text = contentRef.current
+      const revision = draft.revision
+      await draft.upload(text)
+      originalRef.current = text
       setOriginal(text)
-      setDirty(false)
+      setDirty(contentRef.current !== text)
+      setDraftRestored(false)
+      setDraftRemoteChanged(false)
+      await draft.saved(text, revision).catch(() => {})
       toast.success(t("editor.saved"))
-      return true
+      return contentRef.current === text
     } catch (err) {
       toast.error(t("editor.saveFailed"), {description: String(err)})
       return false
     } finally {
+      savingRef.current = false
       setSaving(false)
     }
-  }, [diagnosticsBeforeSave, kind, key, readOnly, t])
+  }, [diagnosticsBeforeSave, kind, key, readOnly, t, draft])
 
   const resolveInlineConflict = useCallback(async (choice: "local" | "server" | "merge") => {
     if (!conflict) return
@@ -328,18 +353,29 @@ export function ScriptEditorWindowScreen() {
       return
     }
     try {
-      await rcService.resolveConflict(kind, key, choice, choice === "merge" ? nextContent : undefined)
+      const revision = draft.revision
+      await draft.resolveConflict(choice, choice === "merge" ? nextContent : "")
+      if (draft.revision !== revision) {
+        originalRef.current = nextContent
+        setOriginal(nextContent)
+        draft.rebase(nextContent)
+        setDirty(contentRef.current !== nextContent)
+        setConflict(null)
+        return
+      }
       editorRef.current?.setValue(nextContent)
       contentRef.current = nextContent
       setContent(nextContent)
+      originalRef.current = nextContent
       setOriginal(nextContent)
       setDirty(false)
+      await draft.saved(nextContent, draft.revision).catch(() => {})
       setConflict(null)
       toast.success(t("editor.conflictResolved"))
     } catch (err) {
       toast.error(t("editor.conflictResolveFailed"), {description: String(err)})
     }
-  }, [conflict, kind, key, mergeContent, t])
+  }, [conflict, kind, key, mergeContent, t, draft])
 
   const handleBeforeMount: BeforeMount = useCallback(
     (monaco) => {
@@ -581,20 +617,26 @@ export function ScriptEditorWindowScreen() {
     setConfirmSaveWithErrors(false)
   }, [])
 
-  const discardAndClose = useCallback(() => {
-    setConfirmClose(false)
-    setDirty(false)
-    rcService.setEditorDirty(kind, key, false).catch(() => {})
-    rcService.closeScriptEditor(kind, key).catch(() => {})
-  }, [kind, key])
+  const discardAndClose = useCallback(async () => {
+    try {
+      if (!await draft.discard()) return
+      setConfirmClose(false)
+      setDirty(false)
+      await draft.setDirty(false)
+      await draft.close()
+    } catch (error) {
+      toast.error(t("editor.draftClearFailed"), {description: String(error)})
+    }
+  }, [kind, key, draft, t])
 
   const applyGalleryInsert = useCallback((nextContent: string) => {
     editorRef.current?.setValue(nextContent)
     contentRef.current = nextContent
     setContent(nextContent)
-    setDirty(nextContent !== original)
+    draft.stage(nextContent)
+    setDirty(nextContent !== originalRef.current)
     setGalleryOpen(false)
-  }, [original])
+  }, [draft])
 
   return (
     <div className="bg-background flex h-svh flex-col">
@@ -623,6 +665,8 @@ export function ScriptEditorWindowScreen() {
           </div>
         )}
       </header>
+      {draftRestored && <p role="status" className="border-b bg-amber-500/10 px-4 py-2 text-sm">{t(draftRemoteChanged ? "editor.draftRemoteChanged" : "editor.draftRestored")}</p>}
+      {draftError && <p role="alert" className="border-b bg-destructive/10 px-4 py-2 text-sm text-destructive">{t("editor.draftFailed")} {draftError}</p>}
       {showChanges && dirty && !readOnly && (
         <section className="border-b bg-muted/10 p-3">
           <div className="mb-2 flex items-center gap-2">
@@ -706,7 +750,8 @@ export function ScriptEditorWindowScreen() {
               if (isExternalSyncUpdate) pendingExternalContentRef.current = null
               setContent(v)
               contentRef.current = v
-              setDirty(isExternalSyncUpdate ? false : v !== original)
+              if (!readOnly && !isExternalSyncUpdate) draft.stage(v)
+              setDirty(isExternalSyncUpdate ? false : v !== originalRef.current)
               const lspClient = lspClientRef.current
               if (lspClient) {
                 pendingLspUpdateRef.current = lspClient

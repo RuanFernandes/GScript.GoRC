@@ -26,8 +26,8 @@ type proc struct {
 // rc_create_npc_on_server no longer needs special casing. The third return is
 // forwarded for parity with the Windows sibling; call sites ignore it.
 func (p *proc) Call(a ...uintptr) (uintptr, uintptr, error) {
-	dllMu.Lock()
-	defer dllMu.Unlock()
+	started := beginNativeCall(p.name)
+	defer endNativeCall(started)
 	r1, r2, _ := purego.SyscallN(p.addr, a...)
 	return r1, r2, nil
 }

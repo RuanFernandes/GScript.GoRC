@@ -30,8 +30,8 @@ type proc struct {
 // rclib.go). The third return is the syscall error (nil if the call did not set
 // last_error); call sites ignore it.
 func (p *proc) Call(a ...uintptr) (uintptr, uintptr, error) {
-	dllMu.Lock()
-	defer dllMu.Unlock()
+	started := beginNativeCall(p.name)
+	defer endNativeCall(started)
 	return p.win.Call(a...)
 }
 

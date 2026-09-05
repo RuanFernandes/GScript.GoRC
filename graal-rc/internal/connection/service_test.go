@@ -166,45 +166,33 @@ func TestNCScheduledAttemptWaitsForItsDeadline(t *testing.T) {
 	}
 }
 
-func TestNCAutomaticReconnectIsLimitedToOneAttempt(t *testing.T) {
+func TestNCAutomaticReconnectIsBoundedAndRespectsManualDisconnect(t *testing.T) {
 	s := NewService()
-	s.mu.Lock()
 	s.ncConnectionAttempted = true
 	s.ncConnectionWasUp = true
-	s.mu.Unlock()
-
-	if !s.claimNCAutomaticReconnect() {
-		t.Fatal("automatic NC reconnect was not claimed after a disconnect")
+	now := time.Now()
+	for attempt := 0; attempt < ncMaxReconnectAttempts; attempt++ {
+		if s.claimNCAutomaticReconnectAt(now, 0) {
+			t.Fatal("reconnect ignored its backoff")
+		}
+		deadline := now.Add(ncRetryDelay(attempt, 0))
+		if s.claimNCAutomaticReconnectAt(deadline.Add(-time.Nanosecond), 0) {
+			t.Fatal("reconnect ran before its scheduled deadline")
+		}
+		if !s.claimNCAutomaticReconnectAt(deadline, 0) {
+			t.Fatal("scheduled reconnect was not claimed")
+		}
+		if s.claimNCAutomaticReconnectAt(deadline, 0) {
+			t.Fatal("reconnect was duplicated during its handshake")
+		}
+		now = deadline.Add(ncConnectionTimeout)
 	}
-	if s.claimNCAutomaticReconnect() {
-		t.Fatal("automatic NC reconnect was claimed more than once")
+	if s.claimNCAutomaticReconnectAt(now.Add(time.Hour), 0) || !s.nextNCAutomaticReconnect.IsZero() {
+		t.Fatal("exhausted NC retry budget scheduled more work")
 	}
-
-	// A successful reconnect starts a fresh drop window. This mirrors the pump
-	// observing IsNCConnected again after the scheduled native attempt.
-	s.mu.Lock()
-	s.ncConnectionWasUp = false
-	s.mu.Unlock()
-	s.markNCConnectionObserved()
-	s.mu.Lock()
-	secondAttemptReady := !s.ncAutomaticReconnectAttempted && s.ncConnectionWasUp
-	s.mu.Unlock()
-	if !secondAttemptReady {
-		t.Fatal("successful NC reconnect did not re-arm the next drop window")
-	}
-	if !s.claimNCAutomaticReconnect() {
-		t.Fatal("second NC drop did not receive its own automatic retry")
-	}
-	if s.claimNCAutomaticReconnect() {
-		t.Fatal("second NC drop was allowed more than one retry")
-	}
-
-	s.mu.Lock()
+	s.resetNCRetryLocked()
 	s.ncManuallyDisconnected = true
-	s.ncConnectionWasUp = true
-	s.ncAutomaticReconnectAttempted = false
-	s.mu.Unlock()
-	if s.claimNCAutomaticReconnect() {
+	if s.claimNCAutomaticReconnectAt(now, 0) || !s.nextNCAutomaticReconnect.IsZero() {
 		t.Fatal("automatic NC reconnect ignored manual disconnect")
 	}
 }

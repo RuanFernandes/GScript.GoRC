@@ -2,8 +2,10 @@
 // service. All backend calls go through here, so feature components never import
 // the generated bindings directly (Dependency Inversion + single change point).
 import {App} from "../../bindings/graal-rc"
+import type {ConnectionRecoveryStatus} from "@/lib/connectionRecovery"
 import type {CommandMacro as BoundCommandMacro} from "../../bindings/graal-rc/models"
 import {openOfficialPluginDocumentation} from "@/lib/pluginDocumentation"
+import type {EditorDraftRecord} from "@/lib/editorDrafts"
 import type {
   AccountSummary,
   Class,
@@ -68,6 +70,14 @@ function toCommandMacro(macro: BoundCommandMacro): CommandMacro {
 // The v3 bindings resolve to null on the "no result" path and reject on error;
 // callers treat null as "empty/none" and rely on try/catch for real errors.
 export interface RcService {
+  getEditorDraft(token: string): Promise<EditorDraftRecord | null>
+  writeEditorDraft(token: string, sequence: number, record: EditorDraftRecord): Promise<void>
+  clearEditorDraft(token: string, revision: string): Promise<boolean>
+  saveEditorDraft(token: string, content: string): Promise<void>
+  getEditorDraftContent(token: string): Promise<{text: string; name: string}>
+  resolveEditorDraftConflict(token: string, choice: string, mergeContent: string): Promise<void>
+  setEditorDraftDirty(token: string, dirty: boolean): Promise<void>
+  closeEditorDraft(token: string): Promise<void>
   listAccounts(): Promise<AccountSummary[] | null>
   loginWithAccount(accountName: string, nickname: string): Promise<Server[] | null>
   addAccount(req: LoginRequest, nickname: string): Promise<Server[] | null>
@@ -80,6 +90,7 @@ export interface RcService {
   setNewProtocol(enable: boolean): Promise<void>
   logout(): Promise<void>
   status(): Promise<unknown>
+  getConnectionRecovery(): Promise<ConnectionRecoveryStatus>
   connectToNCServer(): Promise<void>
   disconnectNC(): Promise<void>
   ncStatus(): Promise<NCStatus | null>
@@ -290,6 +301,14 @@ export interface RcService {
 
 // Default implementation backed by the generated Wails v3 bindings (App service).
 export const rcService: RcService = {
+  getEditorDraft: (token) => App.GetEditorDraft(token),
+  writeEditorDraft: (token, sequence, record) => App.WriteEditorDraft(token, sequence, record),
+  clearEditorDraft: (token, revision) => App.ClearEditorDraft(token, revision),
+  saveEditorDraft: (token, content) => App.SaveEditorDraft(token, content),
+  getEditorDraftContent: (token) => App.GetEditorDraftContent(token),
+  resolveEditorDraftConflict: (token, choice, mergeContent) => App.ResolveEditorDraftConflict(token, choice, mergeContent),
+  setEditorDraftDirty: (token, dirty) => App.SetEditorDraftDirty(token, dirty),
+  closeEditorDraft: (token) => App.CloseEditorDraft(token),
   listAccounts: () => App.ListAccounts(),
   loginWithAccount: (accountName, nickname) => App.LoginWithAccount(accountName, nickname),
   addAccount: (req, nickname) => App.AddAccount(req, nickname),
@@ -302,6 +321,7 @@ export const rcService: RcService = {
   setNewProtocol: (enable) => App.SetNewProtocol(enable),
   logout: () => App.Logout(),
   status: () => App.Status(),
+  getConnectionRecovery: () => App.GetConnectionRecovery(),
   connectToNCServer: () => App.ConnectToNCServer(),
   disconnectNC: () => App.DisconnectNC(),
   ncStatus: () => App.NCStatus(),

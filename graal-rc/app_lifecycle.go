@@ -74,13 +74,17 @@ func (l *appLifecycle) startBackground(run func(<-chan struct{})) bool {
 	return true
 }
 
-func (l *appLifecycle) stopBackground() {
+func (l *appLifecycle) beginStop() {
 	l.mu.Lock()
 	if !l.stopping {
 		l.stopping = true
 		close(l.stop)
 	}
 	l.mu.Unlock()
+}
+
+func (l *appLifecycle) stopBackground() {
+	l.beginStop()
 	l.background.Wait()
 }
 

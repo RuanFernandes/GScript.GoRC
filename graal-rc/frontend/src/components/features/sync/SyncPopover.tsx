@@ -169,6 +169,7 @@ export function SyncPopover({rail = false}: {rail?: boolean}) {
               </div>
             </div>
           )}
+          {status.lastError && <p role="alert" className="mb-3 rounded-md border border-destructive/40 p-3 text-xs text-destructive">{t("sync.incomplete")} {status.lastError}</p>}
           <SyncSection />
           {status.reviewCount > 0 && (
             <Button

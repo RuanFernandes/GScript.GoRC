@@ -12,8 +12,8 @@ import {GitCompare, Loader2, X} from "lucide-react"
 import {AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogHeader, AlertDialogTitle} from "@/components/ui/alert-dialog"
 import {Button} from "@/components/ui/button"
 import {useCodingSettings} from "@/hooks/useCodingSettings"
+import {useEditorDraft} from "@/hooks/useEditorDraft"
 import {ensureTheme} from "@/lib/monacoThemes"
-import {rcService} from "@/services/rcService"
 import {useLanguage} from "@/hooks/useLanguage"
 
 interface MonacoInstance {
@@ -40,6 +40,9 @@ export function TextEditorWindowScreen() {
   const {t} = useLanguage()
   const remotePath = useRef(parsePath()).current
   const {settings} = useCodingSettings()
+  const {draft, draftError} = useEditorDraft()
+  const [draftRestored, setDraftRestored] = useState(false)
+  const [draftRemoteChanged, setDraftRemoteChanged] = useState(false)
   const [content, setContent] = useState("")
   const [original, setOriginal] = useState("")
   const [loading, setLoading] = useState(true)
@@ -52,19 +55,27 @@ export function TextEditorWindowScreen() {
   const editorRef = useRef<EditorInstance | null>(null)
   const monacoRef = useRef<MonacoInstance | null>(null)
   const contentRef = useRef("")
+  const originalRef = useRef("")
+  const savingRef = useRef(false)
   const [editorReady, setEditorReady] = useState(false)
 
   const baseName = remotePath.includes("/") ? remotePath.slice(remotePath.lastIndexOf("/") + 1) : remotePath
 
   useEffect(() => {
     let cancelled = false
-    rcService
-      .getTextFile(remotePath)
-      .then((text) => {
+    draft
+      .readContent()
+      .then(async ({text}) => {
+        const recovered = await draft.open(text)
         if (cancelled) return
-        setContent(text)
-        contentRef.current = text
+        setContent(recovered.text)
+        contentRef.current = recovered.text
+        originalRef.current = text
         setOriginal(text)
+        setDirty(recovered.text !== text)
+        setDraftRestored(recovered.recovered)
+        setDraftRemoteChanged(recovered.remoteChanged)
+        setShowChanges(recovered.remoteChanged)
       })
       .catch((err: unknown) => {
         if (!cancelled) setLoadError(err instanceof Error ? err.message : String(err))
@@ -75,11 +86,11 @@ export function TextEditorWindowScreen() {
     return () => {
       cancelled = true
     }
-  }, [remotePath])
+  }, [remotePath, draft])
 
   useEffect(() => {
-    rcService.setEditorDirty(KIND, remotePath, dirty).catch(() => {})
-  }, [remotePath, dirty])
+    draft.setDirty(dirty).catch(() => {})
+  }, [draft, dirty])
 
   useEffect(() => {
     const myKey = `${KIND}:${remotePath}`
@@ -93,25 +104,35 @@ export function TextEditorWindowScreen() {
 
   useEffect(() => {
     if (closingAfterSave && !dirty) {
-      rcService.closeScriptEditor(KIND, remotePath).catch(() => {})
+      draft.setDirty(false).then(() => draft.close()).catch(() => {})
       setClosingAfterSave(false)
     }
-  }, [closingAfterSave, dirty, remotePath])
+  }, [closingAfterSave, dirty, draft])
 
   const doSave = useCallback(async () => {
+    if (savingRef.current) return false
+    savingRef.current = true
     const text = contentRef.current
+    const revision = draft.revision
     setSaving(true)
     try {
-      await rcService.saveTextFile(remotePath, text)
+      await draft.upload(text)
+      originalRef.current = text
       setOriginal(text)
-      setDirty(false)
+      setDirty(contentRef.current !== text)
+      setDraftRestored(false)
+      setDraftRemoteChanged(false)
+      await draft.saved(text, revision).catch(() => {})
       toast.success(t("editor.saved"))
+      return contentRef.current === text
     } catch (err) {
       toast.error(t("editor.saveFailed"), {description: String(err)})
+      return false
     } finally {
+      savingRef.current = false
       setSaving(false)
     }
-  }, [remotePath, t])
+  }, [remotePath, t, draft])
 
   const handleMount: OnMount = useCallback(
     (editor, monaco) => {
@@ -138,16 +159,20 @@ export function TextEditorWindowScreen() {
 
   const saveAndClose = useCallback(async () => {
     setConfirmClose(false)
-    await doSave()
-    setClosingAfterSave(true)
+    if (await doSave()) setClosingAfterSave(true)
   }, [doSave])
 
-  const discardAndClose = useCallback(() => {
-    setConfirmClose(false)
-    setDirty(false)
-    rcService.setEditorDirty(KIND, remotePath, false).catch(() => {})
-    rcService.closeScriptEditor(KIND, remotePath).catch(() => {})
-  }, [remotePath])
+  const discardAndClose = useCallback(async () => {
+    try {
+      if (!await draft.discard()) return
+      setConfirmClose(false)
+      setDirty(false)
+      await draft.setDirty(false)
+      await draft.close()
+    } catch (error) {
+      toast.error(t("editor.draftClearFailed"), {description: String(error)})
+    }
+  }, [remotePath, draft, t])
 
   return (
     <div className="bg-background flex h-svh flex-col">
@@ -162,6 +187,8 @@ export function TextEditorWindowScreen() {
           </Button>
         </div>
       </header>
+      {draftRestored && <p role="status" className="border-b bg-amber-500/10 px-4 py-2 text-sm">{t(draftRemoteChanged ? "editor.draftRemoteChanged" : "editor.draftRestored")}</p>}
+      {draftError && <p role="alert" className="border-b bg-destructive/10 px-4 py-2 text-sm text-destructive">{t("editor.draftFailed")} {draftError}</p>}
       {showChanges && dirty && (
         <section className="border-b bg-muted/10 p-3">
           <div className="mb-2 flex items-center gap-2">
@@ -203,7 +230,8 @@ export function TextEditorWindowScreen() {
               const v = value ?? ""
               setContent(v)
               contentRef.current = v
-              setDirty(v !== original)
+              draft.stage(v)
+              setDirty(v !== originalRef.current)
             }}
             options={{
               fontFamily: settings.fontFamily,

@@ -8,6 +8,8 @@ import {Events} from "@wailsio/runtime"
 
 import {ConfirmDialog} from "@/components/ConfirmDialog"
 import {AppWindowFrame} from "@/components/AppWindowFrame"
+import {Button} from "@/components/ui/button"
+import {EMPTY_RECOVERY, parseRecoveryStatus} from "@/lib/connectionRecovery"
 import {rcService} from "@/services/rcService"
 import {useAccounts} from "@/hooks/useAccounts"
 import {useSession} from "@/hooks/useSession"
@@ -144,6 +146,9 @@ function Shell() {
     window.localStorage.setItem(NICKNAME_STORAGE_KEY, sessionNickname)
   }, [sessionNickname])
   const returningToLogin = useRef(false)
+  const [recovery, setRecovery] = useState(EMPTY_RECOVERY)
+  const recoveryRevision = useRef(-1)
+  const lifecycleSequence = useRef(0)
 
   const handleAddAccount = async (req: LoginRequest): Promise<boolean> => {
     if (await session.addAccount(req, sessionNickname.trim())) {
@@ -180,6 +185,32 @@ function Shell() {
     }
   }, [accounts.refresh, session.logout])
 
+  useEffect(() => {
+    let cancelled = false
+    const accept = (value: unknown) => {
+      const status = parseRecoveryStatus(value)
+      if (cancelled || !status || status.revision <= recoveryRevision.current) return
+      recoveryRevision.current = status.revision
+      setRecovery(status)
+      if (status.phase === "failed") {
+        void rcService.getConnectionRecovery().then((current) => {
+          if (cancelled || current.revision !== status.revision || current.phase !== "failed") return
+          session.reset()
+          setView("select")
+          void accounts.refresh()
+          toast.error(language.t("recovery.failed"), {description: status.reason})
+        }).catch((error) => toast.error(String(error)))
+      } else if (status.phase === "connected") {
+        toast.success(language.t("recovery.connected"))
+      }
+    }
+    const off = Events.On("rc:recovery", (event: {data: string}) => {
+      try { accept(JSON.parse(event.data)) } catch { /* malformed event */ }
+    })
+    void rcService.getConnectionRecovery().then(accept).catch(() => {})
+    return () => { cancelled = true; off() }
+  }, [language.t, session.reset, accounts.refresh])
+
   // Unexpected server disconnects and terminal native event-pump failures
   // arrive through the ordered rc:evt envelope. Clear the live session so the
   // user cannot keep interacting with a dead handle, then show the reason on
@@ -187,17 +218,27 @@ function Shell() {
   useEffect(() => {
     const off = Events.On("rc:evt", (event: {data: string}) => {
       try {
-        const payload = JSON.parse(event.data) as {name?: string; data?: unknown[]}
+        const payload = JSON.parse(event.data) as {seq?: number; name?: string; data?: unknown[]}
+        if (!["rc:connected", "rc:disconnected", "rc:pumpError"].includes(payload.name ?? "")) return
+        if (typeof payload.seq === "number") {
+          if (payload.seq <= lifecycleSequence.current) return
+          lifecycleSequence.current = payload.seq
+        }
         if (payload.name === "rc:connected") {
           // The native connection callback is emitted as soon as the main RC
           // socket authenticates. Do not keep the server picker waiting for
           // secondary rights/player-cache requests to finish.
-          session.markConnected(session.selectedIndex)
+          session.markConnected(session.selectedIndex, typeof payload.data?.[0] === "string" ? payload.data[0] : undefined)
           setView("rc")
           return
         }
         if (payload.name !== "rc:disconnected" && payload.name !== "rc:pumpError") return
         const reason = typeof payload.data?.[0] === "string" ? payload.data[0] : language.t("toast.disconnectedByServer")
+        if (payload.data?.[1] === true) {
+          if (typeof payload.data?.[2] === "number" && payload.data[2] <= recoveryRevision.current) return
+          setRecovery((previous) => ({...previous, active: true, reason}))
+          return
+        }
         void (async () => {
           await returnToLogin()
           toast.error(language.t("toast.connectionLost"), {description: reason})
@@ -259,6 +300,21 @@ function Shell() {
 
   if (language.needsLanguage) {
     return <LanguageWelcomeScreen language={language.language} onConfirm={language.setLanguage} />
+  }
+
+  if (recovery.active) {
+    return (
+      <div className="flex h-full items-center justify-center p-6">
+        <div className="w-full max-w-md space-y-4 rounded-lg border bg-card p-6">
+          <div role="status" aria-live="polite" className="space-y-2">
+            <h2 className="text-lg font-semibold">{language.t("recovery.title")}</h2>
+            <p className="text-sm text-muted-foreground">{language.t("recovery.progress", {attempt: recovery.attempt, total: recovery.maxAttempts})}</p>
+            <p className="text-sm text-muted-foreground">{language.t("recovery.description")}</p>
+          </div>
+          <Button variant="outline" onClick={() => void returnToLogin().catch((error) => toast.error(String(error)))}>{language.t("common.cancel")}</Button>
+        </div>
+      </div>
+    )
   }
 
   if (view === "add") {

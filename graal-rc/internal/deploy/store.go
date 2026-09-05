@@ -4,6 +4,7 @@
 package deploy
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -44,8 +45,9 @@ type BackupDiff struct {
 }
 
 type Store struct {
-	mu   sync.Mutex
-	root string
+	mu         sync.Mutex
+	root       string
+	lastIDTime int64
 }
 
 func New(root string) (*Store, error) {
@@ -95,8 +97,24 @@ func (s *Store) saveLocked(meta Backup, content []byte) (Backup, error) {
 		meta.Timestamp = time.Now().UnixMilli()
 	}
 	if meta.ID == "" {
-		digest := sha256.Sum256([]byte(fmt.Sprintf("%d:%d:%s:%s", meta.Timestamp, time.Now().UnixNano(), meta.Resource, meta.Target)))
-		meta.ID = fmt.Sprintf("%d-%x", meta.Timestamp, digest[:4])
+		// Wall-clock resolution is not a uniqueness guarantee, even when the
+		// value is expressed as Unix nanoseconds (notably on Windows).
+		var nonce [16]byte
+		if _, err := rand.Read(nonce[:]); err != nil {
+			return Backup{}, fmt.Errorf("generate backup ID: %w", err)
+		}
+		// Keep generated IDs ordered when multiple snapshots share the same
+		// millisecond. The random suffix guarantees uniqueness; this monotonic
+		// field prevents retention from pruning the snapshot just saved.
+		order := time.Now().UnixNano()
+		if order <= s.lastIDTime {
+			order = s.lastIDTime + 1
+		}
+		s.lastIDTime = order
+		meta.ID = fmt.Sprintf("%d-%020d-%x", meta.Timestamp, order, nonce)
+	}
+	if !validID(meta.ID) {
+		return Backup{}, errors.New("invalid backup id")
 	}
 	meta.Size = int64(len(content))
 	digest := sha256.Sum256(content)
@@ -105,18 +123,34 @@ func (s *Store) saveLocked(meta Backup, content []byte) (Backup, error) {
 	if err := os.MkdirAll(s.root, 0o700); err != nil {
 		return Backup{}, fmt.Errorf("create backup directory: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(s.root, meta.ID+".data"), content, 0o600); err != nil {
+	if err := writeNewBackupFile(filepath.Join(s.root, meta.ID+".data"), content); err != nil {
 		return Backup{}, fmt.Errorf("write backup content: %w", err)
 	}
 	b, err := json.Marshal(meta)
 	if err != nil {
 		return Backup{}, fmt.Errorf("encode backup metadata: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(s.root, meta.ID+".meta.json"), b, 0o600); err != nil {
+	if err := writeNewBackupFile(filepath.Join(s.root, meta.ID+".meta.json"), b); err != nil {
 		_ = os.Remove(filepath.Join(s.root, meta.ID+".data"))
 		return Backup{}, fmt.Errorf("write backup metadata: %w", err)
 	}
 	return meta, nil
+}
+
+// A backup is immutable. Even an explicitly supplied duplicate ID must never
+// truncate a previous snapshot; cleanup removes only a file this call created.
+func writeNewBackupFile(path string, content []byte) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	_, writeErr := file.Write(content)
+	closeErr := file.Close()
+	if err := errors.Join(writeErr, closeErr); err != nil {
+		_ = os.Remove(path)
+		return err
+	}
+	return nil
 }
 
 func (s *Store) pruneTargetLocked(target Backup, limit int) error {

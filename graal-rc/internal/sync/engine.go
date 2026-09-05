@@ -41,6 +41,7 @@ type SyncStatus struct {
 	ReviewCount      int          `json:"reviewCount"`
 	Items            []ReviewItem `json:"items"`
 	Progress         SyncProgress `json:"progress"`
+	LastError        string       `json:"lastError,omitempty"`
 	// NextSyncAt is retained for frontend/API compatibility; automatic server
 	// polling is disabled, so it remains zero.
 	NextSyncAt        int64  `json:"nextSyncAt"`
@@ -106,6 +107,12 @@ type Engine struct {
 	review            map[string]ReviewItem
 	lastSyncAt        int64
 	progress          SyncProgress
+	lastError         string
+	activityPending   map[string]Activity
+	activityOrder     []string
+	activityWake      chan struct{}
+	activityDone      chan struct{}
+	activityOverflow  bool
 	nextSyncAt        int64
 	permissionsReady  bool
 	permissionsError  string
@@ -323,9 +330,15 @@ func (e *Engine) start(ctx context.Context, async bool) {
 		return
 	}
 	e.running = true
+	e.activityPending = make(map[string]Activity)
+	e.activityOrder = nil
+	e.activityOverflow = false
+	e.activityWake = make(chan struct{}, 1)
+	e.activityDone = make(chan struct{})
 	e.stop = make(chan struct{})
 	e.stopped = make(chan struct{})
 	stop, stopped, cfg := e.stop, e.stopped, e.cfg
+	activityWake, activityDone := e.activityWake, e.activityDone
 	e.nextSyncAt = 0
 	e.initialSyncActive = !e.initialSyncDone
 	var startupDone chan struct{}
@@ -338,6 +351,7 @@ func (e *Engine) start(ctx context.Context, async bool) {
 		e.startupCancel = startupCancel
 	}
 	e.mu.Unlock()
+	go e.activityLoop(ctx, stop, activityWake, activityDone)
 
 	if async {
 		if err := e.startWatcher(cfg.OutputDir); err != nil {
@@ -384,17 +398,20 @@ func (e *Engine) finishAsyncStartup(done chan struct{}, cancel context.CancelFun
 }
 
 func (e *Engine) retryBootstrap(ctx context.Context, dir string, stop <-chan struct{}) {
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
+	delay := time.Second
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-stop:
 			return
-		case <-ticker.C:
+		case <-timer.C:
 			if err := e.bootstrap(ctx, dir); err != nil {
 				log.Printf("sync bootstrap retry: %v", err)
+				delay = min(delay*2, 30*time.Second)
+				timer.Reset(delay)
 				continue
 			}
 			return
@@ -419,6 +436,10 @@ func (e *Engine) Stop() {
 	stopped := e.stopped
 	startupDone := e.startupDone
 	startupCancel := e.startupCancel
+	activityDone := e.activityDone
+	e.activityPending = nil
+	e.activityOrder = nil
+	e.activityOverflow = false
 	e.mu.Unlock()
 	if startupCancel != nil {
 		startupCancel()
@@ -432,6 +453,9 @@ func (e *Engine) Stop() {
 	if startupDone != nil {
 		<-startupDone
 	}
+	if activityDone != nil {
+		<-activityDone
+	}
 	// Chat activity and explicit reconciles are serialized by workMu, but they
 	// may be running outside the loop goroutine. Wait for the active operation
 	// before the shared connection can be switched to another server, so its
@@ -441,6 +465,11 @@ func (e *Engine) Stop() {
 }
 
 func (e *Engine) bootstrap(ctx context.Context, dir string) error {
+	e.workMu.Lock()
+	defer e.workMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := e.ensureNCConnected(ctx); err != nil {
 		return err
 	}
@@ -460,7 +489,8 @@ func (e *Engine) bootstrap(ctx context.Context, dir string) error {
 		e.setProgress("Downloading", done, total, "")
 	})
 	log.Printf("[sync bootstrap] readable script fetch finished replies=%d err=%v", len(replies), err)
-	if err != nil && len(replies) == 0 {
+	if err != nil {
+		e.failSnapshot(err)
 		return err
 	}
 	if len(replies) == 0 {
@@ -823,15 +853,16 @@ func (e *Engine) reconcileLocked(ctx context.Context, refreshRights bool) {
 		e.setProgress("Downloading", done, total, "")
 	})
 	log.Printf("[sync reconcile] readable script fetch finished replies=%d err=%v", len(replies), err)
-	if err != nil && len(replies) == 0 {
+	if err != nil {
 		log.Printf("sync reconcile: %v", err)
+		e.failSnapshot(err)
 		return
 	}
 	if len(replies) == 0 {
-		log.Printf("sync reconcile: script lists are not ready")
-		if err == nil {
-			e.removeUnlistedLocalFiles(cfg.OutputDir, serverPaths(nil))
-		}
+		e.removeUnlistedLocalFiles(cfg.OutputDir, serverPaths(nil), changedLocalPaths(cfg.OutputDir, localBaseline))
+		e.markReconcileCompleted()
+		e.finishProgress(0)
+		e.emitStatus()
 		return
 	}
 	for i, r := range replies {
@@ -914,9 +945,10 @@ func (e *Engine) fetchScripts(ctx context.Context, progress func(done, total int
 func (e *Engine) setProgress(phase string, completed, total int, current string) {
 	e.mu.Lock()
 	e.progress = SyncProgress{Active: true, Phase: phase, Current: current, Completed: completed, Total: total}
+	progress := e.progress
 	e.mu.Unlock()
 	if e.emit != nil {
-		e.emit("rc:syncProgress", e.progress)
+		e.emit("rc:syncProgress", progress)
 		e.emitStatus()
 	}
 }
@@ -1179,6 +1211,7 @@ func (e *Engine) emitLocalScriptUploaded(ref scriptRef, content string) {
 
 func (e *Engine) markReconcileCompleted() {
 	e.mu.Lock()
+	e.lastError = ""
 	e.lastSyncAt = e.now().Unix()
 	e.syncGeneration++
 	e.initialSyncDone = true
@@ -1445,13 +1478,16 @@ func (e *Engine) enqueueReview(ref scriptRef, path, local, server, actor string)
 
 func (e *Engine) Status() SyncStatus {
 	e.mu.RLock()
-	defer e.mu.RUnlock()
 	items := make([]ReviewItem, 0, len(e.review))
 	for _, it := range e.review {
 		items = append(items, it)
 	}
-	ncDown := e.cfg.Enabled && e.cfg.OutputDir != "" && !e.backend.IsNCConnected()
-	return SyncStatus{Enabled: e.cfg.Enabled, Paused: e.cfg.PauseUntil != 0 && e.now().Unix() < e.cfg.PauseUntil, NCDown: ncDown, OutputDirMissing: e.cfg.OutputDir == "", InitialSync: e.initialSyncActive && e.cfg.Enabled && e.cfg.OutputDir != "", PanicMode: e.panicMode, PanicReason: e.panicReason, PanicAt: e.panicAt, Server: e.server, OutputDir: e.cfg.OutputDir, LastSyncAt: e.lastSyncAt, SyncGeneration: e.syncGeneration, ReviewCount: len(items), Items: items, Progress: e.progress, NextSyncAt: e.nextSyncAt, PermissionsReady: e.permissionsReady, PermissionsError: e.permissionsError}
+	status := SyncStatus{Enabled: e.cfg.Enabled, Paused: e.cfg.PauseUntil != 0 && e.now().Unix() < e.cfg.PauseUntil, OutputDirMissing: e.cfg.OutputDir == "", InitialSync: e.initialSyncActive && e.cfg.Enabled && e.cfg.OutputDir != "", PanicMode: e.panicMode, PanicReason: e.panicReason, PanicAt: e.panicAt, Server: e.server, OutputDir: e.cfg.OutputDir, LastSyncAt: e.lastSyncAt, SyncGeneration: e.syncGeneration, ReviewCount: len(items), Items: items, Progress: e.progress, LastError: e.lastError, NextSyncAt: e.nextSyncAt, PermissionsReady: e.permissionsReady, PermissionsError: e.permissionsError}
+	e.mu.RUnlock()
+	// Native callbacks enqueue activity under mu while the DLL lock is held.
+	// Never hold mu across a call back into that library.
+	status.NCDown = status.Enabled && !status.OutputDirMissing && !e.backend.IsNCConnected()
+	return status
 }
 
 func (e *Engine) GetScriptPair(kind, key string) (ScriptPair, error) {
