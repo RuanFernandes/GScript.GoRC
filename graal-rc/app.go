@@ -63,6 +63,11 @@ type App struct {
 	mainWindow *application.WebviewWindow
 	quitting   atomic.Bool
 
+	// playerCount is updated by the frontend player snapshot and read by the
+	// tray refresh loop. Keeping it outside the native call path prevents the
+	// chrome ticker from contending with window interaction on the DLL mutex.
+	playerCount atomic.Int64
+
 	// tray is the system-tray handle; its tooltip is branded with the connected
 	// server name + live player count by refreshServerChrome.
 	tray            *application.SystemTray
@@ -1378,11 +1383,12 @@ func (a *App) ConnectToServer(index int) error {
 	a.stopSyncEngine()
 	a.closeSessionWindows()
 	a.clearGallerySession()
+	a.playerCount.Store(0)
 	err := a.sessions.ConnectToServer(index)
 	// Do not query the native player cache on the Wails connection path. The
 	// server socket is already authenticated here, and a native cache read can
 	// wait for the first player snapshot on slower servers. The tray refresh
-	// loop will populate the live count shortly after the RC screen opens.
+	// loop reads the cached count populated by the RC screen's player polling.
 	a.refreshServerChromeFast()
 	if err == nil {
 		a.startSyncEngine()
@@ -1403,6 +1409,7 @@ func (a *App) Logout() {
 	a.closeSessionWindows()
 	a.clearGallerySession()
 	a.sessions.Logout()
+	a.playerCount.Store(0)
 	a.clearPMState()
 	a.refreshServerChrome()
 }
@@ -1432,7 +1439,13 @@ func (a *App) Execute(message string) error { return a.sessions.Execute(message)
 func (a *App) SetNickname(nickname string) error { return a.sessions.SetNickname(nickname) }
 
 // GetPlayers returns the cached player list for the active server.
-func (a *App) GetPlayers() ([]rclib.Player, error) { return a.sessions.GetPlayers() }
+func (a *App) GetPlayers() ([]rclib.Player, error) {
+	players, err := a.sessions.GetPlayers()
+	if err == nil {
+		a.playerCount.Store(int64(len(players)))
+	}
+	return players, err
+}
 
 // SendPrivateMessage sends a private message to a single player id.
 func (a *App) SendPrivateMessage(playerID int, message string) error {
@@ -2641,6 +2654,9 @@ func (a *App) refreshServerChromeFast() {
 func (a *App) refreshServerChromeWithPlayerCount(loadPlayerCount bool) {
 	st := a.sessions.Status()
 	connected := st.Connected && st.Authenticated && st.ServerName != ""
+	if !connected {
+		a.playerCount.Store(0)
+	}
 
 	mainTitle := "Graal Remote Control"
 	playersTitle := "Players"
@@ -2655,11 +2671,7 @@ func (a *App) refreshServerChromeWithPlayerCount(loadPlayerCount bool) {
 		settingsTitle = serverWindowTitle(st.ServerName, "Settings")
 		filesTitle = serverWindowTitle(st.ServerName, "File Browser")
 		if loadPlayerCount {
-			count := 0
-			if players, err := a.sessions.GetPlayers(); err == nil {
-				count = len(players)
-			}
-			tooltip = st.ServerName + ":" + strconv.Itoa(count)
+			tooltip = st.ServerName + ":" + strconv.Itoa(int(a.playerCount.Load()))
 		} else {
 			tooltip = st.ServerName
 		}

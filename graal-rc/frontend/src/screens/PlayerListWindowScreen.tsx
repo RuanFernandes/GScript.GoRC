@@ -70,6 +70,7 @@ export function PlayerListWindowScreen() {
       (p) =>
         p.account.toLowerCase().includes(q) ||
         (p.nick || "").toLowerCase().includes(q) ||
+        (p.communityName || "").toLowerCase().includes(q) ||
         String(p.id).includes(q)
     )
   }, [players, query])
@@ -207,9 +208,22 @@ export function PlayerListWindowScreen() {
       </header>
       <div className="flex min-h-0 flex-1 flex-col gap-2 p-2 lg:flex-row">
         <ScrollArea className="min-h-0 flex-1">
-          <PlayerTable players={filtered} loading={loading} unreadById={unreadById} canBanPlayers={canBanPlayers} selectedIds={selectedIds} onSelect={(player) => setSelectedPlayerId(player.id)} onToggleSelection={toggleSelection} onPM={openPM} onEdit={editPlayer} />
+          <PlayerTable
+            players={filtered}
+            loading={loading}
+            emptyMessage={query.trim() ? t("player.noResults") : undefined}
+            unreadById={unreadById}
+            canBanPlayers={canBanPlayers}
+            selectedIds={selectedIds}
+            onSelect={(player) => setSelectedPlayerId(player.id)}
+            onToggleSelection={toggleSelection}
+            onPM={openPM}
+            onEdit={editPlayer}
+          />
         </ScrollArea>
-        <PlayerInspector player={selectedPlayer} canBanPlayers={canBanPlayers} onPM={openPM} onEdit={editPlayer} onClose={() => setSelectedPlayerId(null)} />
+        {selectedPlayer && (
+          <PlayerInspector player={selectedPlayer} canBanPlayers={canBanPlayers} onPM={openPM} onEdit={editPlayer} onClose={() => setSelectedPlayerId(null)} />
+        )}
       </div>
 
       <MessageComposeDialog

@@ -76,10 +76,13 @@ func (d *Document) diagnostics() []Diagnostic {
 }
 
 type semicolonParser struct {
-	tokens    []token
-	pairs     map[int]int
-	blockOpen map[int]bool
-	missing   []Diagnostic
+	tokens                   []token
+	pairs                    map[int]int
+	blockOpen                map[int]bool
+	functionExpressionBodies map[int]bool
+	functionExpressionBodyAt map[int]int
+	parsedFunctionBodies     map[int]bool
+	missing                  []Diagnostic
 }
 
 func (d *Document) semicolonDiagnostics() []Diagnostic {
@@ -97,9 +100,12 @@ func newSemicolonParser(tokens []token) *semicolonParser {
 	}
 
 	parser := &semicolonParser{
-		tokens:    filtered,
-		pairs:     make(map[int]int),
-		blockOpen: make(map[int]bool),
+		tokens:                   filtered,
+		pairs:                    make(map[int]int),
+		blockOpen:                make(map[int]bool),
+		functionExpressionBodies: make(map[int]bool),
+		functionExpressionBodyAt: make(map[int]int),
+		parsedFunctionBodies:     make(map[int]bool),
 	}
 	stack := make([]int, 0)
 	for i, current := range parser.tokens {
@@ -119,6 +125,15 @@ func newSemicolonParser(tokens []token) *semicolonParser {
 	for i, current := range parser.tokens {
 		if current.text == "{" && parser.looksLikeBlockOpen(i) {
 			parser.blockOpen[i] = true
+		}
+	}
+	for i, current := range parser.tokens {
+		if !isIdentifierText(current, "function") {
+			continue
+		}
+		if bodyOpen, ok := parser.functionExpressionBodyOpenAfter(i); ok {
+			parser.functionExpressionBodies[bodyOpen] = true
+			parser.functionExpressionBodyAt[i] = bodyOpen
 		}
 	}
 	return parser
@@ -227,6 +242,15 @@ func (p *semicolonParser) parseExpressionStatement(start, end int) (int, int, bo
 			if current.text == "{" && p.blockOpen[index] && p.isGUIBlockOpen(index) {
 				return p.parseBlock(index, end), last, true
 			}
+			if current.text == "{" && p.functionExpressionBodies[index] {
+				p.parsedFunctionBodies[index] = true
+				bodyEnd := p.parseBlock(index, end)
+				if bodyEnd > index {
+					last = bodyEnd - 1
+					index = bodyEnd - 1
+					continue
+				}
+			}
 			return index, last, false
 		}
 		if index > start && p.hasLineBreak(last, index) && p.canEndExpression(last) && p.startsNewStatement(index) {
@@ -235,6 +259,7 @@ func (p *semicolonParser) parseExpressionStatement(start, end int) (int, int, bo
 
 		last = index
 		if close, ok := p.pairs[index]; ok && close > index {
+			p.parseFunctionExpressions(index+1, close)
 			if current.text == "{" && p.blockOpen[index] {
 				return index, last, false
 			}
@@ -340,6 +365,48 @@ func (p *semicolonParser) isGUIBlockOpen(index int) bool {
 	return p.tokens[control].kind == tokenIdentifier &&
 		strings.HasPrefix(strings.ToLower(p.tokens[control].text), "gui") &&
 		isIdentifierText(p.tokens[newIndex], "new")
+}
+
+func (p *semicolonParser) functionExpressionBodyOpenAfter(functionIndex int) (int, bool) {
+	if functionIndex < 0 || functionIndex >= len(p.tokens) || !isIdentifierText(p.tokens[functionIndex], "function") {
+		return -1, false
+	}
+	open := functionIndex + 1
+	if open < len(p.tokens) && p.tokens[open].kind == tokenIdentifier && p.tokens[open].text != "(" {
+		open++
+	}
+	if open >= len(p.tokens) || p.tokens[open].text != "(" {
+		return -1, false
+	}
+	close, ok := p.pairs[open]
+	if !ok || close <= open {
+		return -1, false
+	}
+	bodyOpen := close + 1
+	if bodyOpen >= len(p.tokens) || p.tokens[bodyOpen].text != "{" || !p.blockOpen[bodyOpen] {
+		return -1, false
+	}
+	return bodyOpen, true
+}
+
+func (p *semicolonParser) parseFunctionExpressions(start, end int) {
+	if start < 0 {
+		start = 0
+	}
+	if end > len(p.tokens) {
+		end = len(p.tokens)
+	}
+	for index := start; index < end; index++ {
+		bodyOpen, ok := p.functionExpressionBodyAt[index]
+		if !ok || bodyOpen >= end || p.parsedFunctionBodies[bodyOpen] {
+			continue
+		}
+		p.parsedFunctionBodies[bodyOpen] = true
+		bodyEnd := p.parseBlock(bodyOpen, end)
+		if bodyEnd > bodyOpen {
+			index = bodyEnd - 1
+		}
+	}
 }
 
 func (p *semicolonParser) parseControl(start, end int) int {

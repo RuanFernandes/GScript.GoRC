@@ -162,7 +162,7 @@ func (s *LanguageServer) handleMethod(method string, params json.RawMessage) (an
 				SignatureHelpProvider: &SignatureHelpOptions{TriggerCharacters: []string{"(", ","}},
 				DiagnosticProvider:    &DiagnosticOptions{},
 			},
-			ServerInfo: ServerInfo{Name: "graalscript-lsp", Version: "4.2.3"},
+			ServerInfo: ServerInfo{Name: "graalscript-lsp", Version: "5.0.0"},
 		}, 0, nil
 	case "initialized", "shutdown", "exit":
 		return nil, 0, nil

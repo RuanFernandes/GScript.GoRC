@@ -77,10 +77,11 @@ type RCPlayer struct {
 
 // Player is the Go-friendly copy of an RCPlayer entry.
 type Player struct {
-	Account string `json:"account"`
-	ID      int    `json:"id"`
-	Nick    string `json:"nick"`
-	Level   string `json:"level"`
+	Account       string `json:"account"`
+	ID            int    `json:"id"`
+	Nick          string `json:"nick"`
+	Level         string `json:"level"`
+	CommunityName string `json:"communityName"`
 }
 
 // RCWeapon mirrors grclib's RCWeapon struct (include/grclib.h):

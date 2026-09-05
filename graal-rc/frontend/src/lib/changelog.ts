@@ -11,6 +11,19 @@ export interface ChangelogEntry {
 // the visible history from nullborne.com when the release service is reachable.
 const CHANGELOG_PT_BR: ChangelogEntry[] = [
   {
+    version: "5.0.0",
+    date: "05/09/2026",
+    title: "Estabilidade, Player List e LSP inline",
+    summary: "A grande atualização do RC melhora a recuperação de conexões, a responsividade das janelas, a Player List e o suporte do LSP a functions inline.",
+    current: true,
+    changes: [
+      "Adicionada recuperação controlada de conexão, com cancelamento seguro, proteção contra sessões antigas e preservação de rascunhos locais durante quedas do servidor.",
+      "Melhorada a responsividade ao mover ou redimensionar janelas, evitando renderização pesada de WebViews ocultas e polling nativo acumulado.",
+      "A Player List agora mostra nickname, account, community name, level e ID em colunas próprias, além das ações existentes de moderação e mensagens privadas.",
+      "O GraalScript LSP reconhece functions inline e callbacks sem acusar falsamente a ausência de ponto e vírgula após o corpo.",
+    ],
+  },
+  {
     version: "4.2.1",
     date: "27/08/2026",
     title: "Correção visual do RC Chat",
@@ -355,6 +368,16 @@ const CHANGELOG_PT_BR: ChangelogEntry[] = [
 
 const CHANGELOG_EN: ChangelogEntry[] = [
   {
+    version: "5.0.0", date: "2026-09-05", title: "Stability, Player List and inline LSP support",
+    summary: "This major RC update improves connection recovery, window responsiveness, the Player List and GraalScript inline function support.", current: true,
+    changes: [
+      "Added controlled connection recovery with safe cancellation, stale-session protection and local draft preservation across server drops.",
+      "Improved responsiveness while moving or resizing windows by avoiding heavy rendering for hidden WebViews and accumulated native polling.",
+      "The Player List now shows nickname, account, community name, level and ID in dedicated columns while retaining moderation and private-message actions.",
+      "The GraalScript LSP recognizes inline functions and callbacks without reporting a false missing semicolon after the function body.",
+    ],
+  },
+  {
     version: "4.2.1", date: "2026-08-27", title: "RC Chat visual fix",
     summary: "Fixes the duplicated RC Chat tab and restores the chat panel's full available height.", current: true,
     changes: [
@@ -617,6 +640,16 @@ const CHANGELOG_EN: ChangelogEntry[] = [
 ]
 
 const CHANGELOG_ES: ChangelogEntry[] = [
+  {
+    version: "5.0.0", date: "2026-09-05", title: "Estabilidad, Player List y soporte LSP inline",
+    summary: "Esta actualización mayor de RC mejora la recuperación de conexiones, la respuesta de las ventanas, Player List y el soporte de funciones inline en GraalScript.", current: true,
+    changes: [
+      "Añadida recuperación controlada de conexión con cancelación segura, protección contra sesiones antiguas y preservación de borradores locales después de caídas del servidor.",
+      "Mejorada la respuesta al mover o redimensionar ventanas, evitando renderizado pesado de WebViews ocultas y polling nativo acumulado.",
+      "Player List ahora muestra nickname, account, community name, level e ID en columnas propias, manteniendo las acciones de moderación y mensajes privados.",
+      "El LSP de GraalScript reconoce funciones inline y callbacks sin informar falsamente que falta el punto y coma después del cuerpo.",
+    ],
+  },
   {
     version: "4.2.1", date: "2026-08-27", title: "Corrección visual de RC Chat",
     summary: "Corrige la pestaña RC Chat duplicada y recupera toda la altura disponible del panel de chat.", current: true,

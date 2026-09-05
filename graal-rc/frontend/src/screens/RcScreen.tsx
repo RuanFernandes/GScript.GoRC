@@ -640,19 +640,47 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
 
   useEffect(() => {
     let cancelled = false
+    let running = false
+    let timer: number | null = null
+
     const tick = async () => {
+      if (cancelled || running || document.visibilityState === "hidden") return
+      running = true
       try {
         const s = await rcService.ncStatus()
         if (!cancelled && s) setNc(s)
       } catch {
         // ignore transient status failures
+      } finally {
+        running = false
+        if (!cancelled) schedule()
       }
     }
-    tick()
-    const handle = window.setInterval(tick, 1000)
+
+    const schedule = (delay = 1000) => {
+      if (cancelled || document.visibilityState === "hidden") return
+      if (timer !== null) window.clearTimeout(timer)
+      timer = window.setTimeout(() => {
+        timer = null
+        void tick()
+      }, delay)
+    }
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== "visible" || cancelled || running) return
+      if (timer !== null) {
+        window.clearTimeout(timer)
+        timer = null
+      }
+      void tick()
+    }
+
+    document.addEventListener("visibilitychange", onVisibilityChange)
+    if (document.visibilityState === "visible") void tick()
     return () => {
       cancelled = true
-      window.clearInterval(handle)
+      if (timer !== null) window.clearTimeout(timer)
+      document.removeEventListener("visibilitychange", onVisibilityChange)
     }
   }, [])
 

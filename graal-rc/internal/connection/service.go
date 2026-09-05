@@ -2288,7 +2288,24 @@ func (s *Service) GetPlayers() ([]rclib.Player, error) {
 	if sessionErr := s.checkSession(scope); sessionErr != nil {
 		return nil, sessionErr
 	}
-	return players, err
+	if err != nil {
+		return players, err
+	}
+	return s.enrichPlayerCommunityNames(players), nil
+}
+
+// enrichPlayerCommunityNames joins the native player snapshot with the
+// community names received through the player-property callbacks. The native
+// RCPlayer struct predates community names, so this stays in the connection
+// layer instead of changing the ABI-facing struct layout.
+func (s *Service) enrichPlayerCommunityNames(players []rclib.Player) []rclib.Player {
+	s.playerIdentityMu.Lock()
+	defer s.playerIdentityMu.Unlock()
+
+	for i := range players {
+		players[i].CommunityName = strings.TrimSpace(s.playerCommunities[players[i].ID])
+	}
+	return players
 }
 
 // SendPrivateMessage sends a private message to a single player id on the

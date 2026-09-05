@@ -116,3 +116,46 @@ temp.value = 1;`
 		t.Fatalf("enum declaration with semicolon produced diagnostics: %#v", diagnostics)
 	}
 }
+
+func TestDiagnosticsAllowInlineFunctionExpressions(t *testing.T) {
+	text := `function onCreated() {
+  temp.var = function () {
+    temp.value = 1;
+    if (temp.value == 1) {
+      echo("ready");
+    }
+  };
+}`
+
+	if diagnostics := parseDocument("memory://inline-function", text, 1).diagnostics(); len(diagnostics) != 0 {
+		t.Fatalf("inline function expression produced diagnostics: %#v", diagnostics)
+	}
+}
+
+func TestDiagnosticsRequireSemicolonsInsideInlineFunctionExpressions(t *testing.T) {
+	text := `temp.var = function () {
+  temp.value = 1
+};`
+
+	diagnostics := parseDocument("memory://inline-function-missing-semicolon", text, 1).diagnostics()
+	if len(diagnostics) != 1 || !strings.Contains(diagnostics[0].Message, "Expected ';'") {
+		t.Fatalf("diagnostics = %#v, want one missing semicolon inside inline function", diagnostics)
+	}
+	if diagnostics[0].Range.Start.Line != 1 {
+		t.Fatalf("diagnostic = %#v, want the inline function body line", diagnostics[0])
+	}
+}
+
+func TestDiagnosticsRequireSemicolonsInsideInlineFunctionCallbacks(t *testing.T) {
+	text := `register(function () {
+  temp.value = 1
+});`
+
+	diagnostics := parseDocument("memory://inline-function-callback", text, 1).diagnostics()
+	if len(diagnostics) != 1 || !strings.Contains(diagnostics[0].Message, "Expected ';'") {
+		t.Fatalf("diagnostics = %#v, want one missing semicolon inside inline callback", diagnostics)
+	}
+	if diagnostics[0].Range.Start.Line != 1 {
+		t.Fatalf("diagnostic = %#v, want the callback body line", diagnostics[0])
+	}
+}

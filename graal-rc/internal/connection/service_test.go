@@ -684,6 +684,24 @@ func TestPlayerPropertiesIgnoreUnrelatedPlayers(t *testing.T) {
 	}
 }
 
+func TestEnrichPlayerCommunityNames(t *testing.T) {
+	s := NewService()
+	s.rememberPlayerProperty(42, "communityname", " Repinho ")
+
+	players := []rclib.Player{
+		{ID: 42, Account: "Graal5766947"},
+		{ID: 7, Account: "OtherPlayer"},
+	}
+	got := s.enrichPlayerCommunityNames(players)
+
+	if got[0].CommunityName != "Repinho" {
+		t.Fatalf("community name = %q, want %q", got[0].CommunityName, "Repinho")
+	}
+	if got[1].CommunityName != "" {
+		t.Fatalf("unmapped community name = %q, want empty", got[1].CommunityName)
+	}
+}
+
 func TestCaptureSelfRightsIdentityIgnoresOtherTarget(t *testing.T) {
 	s := NewService()
 	s.creds = Credentials{Account: "Repinho", Nickname: "Repinho"}

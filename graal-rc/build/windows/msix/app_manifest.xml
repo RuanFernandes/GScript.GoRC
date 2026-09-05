@@ -10,7 +10,7 @@
   <Identity 
     Name="com.rauanf.graalrc"
     Publisher="CN=RuanFernandes"
-    Version="4.2.3.0"
+    Version="5.0.0.0"
     ProcessorArchitecture="x64" />
   
   <Properties>

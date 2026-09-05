@@ -17,14 +17,11 @@ func applicationOptions(a *App) application.Options {
 		Name:        "graal-rc",
 		Description: "Graal Remote Control client",
 		Windows: application.WindowsOptions{
-			// RC is an interactive desktop client. WebView2 can otherwise
-			// throttle timers/background renderers after a long idle period,
-			// which makes Monaco and Wails IPC appear frozen on resume.
+			// Keep recovery timers alive after idle, but leave renderer priority and
+			// native occlusion enabled so covered secondary windows do not consume
+			// compositor/GPU time while another window is being moved or resized.
 			AdditionalBrowserArgs: []string{
 				"--disable-background-timer-throttling",
-				"--disable-renderer-backgrounding",
-				"--disable-backgrounding-occluded-windows",
-				"--disable-features=CalculateNativeWinOcclusion",
 			},
 		},
 		OnShutdown:   a.shutdown,
@@ -61,7 +58,6 @@ func main() {
 
 	// System tray + hide-to-tray-on-close (while a server session is active).
 	a.setupTray(mainWindow)
-	startWebviewWakeWatchdog(a)
 
 	if err := app.Run(); err != nil {
 		log.Fatal(err)
