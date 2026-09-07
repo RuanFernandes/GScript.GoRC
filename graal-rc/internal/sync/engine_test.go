@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,6 +32,11 @@ type cancelableFetchBackend struct {
 	started chan struct{}
 }
 
+type countedFetchBackend struct {
+	permissionBackendStub
+	fetches atomic.Int32
+}
+
 type blockingSaveBackend struct {
 	permissionBackendStub
 	started chan struct{}
@@ -56,6 +62,48 @@ func (b *cancelableFetchBackend) FetchAllScripts(ctx context.Context, _ func(str
 	close(b.started)
 	<-ctx.Done()
 	return nil, ctx.Err()
+}
+
+func (b *countedFetchBackend) FetchAllScripts(ctx context.Context, allowed func(string, string) bool, progress func(int, int)) ([]rclib.ScriptReply, error) {
+	b.fetches.Add(1)
+	return b.permissionBackendStub.FetchAllScripts(ctx, allowed, progress)
+}
+
+func TestStartAsyncStopsRetryingAfterTerminalSnapshotFailure(t *testing.T) {
+	backend := &countedFetchBackend{
+		permissionBackendStub: permissionBackendStub{
+			fetchErr: errors.New("script snapshot is incomplete: weapon:Personal/Graal474877/staffs: script request timed out"),
+		},
+	}
+	engine := NewEngine(backend, "TestServer", nil)
+	engine.ApplyConfig(SyncConfig{Enabled: true, OutputDir: t.TempDir(), PollingMinutes: 1})
+	engine.MarkPermissionsReady()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	engine.StartAsync(ctx)
+	defer engine.Stop()
+
+	deadline := time.After(time.Second)
+	for {
+		status := engine.Status()
+		if !status.InitialSync && status.LastError != "" {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("terminal bootstrap failure did not settle: %+v", status)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	time.Sleep(1100 * time.Millisecond)
+	if got := backend.fetches.Load(); got != 1 {
+		t.Fatalf("fetch attempts after terminal failure = %d, want 1", got)
+	}
+	if engine.Status().Progress.Active {
+		t.Fatal("progress remained active after terminal bootstrap failure")
+	}
 }
 
 func TestStartAsyncReturnsBeforeInitialSyncCompletes(t *testing.T) {

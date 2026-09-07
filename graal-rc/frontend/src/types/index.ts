@@ -25,6 +25,7 @@ export type {
   RemoteChangelog,
   UpdateInfo,
   FileBrowserConfig,
+  FileBrowserBackupResult,
   SqliteInfo,
   SqliteResult,
   SqliteTable,

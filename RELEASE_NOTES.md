@@ -1,3 +1,11 @@
+# Graal Remote Control 5.0.1
+
+## File Browser
+
+- Adicionado fluxo de backup local somente leitura, com seleção hierárquica de pastas, progresso, cancelamento e tratamento de falhas.
+- Isoladas as operações de listagem e transferência para impedir que backups concorrentes interfiram no File Browser normal.
+- Incluídos testes para a árvore de pastas, transferências e encerramento seguro de operações durante a troca de sessão.
+
 # Graal Remote Control 5.0.0
 
 ## Estabilidade e experiência de uso

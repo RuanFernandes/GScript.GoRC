@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -84,6 +85,21 @@ type scriptRef struct{ kind, key, name, path string }
 type expectedServerUpdate struct {
 	expires time.Time
 	hash    string
+}
+
+// retryableBootstrapError marks failures that can be recovered by waiting for
+// the NC session to become available. Snapshot and permission failures are
+// reported once instead of causing the entire initial sync to restart forever.
+type retryableBootstrapError struct {
+	err error
+}
+
+func (e retryableBootstrapError) Error() string { return e.err.Error() }
+func (e retryableBootstrapError) Unwrap() error { return e.err }
+
+func isRetryableBootstrapError(err error) bool {
+	var retryable retryableBootstrapError
+	return errors.As(err, &retryable)
 }
 
 // PullBackupFunc stores the previous local bytes before a server pull
@@ -363,10 +379,17 @@ func (e *Engine) start(ctx context.Context, async bool) {
 			initialErr := e.bootstrap(startupCtx, cfg.OutputDir)
 			if initialErr != nil {
 				log.Printf("sync bootstrap: %v", initialErr)
-				// Keep retrying until the NC socket is ready or the engine is
-				// stopped. Keeping this worker alive lets Stop wait for any
-				// in-flight bootstrap before the handle changes servers.
-				e.retryBootstrap(startupCtx, cfg.OutputDir, stop)
+				if startupCtx.Err() != nil {
+					return
+				}
+				// Keep retrying only while the NC socket is becoming available.
+				// A complete but failed snapshot must remain visible as an error
+				// and wait for an explicit Re-Sync instead of looping forever.
+				if isRetryableBootstrapError(initialErr) {
+					e.retryBootstrap(startupCtx, cfg.OutputDir, stop)
+				} else {
+					e.finishInitialSyncFailure()
+				}
 			}
 		}()
 		return
@@ -378,7 +401,13 @@ func (e *Engine) start(ctx context.Context, async bool) {
 	initialErr := e.bootstrap(ctx, cfg.OutputDir)
 	if initialErr != nil {
 		log.Printf("sync bootstrap: %v", initialErr)
-		go e.retryBootstrap(ctx, cfg.OutputDir, stop)
+		if ctx.Err() == nil {
+			if isRetryableBootstrapError(initialErr) {
+				go e.retryBootstrap(ctx, cfg.OutputDir, stop)
+			} else {
+				e.finishInitialSyncFailure()
+			}
+		}
 	}
 	if err := e.startWatcher(cfg.OutputDir); err != nil {
 		log.Printf("sync watcher: %v", err)
@@ -397,6 +426,13 @@ func (e *Engine) finishAsyncStartup(done chan struct{}, cancel context.CancelFun
 	close(done)
 }
 
+func (e *Engine) finishInitialSyncFailure() {
+	e.mu.Lock()
+	e.initialSyncActive = false
+	e.mu.Unlock()
+	e.emitStatus()
+}
+
 func (e *Engine) retryBootstrap(ctx context.Context, dir string, stop <-chan struct{}) {
 	delay := time.Second
 	timer := time.NewTimer(delay)
@@ -410,6 +446,13 @@ func (e *Engine) retryBootstrap(ctx context.Context, dir string, stop <-chan str
 		case <-timer.C:
 			if err := e.bootstrap(ctx, dir); err != nil {
 				log.Printf("sync bootstrap retry: %v", err)
+				if ctx.Err() != nil {
+					return
+				}
+				if !isRetryableBootstrapError(err) {
+					e.finishInitialSyncFailure()
+					return
+				}
 				delay = min(delay*2, 30*time.Second)
 				timer.Reset(delay)
 				continue
@@ -471,10 +514,13 @@ func (e *Engine) bootstrap(ctx context.Context, dir string) error {
 		return err
 	}
 	if err := e.ensureNCConnected(ctx); err != nil {
-		return err
+		return retryableBootstrapError{err: err}
 	}
 	if !e.permissionsReadySnapshot() {
 		if err := e.refreshPermissions(false); err != nil {
+			if !e.backend.IsNCConnected() || !e.backend.IsNCAuthenticated() {
+				return retryableBootstrapError{err: err}
+			}
 			return err
 		}
 	} else {
@@ -491,6 +537,9 @@ func (e *Engine) bootstrap(ctx context.Context, dir string) error {
 	log.Printf("[sync bootstrap] readable script fetch finished replies=%d err=%v", len(replies), err)
 	if err != nil {
 		e.failSnapshot(err)
+		if !e.backend.IsNCConnected() || !e.backend.IsNCAuthenticated() {
+			return retryableBootstrapError{err: err}
+		}
 		return err
 	}
 	if len(replies) == 0 {

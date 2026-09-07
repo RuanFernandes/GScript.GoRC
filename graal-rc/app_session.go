@@ -73,6 +73,14 @@ func (a *App) closeSessionWindows() {
 	a.fileBrowserWindow = nil
 	a.fileBrowserMu.Unlock()
 
+	a.fileBrowserBackupMu.Lock()
+	if a.fileBrowserBackupCancel != nil {
+		a.fileBrowserBackupCancel()
+	}
+	add(a.fileBrowserBackupWindow)
+	a.fileBrowserBackupWindow = nil
+	a.fileBrowserBackupMu.Unlock()
+
 	a.syncReviewMu.Lock()
 	add(a.syncReviewWindow)
 	a.syncReviewWindow = nil

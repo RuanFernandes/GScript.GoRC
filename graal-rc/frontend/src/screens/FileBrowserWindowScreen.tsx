@@ -13,6 +13,7 @@
 // ("levels/"); passing the raw pattern does nothing (the bug in v1).
 import {useCallback, useEffect, useMemo, useRef, useState} from "react"
 import {
+  Archive,
   ChevronDown,
   ChevronRight,
   ChevronUp,
@@ -49,7 +50,8 @@ import {
 } from "@/components/ui/alert-dialog"
 import {useFileBrowser} from "@/hooks/useFileBrowser"
 import {rcService} from "@/services/rcService"
-import type {FileBrowserEntry, FileBrowserFolder} from "@/types"
+import type {FileBrowserEntry} from "@/types"
+import {buildFileBrowserTree, flattenFileBrowserTree, type FileBrowserTreeNode} from "@/lib/fileBrowserTree"
 
 // humanize turns a byte count into a compact human-readable size.
 function humanize(bytes: number): string {
@@ -109,68 +111,6 @@ function isThumbnailImage(path: string): boolean {
   return dot >= 0 && THUMBNAIL_IMAGE_EXTENSIONS.has(path.slice(dot + 1).toLowerCase())
 }
 
-// TreeNode is one node of the recursive folder tree, built from the flat
-// pattern list the server returns at start.
-interface TreeNode {
-  name: string // display label, e.g. "levels/"
-  path: string // full cleaned folder path (no trailing slash), e.g. "levels/users/x/other"
-  rights?: string // access rights for this folder
-  globs?: string[] // file-prefix globs accessible here (e.g. "tb_*") — not folders
-  children: TreeNode[]
-}
-
-// buildTree turns the server's access patterns into a folder tree. Each pattern
-// is "<folder/path>/<fileglob>" (e.g. "levels/users/x/other/tb_*"): the LAST
-// segment is a file-prefix glob when it contains '*', NOT a folder — it's the
-// access filter for the folder, so it is stripped. The remaining path is the
-// folder. Rights + glob attach to the folder leaf.
-function buildTree(folders: FileBrowserFolder[]): TreeNode[] {
-  const root: TreeNode[] = []
-  for (const f of folders) {
-    const segs = (f.pattern ?? "").split("/").filter(Boolean)
-    // Drop a trailing file glob (segment with '*') — it filters files in the
-    // folder, it is not a folder itself.
-    let glob = ""
-    if (segs.length > 0 && segs[segs.length - 1].includes("*")) {
-      glob = segs.pop() as string
-    }
-    const folderPath = segs.join("/")
-    if (!folderPath) continue // glob-only (root-level file access): nothing to nest
-    const parts = folderPath.split("/")
-    let level = root
-    let acc = ""
-    parts.forEach((part, i) => {
-      acc = acc ? acc + "/" + part : part
-      let node = level.find((n) => n.path === acc)
-      if (!node) {
-        node = {name: part + "/", path: acc, children: []}
-        level.push(node)
-      }
-      if (i === parts.length - 1) {
-        if (f.rights) node.rights = f.rights
-        if (glob) {
-          node.globs = node.globs ?? []
-          if (!node.globs.includes(glob)) node.globs.push(glob)
-        }
-      }
-      level = node.children
-    })
-  }
-  // Stable sort: folders with children first, then alphabetical.
-  const sortNodes = (nodes: TreeNode[]) => {
-    nodes.sort((a, b) =>
-      a.children.length === 0 === (b.children.length === 0)
-        ? a.name.localeCompare(b.name)
-        : a.children.length === 0
-          ? 1
-          : -1,
-    )
-    nodes.forEach((n) => sortNodes(n.children))
-  }
-  sortNodes(root)
-  return root
-}
-
 export function FileBrowserWindowScreen() {
   const {t} = useLanguage()
   const fb = useFileBrowser(rcService)
@@ -206,7 +146,7 @@ export function FileBrowserWindowScreen() {
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(() => new Set())
   const [ctx, setCtx] = useState<{x: number; y: number; entry: FileBrowserEntry} | null>(null)
 
-  const tree = useMemo(() => buildTree(fb.folders), [fb.folders])
+  const tree = useMemo(() => buildFileBrowserTree(fb.folders), [fb.folders])
   const selectedEntry = useMemo(
     () => (selected ? fb.files.find((entry) => entry.path === selected) ?? null : null),
     [fb.files, selected],
@@ -217,13 +157,7 @@ export function FileBrowserWindowScreen() {
   // phantom tb_/ from raw patterns never appears as a destination.
   const destFolders = useMemo(() => {
     const out: {path: string; globs?: string[]}[] = []
-    const walk = (nodes: TreeNode[]) => {
-      for (const n of nodes) {
-        out.push({path: n.path, globs: n.globs})
-        walk(n.children)
-      }
-    }
-    walk(tree)
+    for (const node of flattenFileBrowserTree(tree)) out.push({path: node.path, globs: node.globs})
     return out
   }, [tree])
 
@@ -231,15 +165,7 @@ export function FileBrowserWindowScreen() {
   // folder, including collapsed descendants, without issuing one request per
   // directory.
   const allFolders = useMemo(() => {
-    const out: TreeNode[] = []
-    const walk = (nodes: TreeNode[]) => {
-      for (const node of nodes) {
-        out.push(node)
-        walk(node.children)
-      }
-    }
-    walk(tree)
-    return out
+    return flattenFileBrowserTree(tree)
   }, [tree])
 
   const folderSearchResults = useMemo(() => {
@@ -661,6 +587,10 @@ export function FileBrowserWindowScreen() {
           <Button variant="outline" size="sm" onClick={fb.uploadViaDialog}>
             <Upload />
             {t("file.upload")}
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => void rcService.openFileBrowserBackup()}>
+            <Archive />
+            {t("file.backup")}
           </Button>
           <Button
             variant="ghost"
@@ -1210,7 +1140,7 @@ function FolderNode({
   onToggle,
   onOpen,
 }: {
-  node: TreeNode
+  node: FileBrowserTreeNode
   depth: number
   expanded: Set<string>
   current: string

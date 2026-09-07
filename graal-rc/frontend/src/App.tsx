@@ -15,6 +15,7 @@ import {useAccounts} from "@/hooks/useAccounts"
 import {useSession} from "@/hooks/useSession"
 import {AccountSelectScreen} from "@/screens/AccountSelectScreen"
 import {AddAccountScreen} from "@/screens/AddAccountScreen"
+import {FileBrowserBackupWindowScreen} from "@/screens/FileBrowserBackupWindowScreen"
 import {FileBrowserWindowScreen} from "@/screens/FileBrowserWindowScreen"
 import {PlayerListWindowScreen} from "@/screens/PlayerListWindowScreen"
 import {PmWindowScreen} from "@/screens/PmWindowScreen"
@@ -442,8 +443,10 @@ function App() {
             ? {title: t("window.access"), content: <BanWindowScreen />}
             : hash.startsWith("#comments")
               ? {title: t("window.comments"), content: <CommentsWindowScreen />}
-              : hash.startsWith("#files")
-                ? {title: t("window.fileBrowser"), content: <FileBrowserWindowScreen />}
+              : hash.startsWith("#file-backup")
+                ? {title: t("window.fileBrowserBackup"), content: <FileBrowserBackupWindowScreen />}
+                : hash.startsWith("#files")
+                  ? {title: t("window.fileBrowser"), content: <FileBrowserWindowScreen />}
                 : hash.startsWith("#scripts")
                   ? {title: t("window.scriptManager"), content: <ScriptManagerWindowScreen />}
     : hash.startsWith("#settings")

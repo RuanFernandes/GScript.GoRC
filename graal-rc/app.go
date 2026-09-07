@@ -141,6 +141,10 @@ type App struct {
 	fileBrowserMu     sync.Mutex
 	fileBrowserWindow *application.WebviewWindow
 
+	fileBrowserBackupMu     sync.Mutex
+	fileBrowserBackupWindow *application.WebviewWindow
+	fileBrowserBackupCancel context.CancelFunc
+
 	editorMu      sync.Mutex
 	editorWindows map[string]*application.WebviewWindow
 
@@ -2663,6 +2667,7 @@ func (a *App) refreshServerChromeWithPlayerCount(loadPlayerCount bool) {
 	scriptsTitle := "Script Manager"
 	settingsTitle := "Settings"
 	filesTitle := "File Browser"
+	backupTitle := "File Browser Backup"
 	tooltip := "Graal Remote Control"
 	if connected {
 		mainTitle = serverWindowTitle(st.ServerName, "RC")
@@ -2670,6 +2675,7 @@ func (a *App) refreshServerChromeWithPlayerCount(loadPlayerCount bool) {
 		scriptsTitle = serverWindowTitle(st.ServerName, "Script Manager")
 		settingsTitle = serverWindowTitle(st.ServerName, "Settings")
 		filesTitle = serverWindowTitle(st.ServerName, "File Browser")
+		backupTitle = serverWindowTitle(st.ServerName, "File Browser Backup")
 		if loadPlayerCount {
 			tooltip = st.ServerName + ":" + strconv.Itoa(int(a.playerCount.Load()))
 		} else {
@@ -2683,6 +2689,7 @@ func (a *App) refreshServerChromeWithPlayerCount(loadPlayerCount bool) {
 	a.setWindowTitleLocked(&a.scriptMgrMu, &a.scriptMgrWindow, scriptsTitle)
 	a.setWindowTitleLocked(&a.settingsMu, &a.settingsWindow, settingsTitle)
 	a.setWindowTitleLocked(&a.fileBrowserMu, &a.fileBrowserWindow, filesTitle)
+	a.setWindowTitleLocked(&a.fileBrowserBackupMu, &a.fileBrowserBackupWindow, backupTitle)
 	a.pmWindowMu.Lock()
 	for _, window := range a.pmWindows {
 		if window != nil {

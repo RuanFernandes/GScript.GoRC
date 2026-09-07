@@ -14,6 +14,7 @@ import type {
   CommandMacroStore,
   CodingSettings,
   FileBrowserConfig,
+  FileBrowserBackupResult,
   FileBrowserEntry,
   FileBrowserFolder,
   LoginRequest,
@@ -242,6 +243,7 @@ export interface RcService {
   pluginUIAction(pluginId: string, windowId: string, action: string, value: unknown): Promise<void>
   // File browser (main server socket).
   openFileBrowser(): Promise<void>
+  openFileBrowserBackup(): Promise<void>
   fileBrowserStart(): Promise<void>
   fileBrowserCd(folder: string): Promise<void>
   fileBrowserDelete(path: string): Promise<void>
@@ -252,6 +254,9 @@ export interface RcService {
   getFileBrowserImageThumbnail(path: string): Promise<string>
   fileBrowserMaxUploadSize(): Promise<number>
   downloadFile(path: string, saveAs: boolean): Promise<string>
+  chooseBackupDirectory(): Promise<string>
+  backupFileBrowser(folders: string[], destination: string): Promise<FileBrowserBackupResult>
+  cancelFileBrowserBackup(): Promise<void>
   uploadFileViaDialog(): Promise<void>
   uploadFileBytes(path: string, b64: string): Promise<void>
   getFileBrowserConfig(): Promise<FileBrowserConfig>
@@ -592,6 +597,7 @@ export const rcService: RcService = {
   pluginUIAction: (pluginId, windowId, action, value) => App.PluginUIAction(pluginId, windowId, action, value),
   // File browser (main server socket).
   openFileBrowser: () => App.OpenFileBrowser(),
+  openFileBrowserBackup: () => App.OpenFileBrowserBackup(),
   fileBrowserStart: () => App.FileBrowserStart(),
   fileBrowserCd: (folder) => App.FileBrowserCd(folder),
   fileBrowserDelete: (path) => App.FileBrowserDelete(path),
@@ -602,6 +608,9 @@ export const rcService: RcService = {
   getFileBrowserImageThumbnail: (path) => App.GetFileBrowserImageThumbnail(path),
   fileBrowserMaxUploadSize: () => App.FileBrowserMaxUploadSize(),
   downloadFile: (path, saveAs) => App.DownloadFile(path, saveAs),
+  chooseBackupDirectory: () => App.ChooseBackupDirectory(),
+  backupFileBrowser: (folders, destination) => App.BackupFileBrowser(folders, destination),
+  cancelFileBrowserBackup: () => App.CancelFileBrowserBackup(),
   uploadFileViaDialog: () => App.UploadFileViaDialog(),
   uploadFileBytes: (path, b64) => App.UploadFileBytes(path, b64),
   getFileBrowserConfig: () => App.GetFileBrowserConfig(),

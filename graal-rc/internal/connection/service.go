@@ -148,9 +148,16 @@ type Service struct {
 	// clears the native transfer state for the previous one. fileDownloadSlot is
 	// held from request dispatch until the matching callback arrives so normal
 	// downloads and thumbnail previews cannot overwrite each other.
-	fileDownloadSlot chan struct{} // cancellation-aware single-transfer gate, guarded by mu
-	pendingFilesMu   sync.Mutex
-	pendingFiles     map[string]*fileWait
+	// fileBrowserOperationMu prevents a bulk backup from interleaving folder
+	// listings or file transfers with ordinary File Browser actions.
+	fileBrowserOperationMu   sync.RWMutex
+	fileBrowserListingMu     sync.Mutex
+	fileBrowserListingWaitMu sync.Mutex
+	fileBrowserListingWait   *fileBrowserListingWait
+	fileBrowserBackupActive  atomic.Bool
+	fileDownloadSlot         chan struct{} // cancellation-aware single-transfer gate, guarded by mu
+	pendingFilesMu           sync.Mutex
+	pendingFiles             map[string]*fileWait
 	// channels is the authoritative set of joined IRC channels, derived from the
 	// join/left marker lines. It is the single source of truth for which IRC
 	// tabs the frontend should show; the frontend reconciles its tabs against a
@@ -643,6 +650,8 @@ func (s *Service) cancelFile(path string, waiter *fileWait, err error) {
 // Logout/server switching never leaves callers waiting for 15 minutes or ten
 // minutes on a dead callback route.
 func (s *Service) cancelWaiters(err error) {
+	s.cancelCurrentFileBrowserListing(err)
+
 	s.pendingMu.Lock()
 	for key, waiter := range s.pending {
 		delete(s.pending, key)
@@ -1855,7 +1864,12 @@ func (s *Service) connectToServer(ctx context.Context, index int) (resultErr err
 			s.emitEvent("rc:npcAttributes", id, attrs)
 		},
 		FileBrowserFolders: func(count int) { s.emitEvent("rc:fbFolders", count) },
-		FileBrowserFiles:   func(folder string, count int) { s.emitEvent("rc:fbFiles", folder, count) },
+		FileBrowserFiles: func(folder string, count int) {
+			s.resolveFileBrowserListing(folder)
+			if !s.fileBrowserBackupActive.Load() {
+				s.emitEvent("rc:fbFiles", folder, count)
+			}
+		},
 		FileBrowserMessage: func(message string) { s.emitEvent("rc:fbMessage", message) },
 		MaxUploadSize: func(maxSize int64) {
 			s.mu.Lock()
@@ -4156,6 +4170,8 @@ func (s *Service) RefreshWeapons() error {
 // StartFileBrowser begins a file-browser session. The folder/file data arrives
 // asynchronously via the rc:fbFolders / rc:fbFiles events.
 func (s *Service) StartFileBrowser() error {
+	s.fileBrowserOperationMu.RLock()
+	defer s.fileBrowserOperationMu.RUnlock()
 	h, err := s.requireHandle()
 	if err != nil {
 		return err
@@ -4165,6 +4181,8 @@ func (s *Service) StartFileBrowser() error {
 
 // FileBrowserCd changes the current browser folder.
 func (s *Service) FileBrowserCd(folder string) error {
+	s.fileBrowserOperationMu.RLock()
+	defer s.fileBrowserOperationMu.RUnlock()
 	h, err := s.requireHandle()
 	if err != nil {
 		return err
@@ -4174,6 +4192,8 @@ func (s *Service) FileBrowserCd(folder string) error {
 
 // FileBrowserDelete deletes a remote file.
 func (s *Service) FileBrowserDelete(path string) error {
+	s.fileBrowserOperationMu.RLock()
+	defer s.fileBrowserOperationMu.RUnlock()
 	h, err := s.requireHandle()
 	if err != nil {
 		return err
@@ -4187,6 +4207,8 @@ func (s *Service) FileBrowserDelete(path string) error {
 
 // FileBrowserRename renames a remote file.
 func (s *Service) FileBrowserRename(oldPath, newPath string) error {
+	s.fileBrowserOperationMu.RLock()
+	defer s.fileBrowserOperationMu.RUnlock()
 	h, err := s.requireHandle()
 	if err != nil {
 		return err
@@ -4200,6 +4222,8 @@ func (s *Service) FileBrowserRename(oldPath, newPath string) error {
 
 // FileBrowserMove moves a file into a destination folder.
 func (s *Service) FileBrowserMove(destFolder, filePath string) error {
+	s.fileBrowserOperationMu.RLock()
+	defer s.fileBrowserOperationMu.RUnlock()
 	h, err := s.requireHandle()
 	if err != nil {
 		return err
@@ -4214,6 +4238,8 @@ func (s *Service) FileBrowserMove(destFolder, filePath string) error {
 // GetFileBrowserFolders returns the current browser folders (snapshotted from
 // the DLL cache). Call after an rc:fbFolders event.
 func (s *Service) GetFileBrowserFolders() ([]rclib.FileBrowserFolder, error) {
+	s.fileBrowserOperationMu.RLock()
+	defer s.fileBrowserOperationMu.RUnlock()
 	h, err := s.requireHandle()
 	if err != nil {
 		return nil, err
@@ -4224,6 +4250,8 @@ func (s *Service) GetFileBrowserFolders() ([]rclib.FileBrowserFolder, error) {
 // GetFileBrowserFiles returns the current browser files (snapshotted from the
 // DLL cache). Call after an rc:fbFiles event.
 func (s *Service) GetFileBrowserFiles() ([]rclib.FileBrowserEntry, error) {
+	s.fileBrowserOperationMu.RLock()
+	defer s.fileBrowserOperationMu.RUnlock()
 	h, err := s.requireHandle()
 	if err != nil {
 		return nil, err
@@ -4250,6 +4278,8 @@ func (s *Service) DownloadFile(path string) ([]byte, error) {
 // until its response, session cancellation or timeout. The protocol has no abort
 // primitive; releasing that slot early could route old bytes into a new request.
 func (s *Service) DownloadFileContext(ctx context.Context, path string) ([]byte, error) {
+	s.fileBrowserOperationMu.RLock()
+	defer s.fileBrowserOperationMu.RUnlock()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -4257,6 +4287,17 @@ func (s *Service) DownloadFileContext(ctx context.Context, path string) ([]byte,
 	if err != nil {
 		return nil, err
 	}
+	return s.downloadFileContext(ctx, scope, path)
+}
+
+// downloadFileContext is the internal transfer primitive used by both normal
+// downloads and BackupFileBrowser. The backup already owns the exclusive File
+// Browser operation lock, so taking a read lock here would deadlock it.
+func (s *Service) downloadFileContext(ctx context.Context, scope sessionScope, path string) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var err error
 	release, err := s.acquireFileDownload(ctx, scope)
 	if err != nil {
 		return nil, err
@@ -4297,9 +4338,6 @@ func (s *Service) DownloadFileContext(ctx context.Context, path string) ([]byte,
 		if waiter.err != nil {
 			return nil, waiter.err
 		}
-		if waiter.content == nil {
-			return nil, errors.New("server returned no file content")
-		}
 		return waiter.content, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -4324,6 +4362,8 @@ func (s *Service) finishFileTransfer(scope sessionScope, path string, waiter *fi
 // UploadFile uploads raw bytes to a remote path. When the max upload size is
 // known, oversize uploads are rejected up front with a clear error.
 func (s *Service) UploadFile(path string, content []byte) error {
+	s.fileBrowserOperationMu.RLock()
+	defer s.fileBrowserOperationMu.RUnlock()
 	h, err := s.requireHandle()
 	if err != nil {
 		return err

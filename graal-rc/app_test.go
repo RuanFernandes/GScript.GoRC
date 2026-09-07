@@ -11,10 +11,11 @@ func TestListserverForProfile(t *testing.T) {
 		name     string
 		profile  string
 		wantHost string
+		wantPort int
 	}{
-		{name: "default profile", profile: "", wantHost: rclib.DefaultListserverHost},
-		{name: "reborn profile", profile: "Preagonal:", wantHost: PreagonalListserverHost},
-		{name: "reborn profile with whitespace", profile: "  Preagonal:  ", wantHost: PreagonalListserverHost},
+		{name: "default profile", profile: "", wantHost: rclib.DefaultListserverHost, wantPort: rclib.DefaultListserverPort},
+		{name: "preagonal profile", profile: "Preagonal:", wantHost: PreagonalListserverHost, wantPort: rclib.DefaultListserverPort},
+		{name: "preagonal profile with whitespace", profile: "  Preagonal:  ", wantHost: PreagonalListserverHost, wantPort: rclib.DefaultListserverPort},
 	}
 
 	for _, tt := range tests {
@@ -23,8 +24,8 @@ func TestListserverForProfile(t *testing.T) {
 			if host != tt.wantHost {
 				t.Fatalf("host = %q, want %q", host, tt.wantHost)
 			}
-			if port != rclib.DefaultListserverPort {
-				t.Fatalf("port = %d, want %d", port, rclib.DefaultListserverPort)
+			if port != tt.wantPort {
+				t.Fatalf("port = %d, want %d", port, tt.wantPort)
 			}
 		})
 	}
