@@ -6,7 +6,6 @@
 // TPlayerList. Inbound PMs arrive through the shared backend state and keep
 // their unread badge here while each conversation lives in its own window.
 import {useEffect, useMemo, useState} from "react"
-import {Events} from "@wailsio/runtime"
 import {Loader2, Megaphone, Search, Send, Users} from "lucide-react"
 import {toast} from "sonner"
 
@@ -17,8 +16,9 @@ import {Button} from "@/components/ui/button"
 import {Input} from "@/components/ui/input"
 import {ScrollArea} from "@/components/ui/scroll-area"
 import {usePlayers} from "@/hooks/usePlayers"
+import {usePlayerActions} from "@/hooks/usePlayerActions"
 import {rcService} from "@/services/rcService"
-import type {Player, SessionStatus} from "@/types"
+import type {Player} from "@/types"
 import {useLanguage} from "@/hooks/useLanguage"
 import {usePrivateMessages} from "@/hooks/usePrivateMessages"
 import {containsUnsafePrivateMessageMarkup} from "@/lib/privateMessage"
@@ -26,42 +26,13 @@ import {containsUnsafePrivateMessageMarkup} from "@/lib/privateMessage"
 export function PlayerListWindowScreen() {
   const {t} = useLanguage()
   const {players, loading} = usePlayers(rcService, true)
+  const {canBanPlayers, openPM, editPlayer} = usePlayerActions(rcService)
   const [query, setQuery] = useState("")
   const [selectedPlayerId, setSelectedPlayerId] = useState<number | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
-  const [canBanPlayers, setCanBanPlayers] = useState(false)
-
   const {unreadById} = usePrivateMessages()
   const [massPmOpen, setMassPmOpen] = useState(false)
   const [adminOpen, setAdminOpen] = useState(false)
-
-  useEffect(() => {
-    let cancelled = false
-    const refreshPermissions = async () => {
-      try {
-        const value = await rcService.status()
-        if (cancelled || !value || typeof value !== "object") return
-        const status = value as SessionStatus
-        setCanBanPlayers(Boolean(status.rightsReady && status.canBanPlayers))
-      } catch {
-        if (!cancelled) setCanBanPlayers(false)
-      }
-    }
-
-    void refreshPermissions()
-    const off = Events.On("rc:evt", (event: {data: string}) => {
-      try {
-        const payload = JSON.parse(event.data) as {name?: string}
-        if (payload.name === "rc:scriptPermissionsChanged") void refreshPermissions()
-      } catch {
-        // Ignore unrelated or malformed event payloads.
-      }
-    })
-    return () => {
-      cancelled = true
-      off()
-    }
-  }, [])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -85,51 +56,6 @@ export function PlayerListWindowScreen() {
     })
     if (selectedPlayerId !== null && !online.has(selectedPlayerId)) setSelectedPlayerId(null)
   }, [players, selectedPlayerId])
-
-  const openPM = (player: Player) => {
-    void rcService.openPlayerListPM(player.id).catch((err) => {
-      toast.error(t("player.actionFailed"), {description: err instanceof Error ? err.message : String(err)})
-    })
-  }
-
-  // Right-click admin actions: open the editor window for the row's (server-
-  // supplied) account name.
-  const editPlayer = (player: Player, kind: PlayerEditKind) => {
-    const account = player.account
-    if (!account) {
-      toast.error(t("player.noAccount"))
-      return
-    }
-    if ((kind === "ban" || kind === "banhistory") && !canBanPlayers) {
-      toast.error(t("player.banPlayersRightRequired"))
-      return
-    }
-    const open = async () => {
-      switch (kind) {
-        case "rights":
-          await rcService.openRightsWindow(account)
-          break
-        case "ban":
-          await rcService.openBanWindow(account)
-          break
-        case "attrs":
-          await rcService.openAttrsWindow(account)
-          break
-        case "comments":
-          await rcService.openCommentsWindow(account)
-          break
-        case "banhistory":
-          await rcService.openBanHistoryWindow(account)
-          break
-        case "staffactivity":
-          await rcService.openStaffActivityWindow(account)
-          break
-      }
-    }
-    void open().catch((err) => {
-      toast.error(t("player.actionFailed"), {description: err instanceof Error ? err.message : String(err)})
-    })
-  }
 
   const toggleSelection = (player: Player) => {
     setSelectedIds((current) => {

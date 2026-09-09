@@ -1,3 +1,11 @@
+# Graal Remote Control 5.1.0
+
+## Chat e ações de jogadores
+
+- Identificação automática de account name e community name no RC Chat, canais IRC e conversas PM.
+- Card com informações do jogador ao passar o mouse e menu contextual com as mesmas ações da Player List.
+- Adicionado o comando para copiar o account name diretamente pelo menu contextual.
+
 # Graal Remote Control 5.0.1
 
 ## File Browser

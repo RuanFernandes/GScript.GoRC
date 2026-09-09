@@ -1,11 +1,15 @@
-import {useEffect, useMemo, useState} from "react"
+import {useCallback, useEffect, useMemo, useState} from "react"
 import {MessageSquare} from "lucide-react"
 import {toast} from "sonner"
 
 import {PmConversation, type PmLine, type PmTarget} from "@/components/features/playerlist/PmConversation"
+import {PlayerContextMenu} from "@/components/features/playerlist/PlayerContextMenu"
 import {useChatSettings} from "@/hooks/useChatSettings"
+import {usePlayerActions} from "@/hooks/usePlayerActions"
+import {usePlayers} from "@/hooks/usePlayers"
 import {useLanguage} from "@/hooks/useLanguage"
 import {usePrivateMessages} from "@/hooks/usePrivateMessages"
+import {buildPlayerMentionMatcher} from "@/lib/playerMentions"
 import {rcService} from "@/services/rcService"
 import type {Player} from "@/types"
 
@@ -29,16 +33,14 @@ export function PmWindowScreen() {
   const playerID = readPlayerID()
   const chat = useChatSettings()
   const {state, markRead, recordOutgoing} = usePrivateMessages()
-  const [player, setPlayer] = useState<Player | null>(null)
-
-  useEffect(() => {
-    if (playerID === null) return
-    let cancelled = false
-    void rcService.getPlayers().then((players) => {
-      if (!cancelled) setPlayer((players ?? []).find((candidate) => candidate.id === playerID) ?? null)
-    }).catch(() => {})
-    return () => { cancelled = true }
-  }, [playerID])
+  const {players} = usePlayers(rcService, playerID !== null)
+  const {canBanPlayers, openPM, editPlayer} = usePlayerActions(rcService)
+  const player = players.find((candidate) => candidate.id === playerID) ?? null
+  const playerMatcher = useMemo(() => buildPlayerMentionMatcher(players), [players])
+  const [playerMenu, setPlayerMenu] = useState<{player: Player; anchor: {x: number; y: number}} | null>(null)
+  const openPlayerContext = useCallback((selected: Player, x: number, y: number) => {
+    setPlayerMenu({player: selected, anchor: {x, y}})
+  }, [])
 
   useEffect(() => {
     if (playerID !== null) markRead(playerID)
@@ -105,7 +107,17 @@ export function PmWindowScreen() {
           <p className="text-muted-foreground truncate text-xs">{description}</p>
         </div>
       </header>
-      <PmConversation target={target} lines={lines} onSend={send} />
+      <PmConversation target={target} lines={lines} onSend={send} playerMatcher={playerMatcher} onPlayerContext={openPlayerContext} />
+      {playerMenu && (
+        <PlayerContextMenu
+          player={playerMenu.player}
+          anchor={playerMenu.anchor}
+          canBanPlayers={canBanPlayers}
+          onPM={openPM}
+          onEdit={editPlayer}
+          onClose={() => setPlayerMenu(null)}
+        />
+      )}
     </div>
   )
 }

@@ -3,9 +3,11 @@
 // Colors come from the user's ChatSettings. The speaker is the text before the
 // first colon (colored); the rest is content. system lines render gray/italic
 // with no prefix tag.
-import type {ReactNode} from "react"
+import {Fragment, type ReactNode} from "react"
 import {hhmm, sourceTag} from "@/lib/chatLine"
-import type {ChatMessage, ChatSettings} from "@/types"
+import {PlayerMentionText, type PlayerMentionTranslator} from "@/components/features/chat/PlayerMention"
+import type {PlayerMentionMatcher} from "@/lib/playerMentions"
+import type {ChatMessage, ChatSettings, Player} from "@/types"
 
 const URL_TOKEN_PATTERN = /https?:\/\/[^\s<>"']+/gi
 
@@ -43,7 +45,15 @@ function validWebURL(value: string): string | null {
   }
 }
 
-function LinkifiedText({text, onOpenLink}: {text: string; onOpenLink: (url: string) => void}): ReactNode {
+interface InteractiveTextProps {
+  text: string
+  onOpenLink: (url: string) => void
+  translate: PlayerMentionTranslator
+  playerMatcher?: PlayerMentionMatcher
+  onPlayerContext?: (player: Player, x: number, y: number) => void
+}
+
+function LinkifiedText({text, onOpenLink, translate, playerMatcher, onPlayerContext}: InteractiveTextProps): ReactNode {
   const parts: ReactNode[] = []
   let cursor = 0
 
@@ -54,7 +64,17 @@ function LinkifiedText({text, onOpenLink}: {text: string; onOpenLink: (url: stri
     const trimmed = trimURLPunctuation(rawURL)
     const safeURL = validWebURL(trimmed.url)
 
-    parts.push(text.slice(cursor, start))
+    if (start > cursor) {
+      parts.push(
+        <PlayerMentionText
+          key={`text-${cursor}-${start}`}
+          text={text.slice(cursor, start)}
+          matcher={playerMatcher}
+          translate={translate}
+          onOpenContext={onPlayerContext}
+        />,
+      )
+    }
     if (safeURL) {
       parts.push(
         <a
@@ -68,15 +88,34 @@ function LinkifiedText({text, onOpenLink}: {text: string; onOpenLink: (url: stri
         >
           {trimmed.url}
         </a>,
-        trimmed.suffix,
+        trimmed.suffix && <Fragment key={`suffix-${start}`}>{trimmed.suffix}</Fragment>,
       )
     } else {
-      parts.push(rawURL)
+      parts.push(
+        <PlayerMentionText
+          key={`invalid-url-${start}`}
+          text={rawURL}
+          matcher={playerMatcher}
+          translate={translate}
+          onOpenContext={onPlayerContext}
+        />,
+      )
     }
     cursor = end
   }
 
-  parts.push(text.slice(cursor))
+  if (cursor < text.length) {
+    parts.push(
+      <PlayerMentionText
+        key={`text-${cursor}-end`}
+        text={text.slice(cursor)}
+        matcher={playerMatcher}
+        translate={translate}
+        onOpenContext={onPlayerContext}
+      />,
+    )
+  }
+
   return <>{parts}</>
 }
 
@@ -105,11 +144,19 @@ interface ChatLineProps {
   settings: ChatSettings
   repeatLabel?: string
   onOpenLink: (url: string) => void
+  translate: PlayerMentionTranslator
+  playerMatcher?: PlayerMentionMatcher
+  onPlayerContext?: (player: Player, x: number, y: number) => void
 }
 
-export function ChatLine({message, settings, repeatLabel, onOpenLink}: ChatLineProps) {
+export function ChatLine({message, settings, repeatLabel, onOpenLink, translate, playerMatcher, onPlayerContext}: ChatLineProps) {
   if (message.source === "system") {
-    return <span className="text-muted-foreground italic">{repeatLabel && <span className="mr-1 not-italic" title={repeatLabel}>{repeatLabel}</span>}<LinkifiedText text={message.text} onOpenLink={onOpenLink} /></span>
+    return (
+      <span className="text-muted-foreground italic">
+        {repeatLabel && <span className="mr-1 not-italic" title={repeatLabel}>{repeatLabel}</span>}
+        <LinkifiedText text={message.text} onOpenLink={onOpenLink} translate={translate} playerMatcher={playerMatcher} onPlayerContext={onPlayerContext} />
+      </span>
+    )
   }
 
   // The reference shows a source tag ([RC]/[NC]/[IRC]) only in the main server
@@ -128,13 +175,17 @@ export function ChatLine({message, settings, repeatLabel, onOpenLink}: ChatLineP
       )}
       {split ? (
         <>
-          <span style={{color: settings.speaker}}>{split.speaker}</span>
+          <span style={{color: settings.speaker}}>
+            <PlayerMentionText text={split.speaker} matcher={playerMatcher} translate={translate} onOpenContext={onPlayerContext} />
+          </span>
           <span style={{color: settings.content}}>
-            :<LinkifiedText text={split.content} onOpenLink={onOpenLink} />
+            :<LinkifiedText text={split.content} onOpenLink={onOpenLink} translate={translate} playerMatcher={playerMatcher} onPlayerContext={onPlayerContext} />
           </span>
         </>
       ) : (
-        <span style={{color: settings.content}}><LinkifiedText text={message.text} onOpenLink={onOpenLink} /></span>
+        <span style={{color: settings.content}}>
+          <LinkifiedText text={message.text} onOpenLink={onOpenLink} translate={translate} playerMatcher={playerMatcher} onPlayerContext={onPlayerContext} />
+        </span>
       )}
     </span>
   )

@@ -1,8 +1,11 @@
+import {useMemo} from "react"
 import {Activity, AlertTriangle, ArchiveRestore, CheckCircle2, Code2, Database, FileText, FolderOpen, MessageSquare, RefreshCw, Search, Server, Settings, Users, Wifi, WifiOff} from "lucide-react"
 
 import {Badge} from "@/components/ui/badge"
 import {Button} from "@/components/ui/button"
 import {Card, CardContent, CardDescription, CardHeader, CardTitle} from "@/components/ui/card"
+import {PlayerMentionText} from "@/components/features/chat/PlayerMention"
+import {buildPlayerMentionMatcher} from "@/lib/playerMentions"
 import type {ChatMessage, NCStatus, Player, SyncStatus} from "@/types"
 import {useLanguage} from "@/hooks/useLanguage"
 
@@ -20,6 +23,7 @@ interface OperationsOverviewProps {
   onOpenSync: () => void
   onOpenDeployments: () => void
   onOpenSettings: () => void
+  onPlayerContext?: (player: Player, x: number, y: number) => void
 }
 
 function relativeTime(timestamp: number, locale: string): string {
@@ -49,9 +53,11 @@ export function OperationsOverview({
   onOpenSync,
   onOpenDeployments,
   onOpenSettings,
+  onPlayerContext,
 }: OperationsOverviewProps) {
   const {t, language} = useLanguage()
   const totalScripts = scriptCounts.weapons + scriptCounts.classes + scriptCounts.npcs
+  const playerMatcher = useMemo(() => buildPlayerMentionMatcher(players), [players])
   const syncNeedsReview = sync.reviewCount > 0
   const syncLabel = syncNeedsReview
     ? t("dashboard.syncConflicts", {count: sync.reviewCount, suffix: sync.reviewCount === 1 ? "" : "s"})
@@ -131,7 +137,7 @@ export function OperationsOverview({
                   <div key={`${message.id}-${message.ts}`} className="flex min-w-0 items-start gap-2 rounded-md px-2 py-1.5 hover:bg-accent/50">
                     <span className="text-muted-foreground mt-0.5 w-7 shrink-0 text-right font-mono text-[10px] tabular-nums">{relativeTime(message.ts, language)}</span>
                     <Badge variant="outline" className="mt-0.5 h-5 shrink-0 px-1.5 text-[10px]">{message.source.toUpperCase()}</Badge>
-                    <span className="min-w-0 truncate text-xs">{message.text}</span>
+                    <span className="min-w-0 truncate text-xs"><PlayerMentionText text={message.text} matcher={playerMatcher} translate={t} onOpenContext={onPlayerContext} /></span>
                   </div>
                 ))}
               </div>

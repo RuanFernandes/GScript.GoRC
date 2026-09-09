@@ -4,7 +4,8 @@ import {Badge} from "@/components/ui/badge"
 import {Button} from "@/components/ui/button"
 import type {Player} from "@/types"
 import {useLanguage} from "@/hooks/useLanguage"
-import type {PlayerEditKind} from "./PlayerTable"
+import {displayPlayerValue} from "@/lib/playerIdentity"
+import type {PlayerEditKind} from "./PlayerContextMenu"
 
 interface PlayerInspectorProps {
   player: Player | null
@@ -14,9 +15,6 @@ interface PlayerInspectorProps {
   onClose: () => void
 }
 
-function displayValue(value: string | undefined | null): string {
-  return value?.trim() || "—"
-}
 
 export function PlayerInspector({player, canBanPlayers, onPM, onEdit, onClose}: PlayerInspectorProps) {
   const {t} = useLanguage()
@@ -25,10 +23,10 @@ export function PlayerInspector({player, canBanPlayers, onPM, onEdit, onClose}: 
   // selected prevents an empty child panel from taking over the small window.
   if (!player) return null
 
-  const nickname = displayValue(player.nick) === "—" ? displayValue(player.account) : displayValue(player.nick)
-  const account = displayValue(player.account)
-  const communityName = displayValue(player.communityName)
-  const level = displayValue(player.level)
+  const nickname = displayPlayerValue(player.nick) === "—" ? displayPlayerValue(player.account) : displayPlayerValue(player.nick)
+  const account = displayPlayerValue(player.account)
+  const communityName = displayPlayerValue(player.communityName)
+  const level = displayPlayerValue(player.level)
   const action = (kind: PlayerEditKind) => onEdit(player, kind)
 
   return (

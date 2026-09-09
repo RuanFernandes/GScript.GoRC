@@ -4,6 +4,9 @@ import {toast} from "sonner"
 
 import {Button} from "@/components/ui/button"
 import {useLanguage} from "@/hooks/useLanguage"
+import {PlayerMentionText} from "@/components/features/chat/PlayerMention"
+import type {PlayerMentionMatcher} from "@/lib/playerMentions"
+import type {Player} from "@/types"
 import {
   containsUnsafePrivateMessageMarkup,
   copyTextToClipboard,
@@ -26,6 +29,8 @@ interface PmConversationProps {
   target: PmTarget
   lines: PmLine[]
   onSend: (message: string) => Promise<void>
+  playerMatcher?: PlayerMentionMatcher
+  onPlayerContext?: (player: Player, x: number, y: number) => void
 }
 
 function formatMessageTimestamp(timestamp: number) {
@@ -39,7 +44,7 @@ function formatMessageTimestamp(timestamp: number) {
   }
 }
 
-export function PmConversation({target, lines, onSend}: PmConversationProps) {
+export function PmConversation({target, lines, onSend, playerMatcher, onPlayerContext}: PmConversationProps) {
   const {t} = useLanguage()
   const [text, setText] = useState("")
   const [sending, setSending] = useState(false)
@@ -108,7 +113,7 @@ export function PmConversation({target, lines, onSend}: PmConversationProps) {
                       ? "bg-primary text-primary-foreground max-w-[84%] rounded-2xl rounded-br-md px-3 py-2 text-sm break-words"
                       : "bg-background max-w-[84%] rounded-2xl rounded-bl-md border px-3 py-2 text-sm break-words"}
                   >
-                    <div className="whitespace-pre-wrap">{message}</div>
+                    <div className="whitespace-pre-wrap"><PlayerMentionText text={message} matcher={playerMatcher} translate={t} onOpenContext={onPlayerContext} /></div>
                     <div className={`mt-1 flex items-center justify-end gap-1 text-[10px] leading-none ${outgoing ? "text-primary-foreground/70" : "text-muted-foreground"}`}>
                       {timestamp && (
                         <time dateTime={timestamp.iso} title={timestamp.title} aria-label={t("player.pmTimestamp", {time: timestamp.label})}>

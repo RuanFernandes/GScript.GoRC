@@ -12,6 +12,7 @@ import {Button} from "@/components/ui/button"
 import {Input} from "@/components/ui/input"
 import {Tabs, TabsContent, TabsList, TabsTrigger} from "@/components/ui/tabs"
 import {ChatLine} from "@/components/features/chat/ChatLine"
+import {PlayerContextMenu} from "@/components/features/playerlist/PlayerContextMenu"
 import {ScriptHelpResult} from "@/components/features/chat/ScriptHelpResult"
 import {RcSidebar} from "@/components/features/rc/RcSidebar"
 import {ChangelogPopover} from "@/components/features/rc/ChangelogPopover"
@@ -23,13 +24,16 @@ import {useChatAutocomplete} from "@/hooks/useChatAutocomplete"
 import {useChatInputHistory} from "@/hooks/useChatInputHistory"
 import {useChatSettings} from "@/hooks/useChatSettings"
 import {usePlayers} from "@/hooks/usePlayers"
+import {usePlayerActions} from "@/hooks/usePlayerActions"
 import {useScriptLists} from "@/hooks/useScriptLists"
 import {useSync} from "@/hooks/useSync"
 import {serverDisplay} from "@/lib/server"
 import {formatLogLine} from "@/lib/chatLine"
 import {mergeRepeatedMessages} from "@/lib/chatMessages"
+import {buildPlayerMentionMatcher} from "@/lib/playerMentions"
 import {rcService} from "@/services/rcService"
 import type {AccountSummary, ChatMessage, ChatSettings, CommandMacro, CommandMacroParameter, CommandMacroParameterType, NCStatus, Player} from "@/types"
+import type {PlayerEditKind} from "@/components/features/playerlist/PlayerContextMenu"
 import {useLanguage} from "@/hooks/useLanguage"
 import {usePrivateMessages} from "@/hooks/usePrivateMessages"
 import {useCommandMacros} from "@/hooks/useCommandMacros"
@@ -118,6 +122,9 @@ function ChatPane({
   onSend,
   history,
   players,
+  canBanPlayers,
+  onPM,
+  onEdit,
   serverName,
   commandMacros,
 }: {
@@ -126,6 +133,9 @@ function ChatPane({
   onSend: (text: string) => Promise<boolean>
   history: ReturnType<typeof useChatInputHistory>
   players: Player[]
+  canBanPlayers: boolean
+  onPM: (player: Player) => void
+  onEdit: (player: Player, kind: PlayerEditKind) => void
   serverName: string
   commandMacros: ReturnType<typeof useCommandMacros>
 }) {
@@ -144,6 +154,11 @@ function ChatPane({
   const stick = useRef(true)
   const lastLogged = useRef(0)
   const displayMessages = useMemo(() => mergeRepeatedMessages(messages), [messages])
+  const playerMatcher = useMemo(() => buildPlayerMentionMatcher(players), [players])
+  const [playerMenu, setPlayerMenu] = useState<{player: Player; anchor: {x: number; y: number}} | null>(null)
+  const openPlayerContext = useCallback((player: Player, x: number, y: number) => {
+    setPlayerMenu({player, anchor: {x, y}})
+  }, [])
 
   const openChatLink = useCallback((url: string) => {
     void rcService.openChatLink(url).catch(() => toast.error(t("chat.linkOpenFailed")))
@@ -215,6 +230,9 @@ function ChatPane({
                     settings={settings}
                     repeatLabel={m.repeatCount && m.repeatCount > 1 ? t("chat.repeatedCount", {count: m.repeatCount}) : undefined}
                     onOpenLink={openChatLink}
+                    translate={t}
+                    playerMatcher={playerMatcher}
+                    onPlayerContext={openPlayerContext}
                   />
                 )}
               </div>
@@ -563,6 +581,16 @@ function ChatPane({
           <Send className="size-4" />
         </Button>
       </form>
+      {playerMenu && (
+        <PlayerContextMenu
+          player={playerMenu.player}
+          anchor={playerMenu.anchor}
+          canBanPlayers={canBanPlayers}
+          onPM={onPM}
+          onEdit={onEdit}
+          onClose={() => setPlayerMenu(null)}
+        />
+      )}
     </div>
   )
 }
@@ -576,6 +604,7 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
   const [profile, setProfile] = useState<AccountSummary | null>(null)
   const [rightsIdentity, setRightsIdentity] = useState<RightsIdentityStatus>({})
   const {players} = usePlayers(rcService, true)
+  const {canBanPlayers, openPM, editPlayer} = usePlayerActions(rcService)
   const {weapons, classes, npcs} = useScriptLists(rcService, true)
   const {status: syncStatus, loaded: syncLoaded} = useSync()
   const {state: pmState} = usePrivateMessages()
@@ -923,6 +952,9 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
                   onSend={(text) => send(t.channel, text)}
                   history={inputHistory}
                   players={players}
+                  canBanPlayers={canBanPlayers}
+                  onPM={openPM}
+                  onEdit={editPlayer}
                   serverName={displayServer || serverName}
                   commandMacros={commandMacros}
                 />
