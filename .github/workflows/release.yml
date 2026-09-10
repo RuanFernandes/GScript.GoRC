@@ -464,3 +464,8 @@ jobs:
           curl --fail --silent --show-error --retry 5 --retry-delay 5 https://nullborne.com/api/downloads > "$RUNNER_TEMP/nullborne-downloads.json"
           grep -q 'nullbornes-rc-windows-x64-installer.exe' "$RUNNER_TEMP/nullborne-downloads.json"
           grep -q 'nullbornes-rc-linux-x64.AppImage' "$RUNNER_TEMP/nullborne-downloads.json"
+          curl --fail --silent --show-error --retry 5 --retry-delay 5 \
+            'https://nullborne.com/update?version=0.0.0&platform=windows&arch=amd64' \
+            > "$RUNNER_TEMP/nullborne-update.json"
+          grep -Eq '"latestVersion"[[:space:]]*:[[:space:]]*"${{ needs.version.outputs.version }}"' "$RUNNER_TEMP/nullborne-update.json"
+          grep -Eq '"updateAvailable"[[:space:]]*:[[:space:]]*true' "$RUNNER_TEMP/nullborne-update.json"
