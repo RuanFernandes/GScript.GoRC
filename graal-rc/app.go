@@ -22,6 +22,7 @@ import (
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
+	"github.com/wailsapp/wails/v3/pkg/services/notifications"
 
 	auditlib "graal-rc/internal/audit"
 	"graal-rc/internal/connection"
@@ -70,9 +71,11 @@ type App struct {
 
 	// tray is the system-tray handle; its tooltip is branded with the connected
 	// server name + live player count by refreshServerChrome.
-	tray            *application.SystemTray
-	pmMu            sync.RWMutex
-	pmConversations map[int]PMConversation
+	tray                   *application.SystemTray
+	osNotifications        *notifications.NotificationService
+	mentionNotificationSeq uint64
+	pmMu                   sync.RWMutex
+	pmConversations        map[int]PMConversation
 
 	// sessionWindowsMu serializes teardown triggered by an explicit logout and
 	// by an asynchronous server-disconnect callback.
@@ -251,6 +254,7 @@ func NewApp() *App {
 	app := &App{
 		sessions:              connection.NewService(),
 		vault:                 vault,
+		osNotifications:       notifications.New(),
 		gallerySessionStore:   gallerySessionStore,
 		editorWindows:         map[string]*application.WebviewWindow{},
 		editorCache:           map[string]rclib.ScriptReply{},
@@ -330,6 +334,16 @@ func (a *App) dialogParentWindow() application.Window {
 // ordering (the chat burst otherwise scrambles).
 func (a *App) attach(app *application.App) {
 	a.app = app
+	if a.osNotifications != nil {
+		a.osNotifications.OnNotificationResponse(func(result notifications.NotificationResult) {
+			if result.Error != nil {
+				log.Printf("[notifications] response: %v", result.Error)
+				return
+			}
+			// Clicking a mention toast should restore the RC window from the tray.
+			a.showMainWindow()
+		})
+	}
 	a.startNativeMonitor()
 	a.startMCPServer()
 	if a.plugins != nil {
@@ -343,6 +357,7 @@ func (a *App) attach(app *application.App) {
 	}
 	var seq uint64
 	a.sessions.SetEmitter(func(name string, data ...any) {
+		mentionTarget := a.handleChatMentionEvent(name, data)
 		// A disconnect can arrive without a user clicking the logout button. Tear
 		// down every server-scoped window before forwarding the event so the login
 		// screen can never coexist with stale editor/file-browser context.
@@ -394,10 +409,11 @@ func (a *App) attach(app *application.App) {
 		}
 		s := atomic.AddUint64(&seq, 1)
 		payload := struct {
-			Seq  uint64 `json:"seq"`
-			Name string `json:"name"`
-			Data []any  `json:"data"`
-		}{Seq: s, Name: name, Data: data}
+			Seq           uint64 `json:"seq"`
+			Name          string `json:"name"`
+			Data          []any  `json:"data"`
+			MentionTarget string `json:"mentionTarget,omitempty"`
+		}{Seq: s, Name: name, Data: data, MentionTarget: mentionTarget}
 		b, err := json.Marshal(payload)
 		if err != nil {
 			return

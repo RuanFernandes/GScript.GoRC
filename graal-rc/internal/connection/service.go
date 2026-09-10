@@ -1035,6 +1035,10 @@ func (s *Service) handleRCMessage(text string) {
 		return
 	}
 
+	if s.captureSelfChatIdentity(text) {
+		return
+	}
+
 	target := rightsChangedTarget(text)
 	if target == "" || !s.isSelfRightsAlias(target) {
 		return

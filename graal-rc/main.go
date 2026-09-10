@@ -13,6 +13,11 @@ import (
 var assets embed.FS
 
 func applicationOptions(a *App) application.Options {
+	services := []application.Service{application.NewService(a)}
+	if a.osNotifications != nil {
+		services = append(services, application.NewService(a.osNotifications))
+	}
+
 	return application.Options{
 		Name:        "graal-rc",
 		Description: "Graal Remote Control client",
@@ -26,9 +31,7 @@ func applicationOptions(a *App) application.Options {
 		},
 		OnShutdown:   a.shutdown,
 		PostShutdown: a.postShutdown,
-		Services: []application.Service{
-			application.NewService(a),
-		},
+		Services:     services,
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(assets),
 		},

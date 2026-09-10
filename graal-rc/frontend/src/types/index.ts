@@ -97,6 +97,8 @@ export interface ChatMessage {
   text: string
   source: "rc" | "nc" | "irc" | "system"
   ts: number
+  /** Account/community alias recognized as a ping for the current session. */
+  mentionTarget?: string
   scriptHelp?: GsFunction[]
 }
 

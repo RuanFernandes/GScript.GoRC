@@ -165,7 +165,11 @@ export function ChatLine({message, settings, repeatLabel, onOpenLink, translate,
   const split = splitSpeaker(message.text)
 
   return (
-    <span>
+    <span
+      className={message.mentionTarget ? "inline-block max-w-full align-middle rounded-md bg-amber-400/10 px-2 py-1 ring-1 ring-inset ring-amber-300/35" : undefined}
+      data-chat-mention={message.mentionTarget || undefined}
+      title={message.mentionTarget ? `Ping para @${message.mentionTarget}` : undefined}
+    >
       {repeatLabel && <span className="text-muted-foreground mr-1" title={repeatLabel}>{repeatLabel}</span>}
       <span style={{color: settings.timestamp}}>[{hhmm(message.ts)}]</span>{" "}
       {showTag && (

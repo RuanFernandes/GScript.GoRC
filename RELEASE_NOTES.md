@@ -1,3 +1,11 @@
+# Graal Remote Control 5.2.0
+
+## Menções no RC Chat
+
+- Detecta menções explícitas por account name e community name no RC Chat, canais IRC e mensagens do servidor.
+- Exibe notificação nativa do sistema operacional quando o usuário é chamado, inclusive quando o RC está minimizado na tray ou quando o próprio usuário faz um ping.
+- O toast do Windows usa o nome do servidor conectado e o ícone do aplicativo; a mensagem mencionada também recebe um destaque visual no chat.
+
 # Graal Remote Control 5.1.0
 
 ## Chat e ações de jogadores

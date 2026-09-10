@@ -68,9 +68,9 @@ export function useChat(service: RcService): UseChatResult {
   // push appends a line to a tab, creating the tab lazily for a new channel
   // (mirrors appendChannelMessage's lazy GtkWidget creation).
   const push = useCallback(
-    (channel: string, text: string, source: Source) => {
+    (channel: string, text: string, source: Source, mentionTarget?: string) => {
       const target = channel || SERVER_CHANNEL
-      const msg: ChatMessage = {id: nextId(), channel: target, text, source, ts: Date.now()}
+      const msg: ChatMessage = {id: nextId(), channel: target, text, source, ts: Date.now(), ...(mentionTarget ? {mentionTarget} : {})}
       setTabs((prev) => {
         const idx = prev.findIndex((t) => t.channel === target)
         if (idx === -1) {
@@ -107,7 +107,7 @@ export function useChat(service: RcService): UseChatResult {
     // events can land out of order; a sliding-window reorder buffer keyed by seq
     // applies them strictly in sequence, restoring deterministic ordering (the
     // server's login chat burst otherwise scrambles).
-    type Evt = {seq: number; name: string; data: unknown[]}
+    type Evt = {seq: number; name: string; data: unknown[]; mentionTarget?: string}
     let nextSeq = 1
     let lastAdvance = Date.now()
     const pending = new Map<number, Evt>()
@@ -126,7 +126,7 @@ export function useChat(service: RcService): UseChatResult {
       switch (m.name) {
         case "rc:message": {
           const [text] = m.data as [string]
-          push(SERVER_CHANNEL, text, "rc")
+          push(SERVER_CHANNEL, text, "rc", m.mentionTarget)
           break
         }
         case "rc:irc": {
@@ -137,7 +137,7 @@ export function useChat(service: RcService): UseChatResult {
           if (text.startsWith("* Joined") || text.startsWith("* Left")) {
             break
           }
-          push(channel, text, "irc")
+          push(channel, text, "irc", m.mentionTarget)
           break
         }
         case "rc:channels": {
@@ -151,7 +151,7 @@ export function useChat(service: RcService): UseChatResult {
         case "rc:serverdata": {
           const [dataType, content] = m.data as [string, string]
           if (dataType === "nc_message") {
-            push(SERVER_CHANNEL, content, "nc")
+            push(SERVER_CHANNEL, content, "nc", m.mentionTarget)
           } else if (!SERVERDATA_HIDDEN.has(dataType)) {
             push(SERVER_CHANNEL, `[${dataType}] ${content}`, "system")
           }
