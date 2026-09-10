@@ -435,6 +435,8 @@ jobs:
 
           sudo apt-get update
           sudo apt-get install -y sshpass
+          release_version='${{ needs.version.outputs.version }}'
+          release_date="$(date -u +%F)"
 
           known_hosts_file="$RUNNER_TEMP/nullborne-known-hosts"
           ssh-keyscan -T 10 -H "$VPS_HOST" > "$known_hosts_file"
@@ -455,7 +457,7 @@ jobs:
 
           sshpass -e ssh "${ssh_options[@]}" "$remote" 'set -eu; cd /opt/nullborne-rc-webpage; git pull --ff-only origin main; mkdir -p downloads'
           sshpass -e scp "${ssh_options[@]}" release/nullbornes-rc-* "$remote:/opt/nullborne-rc-webpage/downloads/"
-          sshpass -e ssh "${ssh_options[@]}" "$remote" 'set -eu; cd /opt/nullborne-rc-webpage; docker compose up --build -d; docker compose ps'
+          sshpass -e ssh "${ssh_options[@]}" "$remote" "set -eu; cd /opt/nullborne-rc-webpage; NULLBORNES_RC_LATEST_VERSION='$release_version' NULLBORNES_RC_RELEASE_DATE='$release_date' docker compose up --build -d; docker compose ps"
 
       - name: Verify production download API
         shell: bash
