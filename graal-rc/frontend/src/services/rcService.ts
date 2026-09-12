@@ -257,8 +257,8 @@ export interface RcService {
   chooseBackupDirectory(): Promise<string>
   backupFileBrowser(folders: string[], destination: string): Promise<FileBrowserBackupResult>
   cancelFileBrowserBackup(): Promise<void>
-  uploadFileViaDialog(): Promise<void>
-  uploadFileBytes(path: string, b64: string): Promise<void>
+  uploadFileBytes(path: string, b64: string, remoteFileExists: boolean): Promise<void>
+  uploadDroppedFile(localPath: string, remoteFolder: string): Promise<void>
   getFileBrowserConfig(): Promise<FileBrowserConfig>
   setFileBrowserConfig(downloadDir: string): Promise<void>
   setFileBrowserImageThumbnails(enabled: boolean): Promise<void>
@@ -611,8 +611,8 @@ export const rcService: RcService = {
   chooseBackupDirectory: () => App.ChooseBackupDirectory(),
   backupFileBrowser: (folders, destination) => App.BackupFileBrowser(folders, destination),
   cancelFileBrowserBackup: () => App.CancelFileBrowserBackup(),
-  uploadFileViaDialog: () => App.UploadFileViaDialog(),
-  uploadFileBytes: (path, b64) => App.UploadFileBytes(path, b64),
+  uploadFileBytes: (path, b64, remoteFileExists) => App.UploadFileBytes(path, b64, remoteFileExists),
+  uploadDroppedFile: (localPath, remoteFolder) => App.UploadDroppedFile(localPath, remoteFolder),
   getFileBrowserConfig: () => App.GetFileBrowserConfig(),
   setFileBrowserConfig: (downloadDir) => App.SetFileBrowserConfig(downloadDir),
   setFileBrowserImageThumbnails: (enabled) => App.SetFileBrowserImageThumbnails(enabled),

@@ -15,6 +15,7 @@ import type {RcService} from "@/services/rcService"
 import type {FileBrowserConfig, FileBrowserEntry, FileBrowserFolder} from "@/types"
 import {useLanguage} from "@/hooks/useLanguage"
 import {isPreviewTransferMessage, mergeFileBrowserMessage} from "@/lib/fileBrowserMessages"
+import {fileBrowserFileExists, fileBrowserUploadPath} from "@/lib/fileBrowserUpload"
 
 type Evt = {seq: number; name: string; data: unknown[]}
 
@@ -31,7 +32,7 @@ export interface UseFileBrowserResult {
   cd: (folder: string) => Promise<void>
   download: (entry: FileBrowserEntry, saveAs?: boolean, notify?: boolean) => Promise<boolean>
   uploadFiles: (files: FileList | File[]) => Promise<void>
-  uploadViaDialog: () => Promise<void>
+  uploadDroppedFiles: (paths: string[], remoteFolder: string) => Promise<void>
   rename: (entry: FileBrowserEntry, newName: string) => Promise<void>
   remove: (entry: FileBrowserEntry) => Promise<boolean>
   move: (entry: FileBrowserEntry, destFolder: string, newName?: string) => Promise<boolean>
@@ -55,8 +56,9 @@ function joinPath(folder: string, name: string): string {
 
 // basename is the last path segment of a remote file path.
 function basename(path: string): string {
-  const i = path.lastIndexOf("/")
-  return i >= 0 ? path.slice(i + 1) : path
+  const normalized = path.replace(/\\/g, "/")
+  const i = normalized.lastIndexOf("/")
+  return i >= 0 ? normalized.slice(i + 1) : normalized
 }
 
 // readAsBase64 reads a File as a data URL and strips the prefix, returning the
@@ -99,6 +101,7 @@ export function useFileBrowser(service: RcService): UseFileBrowserResult {
   // (registered once) always reloads the LATEST folder, not a stale closure.
   const currentFolderRef = useRef("")
   currentFolderRef.current = currentFolder
+  const mutationRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Thumbnail downloads share the native File Browser transfer channel with
   // explicit user downloads. Keep their paths in a ref so the event listener
   // can hide only preview protocol messages without stale closures.
@@ -126,8 +129,8 @@ export function useFileBrowser(service: RcService): UseFileBrowserResult {
 
   const snapshotFiles = useCallback(
     async (folder: string) => {
-      setCurrentFolder(folder)
       const list = await service.getFileBrowserFiles().catch(() => null)
+      setCurrentFolder(folder)
       setFiles(list ?? [])
       setLoaded(true)
     },
@@ -171,41 +174,45 @@ export function useFileBrowser(service: RcService): UseFileBrowserResult {
     [service, t],
   )
 
-  const uploadOne = useCallback(
-    async (file: File) => {
-      const b64 = await readAsBase64(file)
-      const remote = joinPath(currentFolder, file.name)
-      await service.uploadFileBytes(remote, b64)
-    },
-    [service, currentFolder],
-  )
-
   const uploadFiles = useCallback(
     async (fileList: FileList | File[]) => {
-      const files = Array.from(fileList)
-      if (files.length === 0) return
+      const selectedFiles = Array.from(fileList)
+      if (selectedFiles.length === 0) return
+      const uploadFolder = currentFolder
+      const listedFiles = files
       let ok = 0
-      for (const f of files) {
+      for (const file of selectedFiles) {
         try {
-          await uploadOne(f)
+          const remotePath = fileBrowserUploadPath(uploadFolder, file.name)
+          const remoteFileExists = fileBrowserFileExists(listedFiles, file.name)
+          const b64 = await readAsBase64(file)
+          await service.uploadFileBytes(remotePath, b64, remoteFileExists)
           ok++
         } catch (err) {
-          toast.error(t("file.uploadFailedFor", {name: f.name}), {description: String(err)})
+          toast.error(t("file.uploadFailedFor", {name: file.name}), {description: String(err)})
         }
       }
       if (ok > 0) toast.success(t("file.uploadedCount", {count: ok}))
     },
-    [uploadOne, t],
+    [service, currentFolder, files, t],
   )
 
-  const uploadViaDialog = useCallback(async () => {
-    try {
-      await service.uploadFileViaDialog()
-      toast.success(t("file.uploaded"))
-    } catch (err) {
-      toast.error(t("file.uploadFailed"), {description: String(err)})
-    }
-  }, [service, t])
+  const uploadDroppedFiles = useCallback(
+    async (paths: string[], remoteFolder: string) => {
+      let ok = 0
+      for (const localPath of paths) {
+        const name = basename(localPath)
+        try {
+          await service.uploadDroppedFile(localPath, remoteFolder)
+          ok++
+        } catch (err) {
+          toast.error(t("file.uploadFailedFor", {name}), {description: String(err)})
+        }
+      }
+      if (ok > 0) toast.success(t("file.uploadedCount", {count: ok}))
+    },
+    [service, t],
+  )
 
   const rename = useCallback(
     async (entry: FileBrowserEntry, newName: string) => {
@@ -280,6 +287,10 @@ export function useFileBrowser(service: RcService): UseFileBrowserResult {
           const folder = typeof m.data?.[0] === "string" ? (m.data[0] as string) : ""
           snapshotFiles(folder)
         } else if (m.name === "rc:fbReset") {
+          if (mutationRefreshTimerRef.current !== null) {
+            clearTimeout(mutationRefreshTimerRef.current)
+            mutationRefreshTimerRef.current = null
+          }
           thumbnailPreviewPathsRef.current = []
           foldersRef.current = []
           currentFolderRef.current = ""
@@ -299,11 +310,17 @@ export function useFileBrowser(service: RcService): UseFileBrowserResult {
         } else if (m.name === "rc:fbMaxUpload") {
           setMaxUpload(typeof m.data?.[0] === "number" ? (m.data[0] as number) : 0)
         } else if (m.name === "rc:fbChanged") {
-          // A mutation (upload/delete/rename/move/save) finished elsewhere —
-          // reload the current folder so the listing stays fresh.
-          const folder = currentFolderRef.current
-          if (folder) cd(folder)
-          else refresh()
+          // Match the reference client: wait for the server mutation to settle,
+          // and coalesce multi-file uploads into one folder refresh.
+          if (mutationRefreshTimerRef.current !== null) {
+            clearTimeout(mutationRefreshTimerRef.current)
+          }
+          mutationRefreshTimerRef.current = setTimeout(() => {
+            mutationRefreshTimerRef.current = null
+            const folder = currentFolderRef.current
+            if (folder) void cd(folder)
+            else void refresh()
+          }, 500)
         }
       } catch {
         // ignore malformed events
@@ -319,11 +336,32 @@ export function useFileBrowser(service: RcService): UseFileBrowserResult {
       }
     })
 
+    const offDroppedFiles = Events.On("filebrowser:files-dropped", (e: {data: unknown}) => {
+      try {
+        const data = typeof e.data === "string" ? JSON.parse(e.data) as unknown : e.data
+        if (data === null || typeof data !== "object") return
+        const payload = data as {files?: unknown; folder?: unknown}
+        const paths = Array.isArray(payload.files)
+          ? payload.files.filter((filePath): filePath is string => typeof filePath === "string" && filePath.length > 0)
+          : []
+        if (paths.length === 0) return
+        const folder = typeof payload.folder === "string" ? payload.folder : currentFolderRef.current
+        void uploadDroppedFiles(paths, folder)
+      } catch {
+        // ignore malformed native drop events
+      }
+    })
+
     return () => {
       offEvt()
       offCfg()
+      offDroppedFiles()
+      if (mutationRefreshTimerRef.current !== null) {
+        clearTimeout(mutationRefreshTimerRef.current)
+        mutationRefreshTimerRef.current = null
+      }
     }
-  }, [refresh, cd, snapshotFolders, snapshotFiles, pushMessage, service])
+  }, [refresh, cd, snapshotFolders, snapshotFiles, pushMessage, service, uploadDroppedFiles])
 
   return {
     folders,
@@ -338,7 +376,7 @@ export function useFileBrowser(service: RcService): UseFileBrowserResult {
     cd,
     download,
     uploadFiles,
-    uploadViaDialog,
+    uploadDroppedFiles,
     rename,
     remove,
     move,

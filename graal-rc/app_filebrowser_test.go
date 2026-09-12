@@ -30,6 +30,18 @@ func TestFileBrowserPathHelpersRejectFolderRenames(t *testing.T) {
 	}
 }
 
+func TestFileBrowserUploadBackupDownloadsByLeafName(t *testing.T) {
+	for remotePath, want := range map[string]string{
+		"main.nw":        "main.nw",
+		"levels/main.nw": "main.nw",
+		`levels\main.nw`: "main.nw",
+	} {
+		if got := fileBrowserUploadBackupDownloadPath(remotePath); got != want {
+			t.Errorf("fileBrowserUploadBackupDownloadPath(%q) = %q, want %q", remotePath, got, want)
+		}
+	}
+}
+
 func TestCodingSettingsAcceptOnlySupportedTabSizes(t *testing.T) {
 	if DefaultCodingSettings.TabSize != 2 {
 		t.Fatalf("default tab size = %d, want 2", DefaultCodingSettings.TabSize)

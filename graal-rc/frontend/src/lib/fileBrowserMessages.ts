@@ -2,13 +2,17 @@
 // chunk. Keep the log readable by treating progress and completion messages
 // for the same file as one logical entry.
 
-type DownloadLogMessage = {
+type TransferLogMessage = {
+  direction: "download" | "upload"
   kind: "progress" | "complete"
   key: string
+  bytes?: number
 }
 
 const receivedChunkPattern = /^\s*Received chunk:\s*\d+\s*\/\s*\d+\s+bytes\s+for\s+(.+?)\s*$/i
 const fileDownloadedPattern = /^\s*File downloaded:\s*(.+?)\s*$/i
+const uploadingBigFilePattern = /^\s*Uploading big file\s+(.+?)(?:\s+size\s+(\d+))?\.{0,3}\s*$/i
+const uploadedBigFilePattern = /^\s*Uploaded big file\s+(.+?)(?:\.)?\s*$/i
 const bigfileStartedPattern = /^\s*Bigfile transfer started:\s*(.+?)\s*$/i
 const fileCompletePattern = /^\s*File complete:\s*(.+?)\s*$/i
 
@@ -53,42 +57,66 @@ export function isPreviewTransferMessage(message: string, previewPaths: Iterable
   return false
 }
 
-function parseDownloadMessage(message: string): DownloadLogMessage | null {
+function parseTransferLogMessage(message: string): TransferLogMessage | null {
   const progress = receivedChunkPattern.exec(message)
   if (progress) {
-    return {kind: "progress", key: progress[1].trim().toLowerCase()}
+    return {direction: "download", kind: "progress", key: normalizeTransferPath(progress[1])}
   }
 
   const complete = fileDownloadedPattern.exec(message)
   if (complete) {
-    return {kind: "complete", key: complete[1].trim().toLowerCase()}
+    return {direction: "download", kind: "complete", key: normalizeTransferPath(complete[1])}
+  }
+
+  const uploading = uploadingBigFilePattern.exec(message)
+  if (uploading) {
+    const bytes = uploading[2] === undefined ? undefined : Number(uploading[2])
+    return {
+      direction: "upload",
+      kind: "progress",
+      key: normalizeTransferPath(uploading[1]),
+      ...(bytes === undefined || !Number.isSafeInteger(bytes) ? {} : {bytes}),
+    }
+  }
+
+  const uploaded = uploadedBigFilePattern.exec(message)
+  if (uploaded) {
+    return {direction: "upload", kind: "complete", key: normalizeTransferPath(uploaded[1])}
   }
 
   return null
 }
 
-// mergeFileBrowserMessage appends ordinary messages, replaces a file's
-// previous chunk-progress line with the newest one, and replaces that line
-// with the final "File downloaded" message. A late chunk after completion is
-// ignored so an old callback cannot bring the noisy progress line back.
+// mergeFileBrowserMessage appends ordinary messages and keeps one progress line
+// per transfer. Upload progress may arrive out of order, so retain its highest
+// reported byte count; late progress after a completion is ignored.
 export function mergeFileBrowserMessage(messages: string[], incoming: string, maxMessages = 200): string[] {
   const message = incoming.trim()
   if (!message) return messages
   const limit = Math.max(1, Math.floor(maxMessages))
 
-  const parsed = parseDownloadMessage(message)
+  const parsed = parseTransferLogMessage(message)
   if (!parsed) {
     return appendWithinLimit(messages, message, limit)
   }
 
   const existingIndex = messages.findIndex((candidate) => {
-    const candidateParsed = parseDownloadMessage(candidate)
-    return candidateParsed?.key === parsed.key
+    const candidateParsed = parseTransferLogMessage(candidate)
+    return candidateParsed?.direction === parsed.direction && candidateParsed.key === parsed.key
   })
 
   if (existingIndex >= 0) {
-    const existing = parseDownloadMessage(messages[existingIndex])
+    const existing = parseTransferLogMessage(messages[existingIndex])
     if (parsed.kind === "progress" && existing?.kind === "complete") return messages
+    if (
+      parsed.direction === "upload" &&
+      parsed.kind === "progress" &&
+      existing?.kind === "progress" &&
+      existing.bytes !== undefined &&
+      (parsed.bytes === undefined || parsed.bytes < existing.bytes)
+    ) {
+      return messages
+    }
 
     const next = messages.slice()
     next[existingIndex] = message

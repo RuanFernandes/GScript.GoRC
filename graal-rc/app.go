@@ -1921,6 +1921,13 @@ func normalizeFileBrowserPath(path string) string {
 	return strings.TrimRight(path, "/")
 }
 
+// fileBrowserUploadBackupDownloadPath uses the leaf name expected by the RC
+// File Browser download request while keeping the full path for backup metadata.
+func fileBrowserUploadBackupDownloadPath(remotePath string) string {
+	normalized := strings.ReplaceAll(remotePath, "\\", "/")
+	return normalized[strings.LastIndex(normalized, "/")+1:]
+}
+
 func isFileBrowserDirectoryPath(path string) bool {
 	return strings.HasSuffix(strings.ReplaceAll(strings.TrimSpace(path), "\\", "/"), "/")
 }
@@ -2061,58 +2068,35 @@ func (a *App) saveDownloadedContent(remotePath string, content []byte, saveAs bo
 	return dest, nil
 }
 
-// UploadFileViaDialog opens a native file picker, reads the chosen file, and
-// uploads it to the current browser folder.
-func (a *App) UploadFileViaDialog() error {
-	chosen, err := a.app.Dialog.OpenFile().
-		AttachToWindow(a.dialogParentWindow()).
-		SetTitle("Select a file to upload").
-		CanChooseFiles(true).
-		CanChooseDirectories(false).
-		PromptForSingleSelection()
-	if err != nil {
-		return err
-	}
-	if chosen == "" {
-		return nil // user cancelled
-	}
-	content, err := os.ReadFile(chosen)
-	if err != nil {
-		return err
-	}
-	remotePath := filepath.Base(chosen)
-	backup, hasBackup, backupErr := a.backupRemoteContent("file", remotePath)
-	if backupErr != nil {
-		return fmt.Errorf("create safety backup before uploading: %w", backupErr)
-	}
-	if err := a.sessions.UploadFile(remotePath, content); err != nil {
-		a.recordAudit("upload", "file", remotePath, "failed", err.Error())
-		return err
-	}
-	detail := "new remote file"
-	if hasBackup {
-		detail = "backup " + backup.ID
-	}
-	a.recordAudit("upload", "file", remotePath, "success", detail)
-	return nil
-}
-
-// UploadFileBytes uploads base64-encoded content (used for drag-in uploads from
-// the webview, which reads the dropped file and sends it as base64).
-func (a *App) UploadFileBytes(remotePath, b64 string) error {
+// UploadFileBytes uploads base64-encoded content from the browser file picker.
+// remoteFileExists comes from the current File Browser listing. New files skip
+// the pre-upload download used to preserve overwritten content.
+func (a *App) UploadFileBytes(remotePath, b64 string, remoteFileExists bool) error {
 	content, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil {
 		return fmt.Errorf("invalid file data: %w", err)
 	}
-	backup, hasBackup, backupErr := a.backupRemoteContent("file", remotePath)
-	if backupErr != nil {
-		return fmt.Errorf("create safety backup before uploading: %w", backupErr)
+	return a.uploadFileContent(remotePath, content, remoteFileExists)
+}
+
+func (a *App) uploadFileContent(remotePath string, content []byte, remoteFileExists bool) error {
+	var backup DeploymentBackup
+	var hasBackup bool
+	if remoteFileExists {
+		var backupErr error
+		backup, hasBackup, backupErr = a.backupRemoteContentFrom("file", remotePath, fileBrowserUploadBackupDownloadPath(remotePath))
+		if backupErr != nil {
+			return fmt.Errorf("create safety backup before uploading: %w", backupErr)
+		}
 	}
 	if err := a.sessions.UploadFile(remotePath, content); err != nil {
 		a.recordAudit("upload", "file", remotePath, "failed", err.Error())
 		return err
 	}
 	detail := "new remote file"
+	if remoteFileExists {
+		detail = "replaced existing file without a backup"
+	}
 	if hasBackup {
 		detail = "backup " + backup.ID
 	}
@@ -3076,10 +3060,31 @@ func (a *App) OpenFileBrowser() {
 		Height:           600,
 		Frameless:        true,
 		BackgroundColour: application.NewRGB(15, 17, 21),
+		EnableFileDrop:   true,
 	})
 	a.fileBrowserWindow = w
-	w.Show()
-	w.Focus()
+	w.OnWindowEvent(events.Common.WindowFilesDropped, func(event *application.WindowEvent) {
+		dropContext := event.Context()
+		details := dropContext.DropTargetDetails()
+		if details == nil {
+			return
+		}
+		if _, ok := details.Attributes["data-file-drop-target"]; !ok {
+			return
+		}
+		folder, ok := details.Attributes["data-folder"]
+		if !ok {
+			return
+		}
+		files := dropContext.DroppedFiles()
+		if len(files) == 0 {
+			return
+		}
+		w.DispatchWailsEvent(&application.CustomEvent{
+			Name: "filebrowser:files-dropped",
+			Data: map[string]any{"files": files, "folder": folder},
+		})
+	})
 	w.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
 		a.fileBrowserMu.Lock()
 		if a.fileBrowserWindow == w {
@@ -3087,6 +3092,8 @@ func (a *App) OpenFileBrowser() {
 		}
 		a.fileBrowserMu.Unlock()
 	})
+	w.Show()
+	w.Focus()
 }
 
 // scriptTypeInitial maps an editor script type to its single-letter tag for the

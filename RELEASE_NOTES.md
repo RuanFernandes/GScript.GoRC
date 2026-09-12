@@ -1,3 +1,11 @@
+# Graal Remote Control 5.2.1
+
+## File Browser
+
+- Corrigido o upload por seleção de arquivos para enviar cada arquivo à pasta remota aberta e evitar tentativas de download de arquivos inexistentes.
+- Corrigido o drag and drop nativo: a indicação de drop é limpa ao soltar fora da janela, e arquivos soltos no File Browser são enviados sem travar a interface.
+- Consolidado o progresso de uploads grandes em uma única mensagem por arquivo.
+
 # Graal Remote Control 5.2.0
 
 ## Menções no RC Chat

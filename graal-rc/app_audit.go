@@ -162,7 +162,11 @@ func (a *App) updateEditorContent(kind, key, content string) {
 }
 
 func (a *App) backupRemoteContent(resource, target string) (DeploymentBackup, bool, error) {
-	content, err := a.sessions.DownloadFile(target)
+	return a.backupRemoteContentFrom(resource, target, target)
+}
+
+func (a *App) backupRemoteContentFrom(resource, target, downloadPath string) (DeploymentBackup, bool, error) {
+	content, err := a.sessions.DownloadFile(downloadPath)
 	if err != nil {
 		// A missing remote file is a valid first upload/delete case. The remote
 		// mutation still gets audited with a missing-backup detail.

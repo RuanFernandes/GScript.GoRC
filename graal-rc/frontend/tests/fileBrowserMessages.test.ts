@@ -24,6 +24,29 @@ test("keeps only the newest received chunk for one file", () => {
   assert.deepEqual(messages, ["Received chunk: 4042614/4042614 bytes for tutorial_Placing NPCs and Images.mp4"])
 })
 
+test("coalesces out-of-order large upload progress and keeps completion", () => {
+  const image = "levels/ChatGPT Image 28 de jun. de 2026 05_14_53.png"
+  let messages: string[] = []
+  messages = mergeFileBrowserMessage(messages, `Uploading big file ${image} size 98304...`)
+  messages = mergeFileBrowserMessage(messages, `Uploading big file ${image} size 196608...`)
+  messages = mergeFileBrowserMessage(messages, `Uploading big file ${image}...`)
+  messages = mergeFileBrowserMessage(messages, `Uploading big file ${image} size 49152...`)
+  messages = mergeFileBrowserMessage(messages, "Uploading big file levels/other.png size 49152...")
+
+  assert.deepEqual(messages, [
+    `Uploading big file ${image} size 196608...`,
+    "Uploading big file levels/other.png size 49152...",
+  ])
+
+  messages = mergeFileBrowserMessage(messages, `Uploaded big file ${image}.`)
+  messages = mergeFileBrowserMessage(messages, `Uploading big file ${image} size 884736...`)
+
+  assert.deepEqual(messages, [
+    `Uploaded big file ${image}.`,
+    "Uploading big file levels/other.png size 49152...",
+  ])
+})
+
 test("replaces progress with completion and ignores a late chunk", () => {
   let messages = ["Connected"]
   messages = mergeFileBrowserMessage(messages, "Received chunk: 4000000/4042614 bytes for tutorial.mp4")

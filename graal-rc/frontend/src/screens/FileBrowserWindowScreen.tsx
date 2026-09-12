@@ -115,6 +115,8 @@ export function FileBrowserWindowScreen() {
   const {t} = useLanguage()
   const fb = useFileBrowser(rcService)
   const [dragging, setDragging] = useState(false)
+  const fileDropTargetRef = useRef<HTMLElement>(null)
+  const uploadInputRef = useRef<HTMLInputElement>(null)
   const [query, setQuery] = useState("")
   const [folderQuery, setFolderQuery] = useState("")
   const [folderPaneWidth, setFolderPaneWidth] = useState(DEFAULT_FOLDER_PANE_WIDTH)
@@ -124,6 +126,24 @@ export function FileBrowserWindowScreen() {
   const imageThumbnailsRef = useRef<Record<string, string>>({})
   const [visibleThumbnailPaths, setVisibleThumbnailPaths] = useState<Set<string>>(() => new Set())
   const [viewMode, setViewMode] = useState<"list" | "grid">("list")
+
+  useEffect(() => {
+    const target = fileDropTargetRef.current
+    if (!target) return
+
+    const syncDraggingState = () => {
+      const active = target.classList.contains("file-drop-target-active")
+      setDragging((previous) => previous === active ? previous : active)
+    }
+    const observer = new MutationObserver(syncDraggingState)
+    observer.observe(target, {attributes: true, attributeFilter: ["class"]})
+    syncDraggingState()
+
+    return () => {
+      observer.disconnect()
+      setDragging(false)
+    }
+  }, [])
 
   // Expanded node paths (by cleaned path). Start collapsed so opening the
   // Files window does not expand the entire folder tree.
@@ -559,12 +579,6 @@ export function FileBrowserWindowScreen() {
     return items
   }
 
-  const onDrop = async (e: React.DragEvent) => {
-    e.preventDefault()
-    setDragging(false)
-    if (e.dataTransfer.files?.length) await fb.uploadFiles(e.dataTransfer.files)
-  }
-
   const hasDownloadDir = !!fb.config.downloadDir
 
   return (
@@ -584,7 +598,18 @@ export function FileBrowserWindowScreen() {
               {t("file.maxUpload", {size: humanize(fb.maxUpload)})}
             </span>
           )}
-          <Button variant="outline" size="sm" onClick={fb.uploadViaDialog}>
+          <input
+            ref={uploadInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(event) => {
+              const selectedFiles = event.currentTarget.files
+              if (selectedFiles?.length) void fb.uploadFiles(selectedFiles)
+              event.currentTarget.value = ""
+            }}
+          />
+          <Button variant="outline" size="sm" onClick={() => uploadInputRef.current?.click()}>
             <Upload />
             {t("file.upload")}
           </Button>
@@ -728,15 +753,10 @@ export function FileBrowserWindowScreen() {
         </div>
 
         <section
+          ref={fileDropTargetRef}
+          data-file-drop-target=""
+          data-folder={fb.currentFolder}
           className="relative min-w-0 flex-1"
-          onDragOver={(e) => {
-            e.preventDefault()
-            setDragging(true)
-          }}
-          onDragLeave={(e) => {
-            if (e.currentTarget === e.target) setDragging(false)
-          }}
-          onDrop={onDrop}
         >
           {selectedFileEntries.length > 0 && (
             <div className="bg-accent/30 flex flex-wrap items-center gap-2 border-b px-3 py-2">

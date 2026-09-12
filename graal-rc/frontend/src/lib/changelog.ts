@@ -11,6 +11,18 @@ export interface ChangelogEntry {
 // the visible history from nullborne.com when the release service is reachable.
 const CHANGELOG_PT_BR: ChangelogEntry[] = [
   {
+    version: "5.2.1",
+    date: "12/09/2026",
+    title: "Correções no upload do File Browser",
+    summary: "Corrige uploads pela seleção de arquivos e pelo drag and drop externo, além de reduzir o ruído no log de transferências.",
+    current: true,
+    changes: [
+      "Uploads por seleção de arquivo e drag and drop agora são enviados para a pasta remota aberta.",
+      "Ao arrastar arquivos, a indicação de drop é encerrada ao soltar fora da janela; ao soltar dentro, o envio começa sem travar.",
+      "Mensagens de progresso de arquivos grandes são consolidadas em uma linha por arquivo.",
+    ],
+  },
+  {
     version: "5.0.0",
     date: "05/09/2026",
     title: "Estabilidade, Player List e LSP inline",
@@ -368,6 +380,15 @@ const CHANGELOG_PT_BR: ChangelogEntry[] = [
 
 const CHANGELOG_EN: ChangelogEntry[] = [
   {
+    version: "5.2.1", date: "2026-09-12", title: "File Browser upload fixes",
+    summary: "Fixes uploads from file selection and external drag-and-drop, and keeps transfer logs concise.", current: true,
+    changes: [
+      "File selection and drag-and-drop uploads now target the open remote folder.",
+      "Dropping a file outside the window clears the drop indicator; dropping it inside starts the upload without freezing the interface.",
+      "Large-file progress messages are coalesced into one line per file.",
+    ],
+  },
+  {
     version: "5.0.0", date: "2026-09-05", title: "Stability, Player List and inline LSP support",
     summary: "This major RC update improves connection recovery, window responsiveness, the Player List and GraalScript inline function support.", current: true,
     changes: [
@@ -640,6 +661,15 @@ const CHANGELOG_EN: ChangelogEntry[] = [
 ]
 
 const CHANGELOG_ES: ChangelogEntry[] = [
+  {
+    version: "5.2.1", date: "2026-09-12", title: "Correcciones de carga del File Browser",
+    summary: "Corrige las cargas desde el selector de archivos y el arrastrar y soltar externo, y reduce el ruido del registro de transferencias.", current: true,
+    changes: [
+      "Las cargas desde el selector y el arrastrar y soltar ahora usan la carpeta remota abierta.",
+      "Al soltar archivos fuera de la ventana se limpia el indicador; al soltarlos dentro, la carga comienza sin congelar la interfaz.",
+      "El progreso de archivos grandes se consolida en una sola línea por archivo.",
+    ],
+  },
   {
     version: "5.0.0", date: "2026-09-05", title: "Estabilidad, Player List y soporte LSP inline",
     summary: "Esta actualización mayor de RC mejora la recuperación de conexiones, la respuesta de las ventanas, Player List y el soporte de funciones inline en GraalScript.", current: true,
