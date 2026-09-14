@@ -11,6 +11,17 @@ export interface ChangelogEntry {
 // the visible history from nullborne.com when the release service is reachable.
 const CHANGELOG_PT_BR: ChangelogEntry[] = [
   {
+    version: "5.2.2",
+    date: "13/09/2026",
+    title: "Correções e desempenho do GraalScript LSP",
+    summary: "Corrige concatenação multilinha com NL e acelera a validação de scripts grandes.",
+    current: true,
+    changes: [
+      "Strings terminadas em NL podem continuar na linha seguinte sem ponto e vírgula antes de NL.",
+      "O editor agrupa atualizações durante a digitação e evita diagnósticos redundantes ao salvar scripts grandes.",
+    ],
+  },
+  {
     version: "5.2.1",
     date: "12/09/2026",
     title: "Correções no upload do File Browser",
@@ -380,6 +391,14 @@ const CHANGELOG_PT_BR: ChangelogEntry[] = [
 
 const CHANGELOG_EN: ChangelogEntry[] = [
   {
+    version: "5.2.2", date: "2026-09-13", title: "GraalScript LSP fixes and performance",
+    summary: "Fixes multiline NL string concatenation and speeds up validation for large scripts.", current: true,
+    changes: [
+      "Strings ending in NL can continue on the next line without a semicolon before NL.",
+      "The editor coalesces updates while typing and avoids redundant diagnostics when saving large scripts.",
+    ],
+  },
+  {
     version: "5.2.1", date: "2026-09-12", title: "File Browser upload fixes",
     summary: "Fixes uploads from file selection and external drag-and-drop, and keeps transfer logs concise.", current: true,
     changes: [
@@ -661,6 +680,14 @@ const CHANGELOG_EN: ChangelogEntry[] = [
 ]
 
 const CHANGELOG_ES: ChangelogEntry[] = [
+  {
+    version: "5.2.2", date: "2026-09-13", title: "Correcciones y rendimiento de GraalScript LSP",
+    summary: "Corrige la concatenación multilínea con NL y acelera la validación de scripts grandes.", current: true,
+    changes: [
+      "Las cadenas que terminan en NL pueden continuar en la línea siguiente sin punto y coma antes de NL.",
+      "El editor agrupa las actualizaciones mientras se escribe y evita diagnósticos redundantes al guardar scripts grandes.",
+    ],
+  },
   {
     version: "5.2.1", date: "2026-09-12", title: "Correcciones de carga del File Browser",
     summary: "Corrige las cargas desde el selector de archivos y el arrastrar y soltar externo, y reduce el ruido del registro de transferencias.", current: true,

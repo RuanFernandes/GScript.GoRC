@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 type nodeKind string
@@ -119,22 +121,35 @@ type GUIBlock struct {
 }
 
 type Document struct {
-	URI          string
-	Text         string
-	Version      int
-	Tokens       []token
-	AST          ASTNode
-	Functions    []FunctionSymbol
-	Enums        []EnumSymbol
-	Variables    []VariableSymbol
-	Members      []VariableSymbol
-	Joins        []string
-	JoinBindings []JoinBinding
-	Imports      []string
-	With         []WithBlock
-	GUIs         []GUIBlock
-	LineStarts   []int
-	ClientOffset int
+	URI                string
+	Text               string
+	Version            int
+	Tokens             []token
+	AST                ASTNode
+	Functions          []FunctionSymbol
+	Enums              []EnumSymbol
+	Variables          []VariableSymbol
+	Members            []VariableSymbol
+	Joins              []string
+	JoinBindings       []JoinBinding
+	Imports            []string
+	With               []WithBlock
+	GUIs               []GUIBlock
+	LineStarts         []int
+	ClientOffset       int
+	tempVariableKeys   map[tempVariableKey]int
+	memberVariableKeys map[memberVariableKey]map[string]int
+}
+
+type tempVariableKey struct {
+	name          string
+	functionRange Range
+}
+
+type memberVariableKey struct {
+	scope    string
+	name     string
+	ownerKey string
 }
 
 func parseDocument(uri, text string, version int) *Document {
@@ -608,20 +623,19 @@ func (d *Document) addVariableSymbol(scope, name string, symbolRange, selectionR
 	if name == "" || !isDynamicVariableScope(scope) {
 		return
 	}
-	side := d.sideAtOffset(offsetAt(d.Text, symbolRange.Start))
+	side := d.sideAtOffset(d.offsetAtPosition(symbolRange.Start))
 	ownerKey := d.memberOwnerKey(scope, symbolRange.Start)
 	if scope == "temp" {
 		functionRange := Range{}
 		if fn := functionAt(d, symbolRange.Start); fn != nil {
 			functionRange = fn.BodyRange
 		}
-		for _, variable := range d.Variables {
-			if strings.EqualFold(variable.Scope, scope) &&
-				strings.EqualFold(variable.Name, name) &&
-				variable.FunctionRange == functionRange {
-				return
-			}
+		d.ensureTempVariableIndex()
+		key := tempVariableKey{name: identifierFoldKey(name), functionRange: functionRange}
+		if _, exists := d.tempVariableKeys[key]; exists {
+			return
 		}
+		d.tempVariableKeys[key] = len(d.Variables)
 		d.Variables = append(d.Variables, VariableSymbol{
 			Name: name, Scope: scope, Side: side,
 			Range: symbolRange, SelectionRange: selectionRange,
@@ -629,19 +643,91 @@ func (d *Document) addVariableSymbol(scope, name string, symbolRange, selectionR
 		})
 		return
 	}
-	for _, member := range d.Members {
-		if memberScopeMatches(member.Scope, scope) &&
-			strings.EqualFold(member.Name, name) &&
-			member.OwnerKey == ownerKey &&
-			memberAvailableInSide(member, side) {
-			return
-		}
+	if d.hasMemberVariable(scope, name, ownerKey, side) {
+		return
 	}
+	memberIndex := len(d.Members)
 	d.Members = append(d.Members, VariableSymbol{
 		Name: name, Scope: scope, OwnerKey: ownerKey, Side: side,
 		Range: symbolRange, SelectionRange: selectionRange,
 		Detail: detail,
 	})
+	d.indexMemberVariable(scope, name, ownerKey, side, memberIndex)
+}
+
+func (d *Document) hasMemberVariable(scope, name, ownerKey, side string) bool {
+	return d.memberVariableIndex(scope, name, ownerKey, side) >= 0
+}
+
+func (d *Document) memberVariableIndex(scope, name, ownerKey, side string) int {
+	d.ensureMemberVariableIndex()
+
+	scopes := []string{identifierFoldKey(scope)}
+	if strings.EqualFold(scope, "thiso") {
+		scopes = append(scopes, identifierFoldKey("this"))
+	}
+	nameKey := identifierFoldKey(name)
+	match := -1
+	for _, candidateScope := range scopes {
+		indexes := d.memberVariableKeys[memberVariableKey{scope: candidateScope, name: nameKey, ownerKey: ownerKey}]
+		if len(indexes) == 0 {
+			continue
+		}
+		if side == "" {
+			for _, index := range indexes {
+				if match < 0 || index < match {
+					match = index
+				}
+			}
+			continue
+		}
+		for _, candidateSide := range []string{"", identifierFoldKey(side)} {
+			if index, exists := indexes[candidateSide]; exists && (match < 0 || index < match) {
+				match = index
+			}
+		}
+	}
+	return match
+}
+
+func (d *Document) ensureTempVariableIndex() {
+	if d.tempVariableKeys != nil {
+		return
+	}
+	d.tempVariableKeys = make(map[tempVariableKey]int, len(d.Variables))
+	for index, variable := range d.Variables {
+		if strings.EqualFold(variable.Scope, "temp") {
+			key := tempVariableKey{name: identifierFoldKey(variable.Name), functionRange: variable.FunctionRange}
+			if _, exists := d.tempVariableKeys[key]; !exists {
+				d.tempVariableKeys[key] = index
+			}
+		}
+	}
+}
+
+func (d *Document) ensureMemberVariableIndex() {
+	if d.memberVariableKeys != nil {
+		return
+	}
+	d.memberVariableKeys = make(map[memberVariableKey]map[string]int, len(d.Members))
+	for index, member := range d.Members {
+		d.indexMemberVariable(member.Scope, member.Name, member.OwnerKey, member.Side, index)
+	}
+}
+
+func (d *Document) indexMemberVariable(scope, name, ownerKey, side string, index int) {
+	key := memberVariableKey{
+		scope:    identifierFoldKey(scope),
+		name:     identifierFoldKey(name),
+		ownerKey: ownerKey,
+	}
+	if d.memberVariableKeys[key] == nil {
+		d.memberVariableKeys[key] = make(map[string]int)
+	}
+	sideKey := identifierFoldKey(side)
+	if _, exists := d.memberVariableKeys[key][sideKey]; !exists {
+		d.memberVariableKeys[key][sideKey] = index
+	}
 }
 
 func (d *Document) addDynamicVariableSymbol(scope, name, expression string, symbolRange, selectionRange Range, detail string) {
@@ -1298,27 +1384,20 @@ func (d *Document) symbolFor(scope, name string, position Position) *VariableSym
 		if currentFunction == nil {
 			return nil
 		}
-		for i := range d.Variables {
-			variable := &d.Variables[i]
-			if strings.EqualFold(variable.Scope, scope) && strings.EqualFold(variable.Name, name) && variable.FunctionRange == currentFunction.BodyRange {
-				return variable
-			}
+		d.ensureTempVariableIndex()
+		key := tempVariableKey{name: identifierFoldKey(name), functionRange: currentFunction.BodyRange}
+		if index, exists := d.tempVariableKeys[key]; exists {
+			return &d.Variables[index]
 		}
 		return nil
 	}
 	if !isDynamicVariableScope(scope) || scope == "temp" {
 		return nil
 	}
-	side := d.sideAtOffset(offsetAt(d.Text, position))
+	side := d.sideAtOffset(d.offsetAtPosition(position))
 	ownerKey := d.memberOwnerKey(scope, position)
-	for i := range d.Members {
-		member := &d.Members[i]
-		if memberScopeMatches(member.Scope, scope) &&
-			strings.EqualFold(member.Name, name) &&
-			member.OwnerKey == ownerKey &&
-			memberAvailableInSide(*member, side) {
-			return member
-		}
+	if index := d.memberVariableIndex(scope, name, ownerKey, side); index >= 0 {
+		return &d.Members[index]
 	}
 	return nil
 }
@@ -1333,7 +1412,7 @@ func (d *Document) receiverSymbol(scope, name string, position Position) *Variab
 	// A with() receiver is evaluated before entering the with body. Resolve
 	// this.foo against the owning script even when the completion request is
 	// already inside that body's semantic scope.
-	side := d.sideAtOffset(offsetAt(d.Text, position))
+	side := d.sideAtOffset(d.offsetAtPosition(position))
 	for i := range d.Members {
 		member := &d.Members[i]
 		if !memberScopeMatches(member.Scope, scope) ||
@@ -1482,8 +1561,8 @@ func (d *Document) semanticScopeAt(position Position) semanticScope {
 }
 
 func (d *Document) scopeSpan(value Range) int {
-	start := offsetAt(d.Text, value.Start)
-	end := offsetAt(d.Text, value.End)
+	start := d.offsetAtPosition(value.Start)
+	end := d.offsetAtPosition(value.End)
 	if end < start {
 		return 0
 	}
@@ -1818,6 +1897,21 @@ func appendUnique(items []string, value string) []string {
 	return append(items, value)
 }
 
+func identifierFoldKey(value string) string {
+	var folded strings.Builder
+	folded.Grow(len(value))
+	for _, character := range value {
+		representative := character
+		for candidate := unicode.SimpleFold(character); candidate != character; candidate = unicode.SimpleFold(candidate) {
+			if candidate < representative {
+				representative = candidate
+			}
+		}
+		folded.WriteRune(representative)
+	}
+	return folded.String()
+}
+
 func tokenTextBetween(text string, tokens []token, start, end int) string {
 	if start >= end || start < 0 || end > len(tokens) {
 		return ""
@@ -1833,6 +1927,31 @@ func lineStarts(text string) []int {
 		}
 	}
 	return starts
+}
+
+func (d *Document) offsetAtPosition(position Position) int {
+	if position.Line < 0 {
+		return 0
+	}
+	if position.Line >= len(d.LineStarts) {
+		return len(d.Text)
+	}
+
+	offset := d.LineStarts[position.Line]
+	character := 0
+	for offset < len(d.Text) && d.Text[offset] != '\n' {
+		r, size := utf8.DecodeRuneInString(d.Text[offset:])
+		width := 1
+		if r > 0xffff {
+			width = 2
+		}
+		if character+width > position.Character {
+			break
+		}
+		character += width
+		offset += size
+	}
+	return offset
 }
 
 func endPosition(text string) Position {

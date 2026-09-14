@@ -30,6 +30,29 @@ func TestDiagnosticsRequireSemicolonsForStatements(t *testing.T) {
 	}
 }
 
+func TestDiagnosticsAllowMultilineNLStringConcatenation(t *testing.T) {
+	text := `text = "<b>Conditions:</b>\n\t\te.g. adminlevel>0\n" NL
+	"<b>Variable usage example:</b> email='skyld@graalonline.com', adminlevel=1, adminworlds like '%all%', blocked=1";`
+
+	if diagnostics := parseDocument("memory://multiline-nl-string-concatenation", text, 1).diagnostics(); len(diagnostics) != 0 {
+		t.Fatalf("multiline NL string concatenation produced diagnostics: %#v", diagnostics)
+	}
+}
+
+func TestDiagnosticsRequireSemicolonAfterMultilineNLStringConcatenation(t *testing.T) {
+	text := `"first" NL
+"second"
+next = 1;`
+
+	diagnostics := parseDocument("memory://multiline-nl-string-concatenation-missing-semicolon", text, 1).diagnostics()
+	if len(diagnostics) != 1 || !strings.Contains(diagnostics[0].Message, "Expected ';'") {
+		t.Fatalf("diagnostics = %#v, want one missing semicolon after the concatenated string", diagnostics)
+	}
+	if diagnostics[0].Range.Start.Line != 1 {
+		t.Fatalf("diagnostic = %#v, want the final string line", diagnostics[0])
+	}
+}
+
 func TestDiagnosticsReportMissingSemicolonsWithoutFlaggingControlBlocks(t *testing.T) {
 	text := `function onCreated() {
   temp.value = 10

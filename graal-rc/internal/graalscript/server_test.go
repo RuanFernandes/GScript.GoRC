@@ -1624,6 +1624,51 @@ func TestPositionRoundTripUsesUTF16Characters(t *testing.T) {
 	}
 }
 
+func TestDocumentOffsetAtPositionMatchesFullTextOffset(t *testing.T) {
+	text := "alpha\r\n😀x\nδ"
+	doc := parseDocument("memory://position-offset", text, 1)
+
+	for line := -1; line <= len(doc.LineStarts)+1; line++ {
+		for character := -1; character <= 6; character++ {
+			position := Position{Line: line, Character: character}
+			got, want := doc.offsetAtPosition(position), offsetAt(text, position)
+			if got != want {
+				t.Fatalf("offsetAtPosition(%#v) = %d, want %d", position, got, want)
+			}
+		}
+	}
+}
+
+func TestTempVariableSymbolsRemainCaseInsensitive(t *testing.T) {
+	doc := parseDocument("memory://case-insensitive-temp-vars", `function onCreated() {
+	temp.Value = 1;
+	temp.value = 2;
+	temp.Σ = 3;
+	temp.ς = 4;
+}`, 1)
+
+	if len(doc.Variables) != 2 {
+		t.Fatalf("variables = %#v, want one symbol each for Value and Σ", doc.Variables)
+	}
+}
+
+func TestMemberVariableSymbolsDeduplicateByNameScopeAndSide(t *testing.T) {
+	doc := parseDocument("memory://member-symbol-deduplication", `function onCreated() {
+	this.Value = 1;
+	this.value = 2;
+	thiso.Value = 3;
+}
+//#CLIENTSIDE
+function onClient() {
+	this.value = 4;
+	this.value = 5;
+}`, 1)
+
+	if len(doc.Members) != 2 {
+		t.Fatalf("members = %#v, want one server and one client symbol", doc.Members)
+	}
+}
+
 func TestPathURIWindowsRoundTrip(t *testing.T) {
 	path := `C:\workspace\classes\inventory.gs2`
 	uri := pathToURI(path)

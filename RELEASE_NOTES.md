@@ -1,3 +1,10 @@
+# Graal Remote Control 5.2.2
+
+## GraalScript LSP
+
+- Corrigida a concatenação multilinha de strings com `NL`, sem exigir `;` antes de `NL`.
+- Reduzido o tempo de validação em scripts grandes, agrupando alterações durante a digitação e evitando diagnósticos redundantes ao salvar.
+
 # Graal Remote Control 5.2.1
 
 ## File Browser

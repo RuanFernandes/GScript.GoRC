@@ -1,5 +1,13 @@
 import {rcService} from "@/services/rcService"
-import {APP_VERSION} from "@/lib/appVersion"
+import {GraalScriptLspClient as GraalScriptLspProtocolClient} from "./graalScriptLspClient"
+import type {
+  LspCompletionItem,
+  LspPosition,
+  LspRange,
+  MonacoModel,
+} from "./graalScriptLspClient"
+
+export type {GraalScriptDiagnostic} from "./graalScriptLspClient"
 
 interface Disposable {
   dispose(): void
@@ -17,11 +25,6 @@ interface MonacoRange {
   endColumn: number
 }
 
-interface MonacoModel {
-  uri: {toString(): string}
-  getValue(): string
-}
-
 interface MonacoLanguageAPI {
   editor?: {
     registerLinkOpener?(opener: {open(resource: {toString(): string}): boolean | Promise<boolean>}): Disposable
@@ -30,82 +33,6 @@ interface MonacoLanguageAPI {
     registerCompletionItemProvider(languageId: string, provider: unknown): Disposable
     registerHoverProvider(languageId: string, provider: unknown): Disposable
     registerSignatureHelpProvider(languageId: string, provider: unknown): Disposable
-  }
-}
-
-interface LspPosition {
-  line: number
-  character: number
-}
-
-interface LspRange {
-  start: LspPosition
-  end: LspPosition
-}
-
-export interface GraalScriptDiagnostic {
-  range: LspRange
-  severity?: number
-  source?: string
-  message: string
-}
-
-interface LspCompletionItem {
-  label: string
-  kind?: number
-  detail?: string
-  documentation?: string | {kind: string; value: string}
-  sortText?: string
-  insertText?: string
-  textEdit?: {range: LspRange; newText: string}
-}
-
-interface LspCompletionList {
-  isIncomplete: boolean
-  items: LspCompletionItem[]
-}
-
-interface LspHover {
-  contents: string | {kind: string; value: string}
-  range?: LspRange
-}
-
-interface LspParameterInformation {
-  label: string
-  documentation?: string | {kind: string; value: string}
-}
-
-interface LspSignatureInformation {
-  label: string
-  documentation?: string | {kind: string; value: string}
-  parameters?: LspParameterInformation[]
-}
-
-interface LspSignatureHelp {
-  signatures: LspSignatureInformation[]
-  activeSignature?: number
-  activeParameter?: number
-}
-
-interface LspDocumentDiagnosticReport {
-  kind: "full" | "unchanged"
-  resultId?: string
-  items?: GraalScriptDiagnostic[]
-}
-
-interface LspResponse<T> {
-  jsonrpc: string
-  id?: number
-  result?: T | null
-  error?: {code: number; message: string}
-}
-
-interface LspInitializeResult {
-  capabilities?: {
-    completionProvider?: {triggerCharacters?: string[]}
-    hoverProvider?: boolean
-    signatureHelpProvider?: {triggerCharacters?: string[]}
-    diagnosticProvider?: Record<string, unknown>
   }
 }
 
@@ -120,146 +47,10 @@ interface MonacoMarkdownDocumentation {
 
 const GRAALSCRIPT_WIKI_SEARCH_URL = "https://wiki.gscript.dev/index.php"
 
-// GraalScriptLspClient keeps the official LSP message shape while using the
-// Wails service as the desktop transport. The semantic server remains unaware
-// of Monaco and can later be exposed over stdio for VS Code.
-export class GraalScriptLspClient {
-  private nextId = 1
-  private initialized = false
-  private version = 0
-  private uri = ""
-  private sendQueue: Promise<unknown> = Promise.resolve()
-  private initializePromise: Promise<unknown> | null = null
-  private documentPromise: Promise<unknown> | null = null
-  private disposed = false
-
-  async initialize(workspaceRoot: string): Promise<LspInitializeResult> {
-    if (this.disposed) return {}
-    const rootUri = workspaceRoot ? filePathToUri(workspaceRoot) : null
-    const task = (async () => {
-      const result = await this.request<LspInitializeResult>("initialize", {
-        processId: null,
-        rootUri,
-        capabilities: {
-          textDocument: {
-            completion: {completionItem: {snippetSupport: false}},
-            hover: {contentFormat: ["markdown", "plaintext"]},
-            signatureHelp: {signatureInformation: {documentationFormat: ["markdown", "plaintext"]}},
-          },
-        },
-        clientInfo: {name: "graal-rc", version: APP_VERSION},
-      })
-      await this.notify("initialized", {})
-      if (this.disposed) return result ?? {}
-      this.initialized = true
-      return result ?? {}
-    })()
-    this.initializePromise = task
-    return task
-  }
-
-  async open(model: MonacoModel, documentUri: string): Promise<GraalScriptDiagnostic[]> {
-    if (this.disposed) return []
-    const task = (async () => {
-      if (this.initializePromise) await this.initializePromise
-      if (this.disposed || !this.initialized) return []
-      this.uri = documentUri
-      this.version = 1
-      await this.notify("textDocument/didOpen", {
-        textDocument: {
-          uri: this.uri,
-          languageId: "graalscript",
-          version: this.version,
-          text: model.getValue(),
-        },
-      })
-      return this.requestDiagnostics()
-    })()
-    this.documentPromise = task
-    return task
-  }
-
-  async change(text: string): Promise<GraalScriptDiagnostic[]> {
-    if (!await this.waitForDocument()) return []
-    this.version++
-    await this.notify("textDocument/didChange", {
-      textDocument: {uri: this.uri, version: this.version},
-      contentChanges: [{text}],
-    })
-    return this.requestDiagnostics()
-  }
-
-  async close(): Promise<void> {
-    this.disposed = true
-    if (!this.initialized || !this.uri) return
-    await this.notify("textDocument/didClose", {textDocument: {uri: this.uri}})
-    this.initialized = false
-    this.uri = ""
-  }
-
-  async completion(position: LspPosition): Promise<LspCompletionList | null> {
-    if (!await this.waitForDocument()) return null
-    return this.request<LspCompletionList>("textDocument/completion", {
-      textDocument: {uri: this.uri},
-      position,
-      context: {triggerKind: 1},
-    })
-  }
-
-  async hover(position: LspPosition): Promise<LspHover | null> {
-    if (!await this.waitForDocument()) return null
-    return this.request<LspHover>("textDocument/hover", {
-      textDocument: {uri: this.uri},
-      position,
-    })
-  }
-
-  async signatureHelp(position: LspPosition): Promise<LspSignatureHelp | null> {
-    if (!await this.waitForDocument()) return null
-    return this.request<LspSignatureHelp>("textDocument/signatureHelp", {
-      textDocument: {uri: this.uri},
-      position,
-    })
-  }
-
-  async diagnostics(): Promise<GraalScriptDiagnostic[]> {
-    if (!await this.waitForDocument()) return []
-    return this.requestDiagnostics()
-  }
-
-  private async requestDiagnostics(): Promise<GraalScriptDiagnostic[]> {
-    const result = await this.request<LspDocumentDiagnosticReport>("textDocument/diagnostic", {
-      textDocument: {uri: this.uri},
-    })
-    return result?.kind === "full" ? result.items ?? [] : []
-  }
-
-  private async waitForDocument(): Promise<boolean> {
-    try {
-      if (this.initializePromise) await this.initializePromise
-      if (this.documentPromise) await this.documentPromise
-    } catch {
-      return false
-    }
-    return !this.disposed && this.initialized && Boolean(this.uri)
-  }
-
-  private async notify(method: string, params: unknown): Promise<void> {
-    await this.send({jsonrpc: "2.0", method, params})
-  }
-
-  private async request<T>(method: string, params: unknown): Promise<T | null> {
-    const id = this.nextId++
-    const response = await this.send({jsonrpc: "2.0", id, method, params})
-    const parsed = JSON.parse(response) as LspResponse<T>
-    if (parsed.error) throw new Error(parsed.error.message)
-    return parsed.result ?? null
-  }
-
-  private async send(message: unknown): Promise<string> {
-    const next = this.sendQueue.then(() => rcService.graalScriptLspRequest(JSON.stringify(message)))
-    this.sendQueue = next.catch(() => undefined)
-    return next
+// Keep the app's Wails transport adapter separate from the testable LSP client.
+export class GraalScriptLspClient extends GraalScriptLspProtocolClient {
+  constructor() {
+    super((message) => rcService.graalScriptLspRequest(message))
   }
 }
 
@@ -410,11 +201,4 @@ function completionKind(kind: number | undefined): number {
     case 10: return 9 // Property
     default: return 18 // Text
   }
-}
-
-function filePathToUri(path: string): string {
-  const normalized = path.replace(/\\/g, "/")
-  const parts = normalized.split("/").filter((part, index) => part !== "" || index === 0)
-  const encoded = parts.map((part) => encodeURIComponent(part)).join("/")
-  return normalized.startsWith("/") ? `file://${encoded}` : `file:///${encoded}`
 }

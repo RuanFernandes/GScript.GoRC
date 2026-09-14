@@ -103,7 +103,6 @@ export function ScriptEditorWindowScreen() {
   const pluginDiagnosticsGenerationRef = useRef(0)
   const applyDiagnosticsRef = useRef<(diagnostics: GraalScriptDiagnostic[]) => void>(() => {})
   const diagnosticsRef = useRef<GraalScriptDiagnostic[]>([])
-  const pendingLspUpdateRef = useRef<Promise<void>>(Promise.resolve())
   const lspReadyRef = useRef<Promise<void>>(Promise.resolve())
   const pendingSaveActionRef = useRef<SaveAction | null>(null)
   const pendingExternalContentRef = useRef<string | null>(null)
@@ -290,12 +289,6 @@ export function ScriptEditorWindowScreen() {
     if (!client) return diagnosticsRef.current
 
     await lspReadyRef.current
-    const pendingUpdate = pendingLspUpdateRef.current
-    await pendingUpdate
-    if (pendingUpdate !== pendingLspUpdateRef.current) {
-      await pendingLspUpdateRef.current
-    }
-
     if (lspClientRef.current !== client) return diagnosticsRef.current
     try {
       const diagnostics = await client.diagnostics()
@@ -452,7 +445,6 @@ export function ScriptEditorWindowScreen() {
               // completion until the user invokes suggestions again.
               lspRegistrationRef.current?.dispose()
               lspRegistrationRef.current = registerGraalScriptLsp(m, client)
-              pendingLspUpdateRef.current = Promise.resolve()
               applyDiagnostics(diagnostics)
             }
           } catch (err) {
@@ -482,7 +474,6 @@ export function ScriptEditorWindowScreen() {
       const client = lspClientRef.current
       lspClientRef.current = null
       diagnosticsRef.current = []
-      pendingLspUpdateRef.current = Promise.resolve()
       void client?.close()
     }
   }, [])
@@ -754,10 +745,12 @@ export function ScriptEditorWindowScreen() {
               setDirty(isExternalSyncUpdate ? false : v !== originalRef.current)
               const lspClient = lspClientRef.current
               if (lspClient) {
-                pendingLspUpdateRef.current = lspClient
+                void lspClient
                   .change(v)
                   .then((diagnostics) => {
-                    if (lspClientRef.current === lspClient) applyDiagnosticsRef.current(diagnostics)
+                    if (lspClientRef.current === lspClient && contentRef.current === v) {
+                      applyDiagnosticsRef.current(diagnostics)
+                    }
                   })
                   .catch(() => {})
               }
