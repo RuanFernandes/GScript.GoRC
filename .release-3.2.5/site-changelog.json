@@ -1,0 +1,240 @@
+{
+  "product": "Nullborne's RC",
+  "productName": "Nullborne's Remote Control",
+  "latestVersion": "3.2.5",
+  "updatedAt": "2026-08-19",
+  "releases": [
+    {
+      "version": "3.2.2",
+      "date": "2026-08-18",
+      "title": "Internal API bug fix",
+      "summary": "Internal API bug fix.",
+      "current": true,
+      "changes": [
+        "Internal API bug fix."
+      ]
+    },
+    {
+      "version": "3.2.0",
+      "date": "2026-08-17",
+      "title": "Cross-platform File Browser and external editing",
+      "summary": "Completes the File Browser workflow, adds native .nw/.gmap editing and makes GraalScript highlighting follow RC themes.",
+      "current": false,
+      "changes": [
+        "Double-clicking a .nw or .gmap file downloads it to the configured folder, opens it with the operating system's default application and uploads local edits when the server grants write access.",
+        "Thumbnail previews are serialized through the native File Browser transfer channel, keep preview protocol messages out of the visible log and never fetch images at or above 500 KB.",
+        "GraalScript theme definitions now cover the full set of RC themes, while Script Manager refreshes coalesce concurrent cache events into a single native request.",
+        "External file sessions are detached safely when the RC disconnects, logs out or switches servers, preventing edits from being sent to the wrong session."
+      ]
+    },
+    {
+      "version": "3.1.8",
+      "date": "2026-08-16",
+      "title": "File Browser workflow and themed startup",
+      "summary": "Adds faster file handling, external editor integration and removes the custom-theme flash when opening RC windows.",
+      "current": false,
+      "changes": [
+        "File Browser now shows the file count for the current folder and supports selecting multiple files for bulk downloads and moves.",
+        "Optional image thumbnails can be enabled in Settings; only images smaller than 500 KB are downloaded and displayed, while larger images are never fetched for previews.",
+        "Settings now supports VS Code, Sublime Text and Notepad++ as external editors, with an Open with external editor action in script context menus.",
+        "The folder pane in File Browser can be resized and its width can be reset with a double-click or keyboard controls.",
+        "New windows apply the active custom theme before showing their content, eliminating the brief default-theme flash during startup."
+      ]
+    },
+    {
+      "version": "3.1.7",
+      "date": "2026-08-16",
+      "title": "Stronger macOS and Linux distribution",
+      "summary": "Fixes cross-platform packaging, the macOS icon and the RC's dependency on an open terminal.",
+      "current": false,
+      "changes": [
+        "The macOS build now ships an app bundle with the correct icns icon and version metadata; the x64 artifact runs natively on Intel Macs and through Rosetta 2 on Apple Silicon.",
+        "The Linux AppImage now carries the GTK4/WebKitGTK6 runtime and native grclib.so; DEB/RPM packages also install the required library.",
+        "The RC no longer depends on an open terminal to keep running, and the macOS updater uses the new tar.gz archive.",
+        "All three installers use canonical names and metadata aligned with version 3.1.7."
+      ]
+    },
+    {
+      "version": "3.1.6",
+      "date": "2026-08-15",
+      "title": "More controllable script and Sync workflow",
+      "summary": "Improves Script Manager, visual customization and Sync notification control.",
+      "current": false,
+      "changes": [
+        "Script Manager can now open any synchronized script directly in the native file browser on Windows, macOS or Linux from its context menu.",
+        "Sync progress notifications can be minimized or dismissed while the initial download continues in the background.",
+        "The GraalScript linter no longer requires a semicolon after enum declarations.",
+        "Settings now lets users create, edit and select RC themes, including the window border color."
+      ]
+    },
+    {
+      "version": "3.1.5",
+      "date": "2026-08-15",
+      "title": "Definitive Windows updater and visible version",
+      "summary": "Fixes the final Windows auto-update flow and shows the version on the login screen.",
+      "current": false,
+      "changes": [
+        "The Windows automatic-update helper now starts through the Windows shell broker with elevation before the RC closes, waits for the process, installs the update and relaunches the application.",
+        "The login screen now shows the current RC version in its title to make the installed build easy to confirm."
+      ]
+    },
+    {
+      "version": "3.1.4",
+      "date": "2026-08-15",
+      "title": "Custom window frame and NightOwl theme",
+      "summary": "Improves link windows and adds a dedicated theme for GS2 development.",
+      "current": false,
+      "changes": [
+        "Links opened from RC Chat now use the same custom frame, window controls, and internal WebView as the rest of the RC windows.",
+        "Added the NightOwl theme to Monaco with highlighting aligned to GS2 syntax tokens."
+      ]
+    },
+    {
+      "version": "3.1.3",
+      "date": "2026-08-15",
+      "title": "Updater and cross-platform manual downloads",
+      "summary": "Fixes Windows auto-update shutdown and lets macOS/Linux users save verified updates for manual installation.",
+      "current": false,
+      "changes": [
+        "The Windows automatic-update helper now starts detached, has a bounded wait and force-exits the RC when necessary to release the installer.",
+        "macOS and Linux updates now show a native save dialog for the verified artifact instead of opening an installer automatically.",
+        "The release API now recognizes Windows, Linux and macOS targets and advertises downloads only when the matching artifact is published."
+      ]
+    },
+    {
+      "version": "3.1.2",
+      "date": "2026-08-15",
+      "title": "Updater relaunch hotfix",
+      "summary": "The RC now opens again after the automatic installer finishes.",
+      "current": false,
+      "changes": [
+        "The automatic-update helper now waits for the silent installer, records failures and relaunches the RC afterward so an update cannot leave the application closed."
+      ]
+    },
+    {
+      "version": "3.1.1",
+      "date": "2026-08-15",
+      "title": "Windows updater hotfix",
+      "summary": "Fixes the process check used by the installer during automatic updates.",
+      "current": false,
+      "changes": [
+        "Fixed RC detection for installers launched by automatic updates; the installer now runs tasklist through a Unicode NSIS-compatible invocation."
+      ]
+    },
+    {
+      "version": "3.1.0",
+      "date": "2026-08-15",
+      "title": "Productivity and server-scoped context",
+      "summary": "A major update for faster GraalScript development and consistent isolation between RC instances and servers.",
+      "current": false,
+      "changes": [
+        "Command macros are now saved on the PC per server, with automatic migration of macros created by older browser-only builds.",
+        "Contextual completion now resolves objects returned by findplayer, findweapon and findlevel, imported classes, GUI controls and built-in objects assigned to variables.",
+        "GS2 enums offer their internal names in completion and show explicit values only in suggestion details; new filters constructors while preserving new[size] array allocation.",
+        "Function completion includes a gscript.dev wiki search link opened in an RC WebView; HTTP(S) links in RC Chat use the same internal window flow.",
+        "Script Manager now focuses its filter with Ctrl+F, Ctrl+K opens weapons, classes and NPCs after the first sync, and newly created weapons wait one second before the automatic refresh.",
+        "The Monaco editor supports tab widths 1, 2 or 4, with 2 as the default.",
+        "File Browser adds folder search, F2 renaming for files only, and a consolidated download log with one entry per file.",
+        "The RC supports multiple instances, places new windows on the instance's monitor, and puts the server first in secondary window titles.",
+        "Disconnects close related windows and clear File Browser context before login or reconnecting to another server.",
+        "The plugin creation screen now links directly to the official documentation on nullborne.com."
+      ]
+    },
+    {
+      "version": "3.0.1",
+      "date": "2026-08-15",
+      "title": "Automatic updates and connected release notes",
+      "summary": "The RC can now keep itself current and read the published release history from Nullborne's release service.",
+      "current": false,
+      "changes": [
+        "Added an automatic update check against https://nullborne.com/update when the RC starts.",
+        "The Windows amd64 installer is downloaded, verified, and launched automatically before the older RC closes.",
+        "The in-app changelog now refreshes from https://nullborne.com/changelog and keeps the bundled notes as an offline fallback.",
+        "Published the Windows release metadata, installer size, and SHA-256 through the update API."
+      ]
+    },
+    {
+      "version": "3.0.0",
+      "date": "2026-08-15",
+      "title": "Safer operations and GraalScript development",
+      "summary": "A major update for server administration, script development, and safe change recovery.",
+      "changes": [
+        "Global search, an operational notification center, and shortcuts to the main tools while keeping RC Chat as the primary surface.",
+        "Parameterized command macros with parameter types, validation, and fast slash-command-style filling.",
+        "A player-list moderation workflow with permission-gated actions and automatic account filling for the logged-in user.",
+        "Safer Sync with rights loaded at login, write-account enforcement, initial sync progress, a 60-minute default poll, and panic-mode recovery.",
+        "Local audit history and backups for synchronized scripts, with up to three versions per script, configurable retention, deletion, and rollback.",
+        "Contextual GraalScript 2 LSP, refreshed only after Sync completes, plus local MCP and a plugin engine for automation.",
+        "Cleaner RC Chat with repeated-text aggregation, preserved blank lines, complete localization, and corrected permission comparisons.",
+        "Script Manager and File Browser improvements that ignore unnamed scripts, reject invalid paths, and provide fallbacks for missing names or icons."
+      ],
+      "current": false
+    },
+    {
+      "version": "2.0.0",
+      "date": "2026-08-01",
+      "title": "Themes and workflow",
+      "summary": "An update focused on customization, synchronization, and productivity.",
+      "changes": [
+        "Modernized local sync, localization, and private-message alerts.",
+        "More complete editor themes, including custom theme previews.",
+        "RC Chat autocomplete for commands and players.",
+        "Frameless windows and session nickname persistence.",
+        "Redesigned Settings and improved login and profile flows."
+      ],
+      "current": false
+    },
+    {
+      "version": "1.2.1",
+      "date": "2026-07-28",
+      "title": "Startup and connection",
+      "summary": "Improvements for clearer startup and a more reliable NC connection.",
+      "changes": [
+        "Frontend loading skeleton.",
+        "NC connection keep-alive."
+      ],
+      "current": false
+    },
+    {
+      "version": "1.2.0",
+      "date": "2026-07-24",
+      "title": "Cross-platform builds",
+      "summary": "RC distribution expanded to more environments.",
+      "changes": [
+        "Fixed the cross-platform macOS Intel build."
+      ],
+      "current": false
+    },
+    {
+      "version": "1.1.0",
+      "date": "2026-07-24",
+      "title": "Automated releases",
+      "summary": "The release pipeline was prepared for broader platform support.",
+      "changes": [
+        "Added the macOS target and automatic tag creation to the release workflow."
+      ],
+      "current": false
+    },
+    {
+      "version": "1.0.0",
+      "date": "2026-07-23",
+      "title": "First stable release",
+      "summary": "The first stable version of Nullborne's Remote Control.",
+      "changes": [
+        "Initial release and distribution pipeline."
+      ],
+      "current": false
+    },
+    {
+      "version": "0.1.0",
+      "date": "2026-07-22",
+      "title": "First public version",
+      "summary": "The initial foundation for administering Graal servers.",
+      "changes": [
+        "Synchronized the RCNPC model with grclib.",
+        "Displayed NPC levels in the interface."
+      ],
+      "current": false
+    }
+  ]
+}
