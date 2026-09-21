@@ -1,3 +1,10 @@
+# Graal Remote Control 5.2.4
+
+## Linux / Ubuntu
+
+- Corrigida a inicialização lenta do WebKitGTK no Ubuntu 24.04 instalando um perfil AppArmor específico para o sandbox.
+- Alinhada a identidade GTK/taskbar da janela frameless com o aplicativo `graal-rc`.
+
 # Graal Remote Control 5.2.3
 
 ## Distribuição Linux

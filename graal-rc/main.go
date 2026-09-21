@@ -21,6 +21,11 @@ func applicationOptions(a *App) application.Options {
 	return application.Options{
 		Name:        "graal-rc",
 		Description: "Graal Remote Control client",
+		Linux: application.LinuxOptions{
+			// Keep the desktop/taskbar identity aligned with the installed
+			// .desktop file so frameless windows remain grouped correctly.
+			ProgramName: "graal-rc",
+		},
 		Windows: application.WindowsOptions{
 			// Keep recovery timers alive after idle, but leave renderer priority and
 			// native occlusion enabled so covered secondary windows do not consume

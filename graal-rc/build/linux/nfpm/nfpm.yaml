@@ -26,6 +26,8 @@ contents:
     dst: "/usr/share/icons/hicolor/128x128/apps/graal-rc.png"
   - src: "./build/linux/graal-rc.desktop"
     dst: "/usr/share/applications/graal-rc.desktop"
+  - src: "./build/linux/apparmor/graal-rc"
+    dst: "/etc/apparmor.d/graal-rc"
 
 # Default dependencies for the GTK4 + WebKitGTK 6.0 stack (Ubuntu 24.04+ / Debian 13+)
 depends:
@@ -48,10 +50,8 @@ overrides:
 
 # scripts section to ensure desktop database is updated after install
 scripts:
+  preremove: "./build/linux/nfpm/scripts/preremove.sh"
   postinstall: "./build/linux/nfpm/scripts/postinstall.sh"
-  # You can also add preremove, postremove if needed
-  # preremove: "./build/linux/nfpm/scripts/preremove.sh"
-  # postremove: "./build/linux/nfpm/scripts/postremove.sh"
 
 # If you build your app with -tags gtk3 (legacy WebKit2GTK 4.1 stack — supported through v3.0.x, removed in v3.1),
 # replace the depends/overrides above with these:

@@ -57,6 +57,9 @@ func TestApplicationOptionsConfigureWailsLifecycle(t *testing.T) {
 	if options.SingleInstance != nil {
 		t.Fatal("single-instance options must be disabled so multiple RC connections can run")
 	}
+	if options.Linux.ProgramName != "graal-rc" {
+		t.Fatalf("Linux program name = %q, want graal-rc", options.Linux.ProgramName)
+	}
 
 	options.OnShutdown()
 	if !appIsShuttingDown(a) {

@@ -1,0 +1,11 @@
+abi <abi/4.0>,
+include <tunables/global>
+
+# Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor. The
+# WebKitGTK web-process sandbox uses bubblewrap, so the installed GoRC binary
+# needs an application-specific profile that permits only this userns setup.
+profile graal-rc /usr/local/bin/graal-rc flags=(unconfined) {
+  userns,
+
+  include if exists <local/graal-rc>
+}
