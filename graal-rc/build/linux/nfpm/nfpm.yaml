@@ -21,6 +21,7 @@ contents:
     dst: "/usr/local/bin/graal-rc"
   - src: "${GRCLIB_PATH}"
     dst: "/usr/local/bin/grclib.so"
+    expand: true
   - src: "./build/appicon.png"
     dst: "/usr/share/icons/hicolor/128x128/apps/graal-rc.png"
   - src: "./build/linux/graal-rc.desktop"
