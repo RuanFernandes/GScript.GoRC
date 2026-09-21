@@ -203,7 +203,8 @@ wails3 task build          # native binary in graal-rc/bin/
 
 # 3. Package for the host OS
 wails3 task windows:package   # Windows: NSIS installer (.exe)
-wails3 task linux:package     # Linux: AppImage
+wails3 task linux:package     # Linux: AppImage and host packages
+wails3 task linux:create:deb ARCH=amd64  # Ubuntu/Debian: .deb installer
 wails3 task darwin:package    # macOS: graal-rc.app bundle
 ```
 
@@ -235,7 +236,8 @@ Releases are produced by the [`release`](./.github/workflows/release.yml) workfl
 triggered manually from the **Actions** tab. It builds and publishes:
 
 - **Windows x64** — NSIS installer
-- **Linux x64** — AppImage
+- **Linux x64** — AppImage for general Linux distributions
+- **Ubuntu/Debian x64** — `.deb` installer
 - **macOS x64** — `.app` bundle in a tarball (native Intel and Rosetta 2)
 
 Each release bundles the matching native protocol library for its platform and bitness.

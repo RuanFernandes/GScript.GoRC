@@ -1,3 +1,9 @@
+# Graal Remote Control 5.2.3
+
+## Distribuição Linux
+
+- Adicionado instalador `.deb` para Ubuntu/Debian x64, mantendo o AppImage como opção universal para Linux.
+
 # Graal Remote Control 5.2.2
 
 ## GraalScript LSP

@@ -135,7 +135,7 @@ jobs:
           retention-days: 14
 
   linux-amd64:
-    name: Linux amd64 AppImage
+    name: Linux amd64 AppImage and DEB
     needs: version
     runs-on: ubuntu-24.04
     defaults:
@@ -199,11 +199,27 @@ jobs:
           mkdir -p release
           cp bin/graal-rc-x86_64.AppImage release/nullbornes-rc-linux-x64.AppImage
 
-      - name: Upload Linux amd64 artifact
+      - name: Build Ubuntu/Debian DEB
+        env:
+          CGO_ENABLED: '1'
+        run: |
+          set -euo pipefail
+          rm -f bin/*.deb
+          task linux:create:deb ARCH=amd64
+          deb="$(find bin -maxdepth 1 -type f -name '*.deb' -print -quit)"
+          if [[ -z "$deb" ]]; then
+            echo "The Linux amd64 package task did not produce a .deb." >&2
+            exit 1
+          fi
+          cp "$deb" release/nullbornes-rc-linux-x64.deb
+
+      - name: Upload Linux amd64 artifacts
         uses: actions/upload-artifact@v4
         with:
           name: release-linux-amd64
-          path: graal-rc/release/nullbornes-rc-linux-x64.AppImage
+          path: |
+            graal-rc/release/nullbornes-rc-linux-x64.AppImage
+            graal-rc/release/nullbornes-rc-linux-x64.deb
           if-no-files-found: error
           retention-days: 14
 
@@ -466,6 +482,7 @@ jobs:
           curl --fail --silent --show-error --retry 5 --retry-delay 5 https://nullborne.com/api/downloads > "$RUNNER_TEMP/nullborne-downloads.json"
           grep -q 'nullbornes-rc-windows-x64-installer.exe' "$RUNNER_TEMP/nullborne-downloads.json"
           grep -q 'nullbornes-rc-linux-x64.AppImage' "$RUNNER_TEMP/nullborne-downloads.json"
+          grep -q 'nullbornes-rc-linux-x64.deb' "$RUNNER_TEMP/nullborne-downloads.json"
           curl --fail --silent --show-error --retry 5 --retry-delay 5 \
             'https://nullborne.com/update?version=0.0.0&platform=windows&arch=amd64' \
             > "$RUNNER_TEMP/nullborne-update.json"
