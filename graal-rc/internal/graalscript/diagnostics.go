@@ -275,9 +275,20 @@ func (p *semicolonParser) parseExpressionStatement(start, end int) (int, int, bo
 }
 
 func (p *semicolonParser) isMultilineNLStringContinuation(start, previous, current int) bool {
-	return previous > start && current < len(p.tokens) &&
-		isIdentifierText(p.tokens[previous], "NL") &&
-		p.tokens[previous-1].kind == tokenString && p.tokens[current].kind == tokenString
+	if previous <= start || current >= len(p.tokens) ||
+		!isIdentifierText(p.tokens[previous], "NL") || p.tokens[current].kind != tokenString {
+		return false
+	}
+
+	for index := previous - 1; index >= start; index-- {
+		if isIdentifierText(p.tokens[index], "NL") {
+			return false
+		}
+		if p.tokens[index].kind == tokenString {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *semicolonParser) parseFunctionDeclaration(start, end int) int {

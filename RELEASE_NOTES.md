@@ -1,3 +1,9 @@
+# Graal Remote Control 5.2.5
+
+## GraalScript LSP
+
+- Corrigida a concatenação multilinha de strings com `NL` quando a linha também contém interpolação, sem exigir `;` antes de `NL`.
+
 # Graal Remote Control 5.2.4
 
 ## Linux / Ubuntu

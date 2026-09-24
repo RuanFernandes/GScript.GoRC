@@ -39,6 +39,20 @@ func TestDiagnosticsAllowMultilineNLStringConcatenation(t *testing.T) {
 	}
 }
 
+func TestDiagnosticsAllowMultilineNLStringConcatenationWithInterpolations(t *testing.T) {
+	text := `temp.suspectMsg =
+	"<@%2803818392075> Suspected of being Sudee/" NL
+	"Player: "@pl NL
+	"IP: "@temp.ipData NL
+	"ISP: "@temp.data.connection.isp NL
+	"Domain: "@temp.data.connection.domain NL
+	"Temporary Jail Applied, please check";`
+
+	if diagnostics := parseDocument("memory://multiline-nl-string-concatenation-with-interpolations", text, 1).diagnostics(); len(diagnostics) != 0 {
+		t.Fatalf("multiline NL string concatenation with interpolations produced diagnostics: %#v", diagnostics)
+	}
+}
+
 func TestDiagnosticsRequireSemicolonAfterMultilineNLStringConcatenation(t *testing.T) {
 	text := `"first" NL
 "second"
