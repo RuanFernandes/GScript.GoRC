@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -86,8 +87,9 @@ func (a *App) GetAppVersion() string {
 }
 
 // CheckForUpdates asks the release service whether a newer supported build is
-// available. Windows keeps the automatic installer flow; macOS and Linux use
-// the same metadata but save the verified artifact for manual installation.
+// available. Windows and Debian-installed Linux builds use the automatic
+// installer flow; AppImage and macOS builds save the verified artifact for
+// manual installation.
 func (a *App) CheckForUpdates() (UpdateInfo, error) {
 	if err := ensureAppRunning(a); err != nil {
 		return UpdateInfo{CurrentVersion: RCVersion}, err
@@ -123,20 +125,19 @@ func (a *App) FetchRemoteChangelog() (RemoteChangelog, error) {
 	return changelog, nil
 }
 
-// InstallUpdate performs the requested automatic Windows update flow. It
-// checks the release metadata again immediately before downloading, verifies
-// the exact size and SHA-256 advertised by the server, starts a detached
-// helper that waits for this process to exit, then closes the RC so NSIS can
-// install over it.
+// InstallUpdate performs the requested automatic update flow. It checks the
+// release metadata again immediately before downloading, verifies the exact
+// size and SHA-256 advertised by the server, then either starts the Windows
+// helper or installs the Debian package through the user's polkit prompt.
 func (a *App) InstallUpdate() error {
-	if runtime.GOOS != "windows" {
-		return errors.New("automatic updates are only supported on Windows; use SaveUpdate on macOS or Linux")
-	}
 	if err := ensureAppRunning(a); err != nil {
 		return err
 	}
 
 	platform, architecture := localReleaseTarget()
+	if runtime.GOOS != "windows" && !(runtime.GOOS == "linux" && platform == "ubuntu") {
+		return errors.New("automatic updates are only supported for Windows and Debian packages on Linux; use SaveUpdate for AppImage or macOS")
+	}
 	info, err := fetchUpdateInfo(platform, architecture)
 	if err != nil {
 		log.Printf("automatic update check failed: %v", err)
@@ -156,14 +157,27 @@ func (a *App) InstallUpdate() error {
 		log.Printf("automatic update download failed: %v", err)
 		return err
 	}
+	if platform == "ubuntu" {
+		if err := a.installDebianUpdate(installerPath); err != nil {
+			_ = os.Remove(installerPath)
+			log.Printf("automatic Debian update failed: %v", err)
+			return err
+		}
+		return nil
+	}
 	if err := launchWindowsInstallerAfterExit(installerPath); err != nil {
 		_ = os.Remove(installerPath)
 		log.Printf("automatic update launch failed: %v", err)
 		return err
 	}
 
-	// The helper waits for the process name checked by the NSIS installer. A
-	// short delay lets this binding call return before the Wails shutdown starts.
+	a.scheduleUpdateExit()
+	return nil
+}
+
+func (a *App) scheduleUpdateExit() {
+	// The installer waits for the current process to exit. A short delay lets
+	// the binding call return before the Wails shutdown starts.
 	a.quitting.Store(true)
 	go func() {
 		time.Sleep(350 * time.Millisecond)
@@ -185,11 +199,73 @@ func (a *App) InstallUpdate() error {
 		// fallback when the native Wails shutdown does not terminate the process.
 		os.Exit(0)
 	}()
-	return nil
 }
 
 func localReleaseTarget() (string, string) {
+	if runtime.GOOS == "linux" {
+		executablePath, _ := os.Executable()
+		return linuxReleaseTarget(runtime.GOARCH, os.Getenv("APPIMAGE"), executablePath, isDpkgManagedExecutable(executablePath))
+	}
 	return releaseTarget(runtime.GOOS, runtime.GOARCH)
+}
+
+func linuxReleaseTarget(architecture, appImagePath, executablePath string, dpkgManaged bool) (string, string) {
+	platform := linuxReleasePlatform(appImagePath, executablePath, dpkgManaged)
+	if platform == "ubuntu" && architecture != "amd64" {
+		platform = "linux"
+	}
+	return platform, architecture
+}
+
+func linuxReleasePlatform(appImagePath, executablePath string, dpkgManaged bool) string {
+	if strings.TrimSpace(appImagePath) != "" || strings.HasSuffix(strings.ToLower(strings.TrimSpace(executablePath)), ".appimage") {
+		return "linux"
+	}
+	if dpkgManaged {
+		return "ubuntu"
+	}
+	return "linux"
+}
+
+func isDpkgManagedExecutable(executablePath string) bool {
+	if strings.TrimSpace(executablePath) == "" {
+		return false
+	}
+	dpkgQueryPath, err := exec.LookPath("dpkg-query")
+	if err != nil {
+		return false
+	}
+
+	candidates := make([]string, 0, 2)
+	addCandidate := func(path string) {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			return
+		}
+		if absolutePath, err := filepath.Abs(path); err == nil {
+			path = absolutePath
+		}
+		for _, candidate := range candidates {
+			if candidate == path {
+				return
+			}
+		}
+		candidates = append(candidates, path)
+	}
+
+	addCandidate(executablePath)
+	if resolvedPath, err := filepath.EvalSymlinks(executablePath); err == nil {
+		addCandidate(resolvedPath)
+	}
+	for _, candidate := range candidates {
+		query := exec.Command(dpkgQueryPath, "--search", candidate)
+		query.Stdout = io.Discard
+		query.Stderr = io.Discard
+		if err := query.Run(); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func releaseTarget(goos, architecture string) (string, string) {
@@ -348,6 +424,10 @@ func updateDownloadPath(platform, architecture string) string {
 		if architecture != "amd64" && architecture != "386" {
 			return ""
 		}
+	case "ubuntu":
+		if architecture != "amd64" {
+			return ""
+		}
 	case "mac":
 		if architecture != "amd64" && architecture != "arm64" {
 			return ""
@@ -388,6 +468,8 @@ func updateTemporaryPattern(platform string) string {
 		return "nullbornes-rc-update-*.exe"
 	case "linux":
 		return "nullbornes-rc-update-*.AppImage"
+	case "ubuntu":
+		return "nullbornes-rc-update-*.deb"
 	case "mac":
 		return "nullbornes-rc-update-*.tar.gz"
 	default:
@@ -405,6 +487,8 @@ func updateFilename(info UpdateInfo, platform string) string {
 	switch platform {
 	case "linux":
 		return "nullbornes-rc-linux.AppImage"
+	case "ubuntu":
+		return "nullbornes-rc-linux.deb"
 	case "mac":
 		return "nullbornes-rc-macos-x64.tar.gz"
 	default:
@@ -476,9 +560,8 @@ func saveDownloadedInstaller(sourcePath, destinationPath, platform string) error
 }
 
 // SaveUpdate downloads and verifies a macOS/Linux artifact, then asks the user
-// where to save it. Installation remains a deliberate manual action on those
-// platforms because the downloaded formats have platform-specific signing and
-// package-installation requirements.
+// where to save it. It remains available as a manual fallback for Debian
+// package installations when the automatic polkit flow cannot run.
 func (a *App) SaveUpdate() (string, error) {
 	if runtime.GOOS == "windows" {
 		return "", errors.New("Windows updates use InstallUpdate")
@@ -511,6 +594,8 @@ func (a *App) SaveUpdate() (string, error) {
 	switch platform {
 	case "linux":
 		dialog.AddFilter("Linux AppImage", "*.AppImage")
+	case "ubuntu":
+		dialog.AddFilter("Debian package", "*.deb")
 	case "mac":
 		dialog.AddFilter("macOS app archive", "*.tar.gz")
 	}
@@ -533,6 +618,53 @@ func (a *App) SaveUpdate() (string, error) {
 		return "", err
 	}
 	return chosenPath, nil
+}
+
+func debianPackageInstallArgs(installerPath string) []string {
+	return []string{"pkexec", "apt-get", "install", "--yes", installerPath}
+}
+
+func debianPackageInstallCommand(installerPath string) (*exec.Cmd, error) {
+	if strings.TrimSpace(installerPath) == "" {
+		return nil, errors.New("Debian installer path is empty")
+	}
+	args := debianPackageInstallArgs(installerPath)
+	if _, err := exec.LookPath(args[0]); err != nil {
+		return nil, errors.New("pkexec is required for automatic Debian updates")
+	}
+	if _, err := exec.LookPath(args[1]); err != nil {
+		return nil, errors.New("apt-get is required for automatic Debian updates")
+	}
+	return exec.Command(args[0], args[1:]...), nil
+}
+
+func (a *App) installDebianUpdate(installerPath string) error {
+	defer os.Remove(installerPath)
+
+	command, err := debianPackageInstallCommand(installerPath)
+	if err != nil {
+		return err
+	}
+	output, err := command.CombinedOutput()
+	if err != nil {
+		if details := strings.TrimSpace(string(output)); details != "" {
+			return fmt.Errorf("install Debian package: %w: %s", err, details)
+		}
+		return fmt.Errorf("install Debian package: %w", err)
+	}
+
+	applicationPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve application path after Debian update: %w", err)
+	}
+	application := exec.Command(applicationPath, os.Args[1:]...)
+	application.Dir = filepath.Dir(applicationPath)
+	if err := application.Start(); err != nil {
+		return fmt.Errorf("relaunch application after Debian update: %w", err)
+	}
+
+	a.scheduleUpdateExit()
+	return nil
 }
 
 func launchWindowsInstallerAfterExit(installerPath string) error {

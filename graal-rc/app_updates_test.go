@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -84,6 +85,7 @@ func TestUpdateDownloadRoutesAndTemporaryNames(t *testing.T) {
 		{platform: "windows", architecture: "386", path: "/windows/386", pattern: "nullbornes-rc-update-*.exe"},
 		{platform: "linux", architecture: "amd64", path: "/linux/amd64", pattern: "nullbornes-rc-update-*.AppImage"},
 		{platform: "linux", architecture: "386", path: "/linux/386", pattern: "nullbornes-rc-update-*.AppImage"},
+		{platform: "ubuntu", architecture: "amd64", path: "/ubuntu/amd64", pattern: "nullbornes-rc-update-*.deb"},
 		{platform: "mac", architecture: "amd64", path: "/mac/amd64", pattern: "nullbornes-rc-update-*.tar.gz"},
 		{platform: "mac", architecture: "arm64", path: "/mac/arm64", pattern: "nullbornes-rc-update-*.tar.gz"},
 	}
@@ -99,10 +101,76 @@ func TestUpdateDownloadRoutesAndTemporaryNames(t *testing.T) {
 	if len(legacyPaths) != 2 || legacyPaths[0] != "/windows/amd64" || legacyPaths[1] != "/windows" {
 		t.Fatalf("updateDownloadPaths(windows, amd64) = %#v, want canonical and legacy x64 routes", legacyPaths)
 	}
-	for _, invalid := range [][2]string{{"other", "amd64"}, {"windows", "arm64"}, {"linux", "arm64"}, {"mac", "386"}} {
+	for _, invalid := range [][2]string{{"other", "amd64"}, {"windows", "arm64"}, {"linux", "arm64"}, {"ubuntu", "386"}, {"ubuntu", "arm64"}, {"mac", "386"}} {
 		if got := updateDownloadPath(invalid[0], invalid[1]); got != "" {
 			t.Fatalf("updateDownloadPath(%q, %q) = %q, want empty", invalid[0], invalid[1], got)
 		}
+	}
+}
+
+func TestLinuxReleaseTargetDetectsInstalledArtifactFormat(t *testing.T) {
+	tests := []struct {
+		name           string
+		architecture   string
+		appImagePath   string
+		executablePath string
+		dpkgManaged    bool
+		wantPlatform   string
+	}{
+		{
+			name:           "AppImage environment takes precedence",
+			architecture:   "amd64",
+			appImagePath:   "/tmp/Nullborne-RC.AppImage",
+			executablePath: "/tmp/.mount_Nullborne/usr/bin/nullbornes-rc",
+			dpkgManaged:    true,
+			wantPlatform:   "linux",
+		},
+		{
+			name:           "AppImage executable",
+			architecture:   "amd64",
+			executablePath: "/tmp/Nullborne-RC.AppImage",
+			wantPlatform:   "linux",
+		},
+		{
+			name:           "Debian package",
+			architecture:   "amd64",
+			executablePath: "/usr/bin/nullbornes-rc",
+			dpkgManaged:    true,
+			wantPlatform:   "ubuntu",
+		},
+		{
+			name:           "unmanaged Linux binary",
+			architecture:   "amd64",
+			executablePath: "/opt/nullbornes-rc/nullbornes-rc",
+			wantPlatform:   "linux",
+		},
+		{
+			name:           "unsupported Debian architecture falls back to Linux",
+			architecture:   "386",
+			executablePath: "/usr/bin/nullbornes-rc",
+			dpkgManaged:    true,
+			wantPlatform:   "linux",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			platform, architecture := linuxReleaseTarget(test.architecture, test.appImagePath, test.executablePath, test.dpkgManaged)
+			if platform != test.wantPlatform {
+				t.Fatalf("linuxReleaseTarget platform = %q, want %q", platform, test.wantPlatform)
+			}
+			if architecture != test.architecture {
+				t.Fatalf("linuxReleaseTarget architecture = %q, want %q", architecture, test.architecture)
+			}
+		})
+	}
+}
+
+func TestDebianPackageInstallArgs(t *testing.T) {
+	installerPath := "/tmp/nullbornes-rc-update-123.deb"
+	want := []string{"pkexec", "apt-get", "install", "--yes", installerPath}
+	if got := debianPackageInstallArgs(installerPath); !reflect.DeepEqual(got, want) {
+		t.Fatalf("debianPackageInstallArgs() = %#v, want %#v", got, want)
 	}
 }
 
@@ -113,6 +181,9 @@ func TestUpdateFilenameUsesSafeArtifactBasename(t *testing.T) {
 	}
 	if got := updateFilename(UpdateInfo{}, "mac"); got != "nullbornes-rc-macos-x64.tar.gz" {
 		t.Fatalf("updateFilename fallback = %q, want macOS filename", got)
+	}
+	if got := updateFilename(UpdateInfo{}, "ubuntu"); got != "nullbornes-rc-linux.deb" {
+		t.Fatalf("updateFilename Debian fallback = %q, want Debian filename", got)
 	}
 }
 

@@ -1,3 +1,11 @@
+# Graal Remote Control 5.2.6
+
+## Atualizações no Linux
+
+- Detectada a instalação via `.deb` para consultar o canal Ubuntu/Debian correto, evitando baixar o AppImage durante uma atualização.
+- Atualizações de instalações `.deb` agora podem ser instaladas automaticamente com autorização do sistema e o aplicativo é relançado após a instalação.
+- AppImage e demais formatos Linux continuam usando o download manual apropriado.
+
 # Graal Remote Control 5.2.5
 
 ## GraalScript LSP

@@ -85,18 +85,18 @@ function Shell() {
     let cancelled = false
     void rcService.checkForUpdates().then((info) => {
       if (cancelled || !info.updateAvailable || !info.downloadAvailable) return
-      const automaticWindowsUpdate = info.platform === "windows"
+      const automaticUpdate = info.platform === "windows" || info.platform === "ubuntu"
       toast.info(language.t("update.availableTitle", {version: info.latestVersion}), {
-        description: language.t(automaticWindowsUpdate ? "update.availableDescription" : "update.manualDescription", {current: info.currentVersion}),
+        description: language.t(automaticUpdate ? "update.availableDescription" : "update.manualDescription", {current: info.currentVersion}),
         duration: Infinity,
         action: {
-          label: language.t(automaticWindowsUpdate ? "update.downloadAction" : "update.saveAction"),
+          label: language.t(automaticUpdate ? "update.downloadAction" : "update.saveAction"),
           onClick: () => {
-            toast.info(language.t(automaticWindowsUpdate ? "update.downloadingTitle" : "update.savingTitle", {version: info.latestVersion}), {
-              description: language.t(automaticWindowsUpdate ? "update.downloadingDescription" : "update.savingDescription"),
+            toast.info(language.t(automaticUpdate ? "update.downloadingTitle" : "update.savingTitle", {version: info.latestVersion}), {
+              description: language.t(automaticUpdate ? "update.downloadingDescription" : "update.savingDescription"),
               duration: Infinity,
             })
-            if (automaticWindowsUpdate) {
+            if (automaticUpdate) {
               void rcService.installUpdate().catch((error) => {
                 const message = error instanceof Error ? error.message : String(error)
                 toast.error(language.t("update.failedTitle"), {description: message})
