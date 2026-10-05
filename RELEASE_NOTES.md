@@ -1,3 +1,9 @@
+# Graal Remote Control 5.2.7
+
+## Estabilidade no Linux
+
+- Evitado que a interface WebView pare de responder após longos períodos de ociosidade enquanto a janela permanece aberta.
+
 # Graal Remote Control 5.2.6
 
 ## Atualizações no Linux
