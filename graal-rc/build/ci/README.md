@@ -21,10 +21,10 @@ from the pinned `GScript.GRClib` release. The pipeline always selects the matchi
 library and never substitutes a different architecture into an artifact. The legacy flat
 files under `rclib/` remain only as development fallbacks.
 
-The upstream `v1.0.46` source contains the class-response parser correction for
-`PLO_NC_CLASSGET`. After refreshing the matrix, the release workflow packages the six
-architecture-specific libraries directly from that pinned release and does not apply a
-local native workaround.
+The pinned upstream `v1.0.51` release includes NC socket lifecycle hardening, RC3
+protocol and transfer fixes, corrected player attribute counter framing, and separate
+snapshots for IRC channels and game players. The release workflow packages the six
+architecture-specific libraries directly from that release without local native patches.
 
 The checked-in Wails `v3.0.0-alpha2.117` dependency has an upstream 386 compile error in
 its updater package (`2 << 30` passed as `int`). The x86 build script uses a disposable
@@ -64,7 +64,7 @@ pwsh -File build/ci/build-windows.ps1 -Architecture 386
 To refresh the native matrix from a newer upstream release, run:
 
 ```powershell
-go run ./build/ci/fetch-grclib -root . -release v1.0.46 -force
+go run ./build/ci/fetch-grclib -root . -release v1.0.51 -force
 ```
 
 The fetcher resolves the six expected release assets, extracts only the

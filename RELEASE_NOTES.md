@@ -1,3 +1,13 @@
+# Graal Remote Control 5.2.8
+
+## Biblioteca de protocolo
+
+- Atualizada a GScript.GRClib para v1.0.51, com melhorias no ciclo de vida do socket NC e correções de protocolo, transferência e contadores de atributos de jogadores.
+
+## Revisão do Sync
+
+- Adicionado syntax highlight GraalScript para scripts de weapon, class e NPC durante a revisão do Sync.
+
 # Graal Remote Control 5.2.7
 
 ## Estabilidade no Linux

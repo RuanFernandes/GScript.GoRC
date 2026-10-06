@@ -2,7 +2,7 @@
 // server changes that need human review. Each row provides a diff and an
 // editable merge buffer; nothing is overwritten until the user chooses.
 import {useEffect, useRef, useState} from "react"
-import {DiffEditor} from "@monaco-editor/react"
+import {DiffEditor, Editor, type BeforeMount} from "@monaco-editor/react"
 
 import {Button} from "@/components/ui/button"
 import {Badge} from "@/components/ui/badge"
@@ -10,6 +10,7 @@ import {Skeleton} from "@/components/ui/skeleton"
 import {useSync} from "@/hooks/useSync"
 import type {SyncReviewItem} from "@/types"
 import {useLanguage} from "@/hooks/useLanguage"
+import {registerGraalScript} from "@/lib/monacoGraalScript"
 
 const STATE_BADGE: Record<string, "destructive" | "secondary" | "default"> = {
   conflict: "destructive",
@@ -18,6 +19,9 @@ const STATE_BADGE: Record<string, "destructive" | "secondary" | "default"> = {
   "local-missing-keep": "secondary",
   "server-missing-keep": "secondary",
 }
+
+const syncReviewLanguage = (kind: string) =>
+  kind === "weapon" || kind === "class" || kind === "npc" ? "graalscript" : "plaintext"
 
 // Under server-truth, the only items that reach review are local files with no
 // server counterpart (new-local) or whose server entry was deleted. The local
@@ -35,6 +39,10 @@ function ReviewRow({
   const [merged, setMerged] = useState(item.local ?? "")
   const diffHostRef = useRef<HTMLDivElement>(null)
   const [compactDiff, setCompactDiff] = useState(false)
+  const language = syncReviewLanguage(item.kind)
+  const handleBeforeMount: BeforeMount = (monaco) => {
+    registerGraalScript(monaco as unknown as Parameters<typeof registerGraalScript>[0])
+  }
 
   useEffect(() => {
     const element = diffHostRef.current
@@ -74,23 +82,38 @@ function ReviewRow({
               height="100%"
               original={item.local ?? ""}
               modified={item.server ?? ""}
-              language="plaintext"
+              language={language}
               theme="vs-dark"
+              beforeMount={handleBeforeMount}
               options={{
                 readOnly: true,
                 renderSideBySide: !compactDiff,
                 fontLigatures: true,
                 minimap: {enabled: false},
                 scrollBeyondLastLine: false,
+                automaticLayout: true,
               }}
             />
           </div>
-          <textarea
-            value={merged}
-            onChange={(e) => setMerged(e.target.value)}
-            aria-label={t("sync.mergedContent")}
-            className="min-h-32 w-full resize-y rounded-md border bg-background p-3 font-mono text-xs outline-none focus:ring-2 focus:ring-ring sm:min-h-40"
-          />
+          <div className="h-40 min-h-32 w-full resize-y overflow-auto rounded-md border">
+            <Editor
+              height="100%"
+              value={merged}
+              language={language}
+              theme="vs-dark"
+              beforeMount={handleBeforeMount}
+              onChange={(value) => setMerged(value ?? "")}
+              options={{
+                minimap: {enabled: false},
+                scrollBeyondLastLine: false,
+                fontLigatures: true,
+                fontSize: 12,
+                wordWrap: "on",
+                automaticLayout: true,
+                ariaLabel: t("sync.mergedContent"),
+              }}
+            />
+          </div>
           <div className="flex flex-wrap gap-2">
             <Button className="min-w-32 flex-1 sm:flex-none" variant="outline" onClick={() => onResolve(item.kind, item.key, "local")}>{t("sync.keepLocal")}</Button>
             <Button className="min-w-32 flex-1 sm:flex-none" variant="outline" onClick={() => onResolve(item.kind, item.key, "server")}>{t("sync.useServer")}</Button>

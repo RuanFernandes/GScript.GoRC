@@ -1,7 +1,7 @@
 {
   "repository": "MorenoLand/GScript.GRClib",
-  "release": "v1.0.46",
-  "releaseUrl": "https://github.com/MorenoLand/GScript.GRClib/releases/tag/v1.0.46",
+  "release": "v1.0.51",
+  "releaseUrl": "https://github.com/MorenoLand/GScript.GRClib/releases/tag/v1.0.51",
   "targets": {
     "darwin-amd64": {
       "goos": "darwin",
@@ -9,7 +9,7 @@
       "asset": "grclib-macos-x64.zip",
       "library": "grclib.dylib",
       "path": "native/darwin-amd64/grclib.dylib",
-      "sha256": "56020bed2d40d17cf406672a0091aa6aa39cce879a4471cf5588a3571ad7d6d4"
+      "sha256": "972fe922e6564921f850bcfc3a000bea3e74297bac58e737dcc9291ce94ff0e1"
     },
     "darwin-arm64": {
       "goos": "darwin",
@@ -17,7 +17,7 @@
       "asset": "grclib-macos-arm64.zip",
       "library": "grclib.dylib",
       "path": "native/darwin-arm64/grclib.dylib",
-      "sha256": "c6482fc773f1ce336191ddd788086197ee9b481bee40b54e486f01d6c45a8654"
+      "sha256": "e660e95d46a061afc44bc98035718243b8409f5d9a5795749cb0d6e941238c82"
     },
     "linux-386": {
       "goos": "linux",
@@ -25,7 +25,7 @@
       "asset": "grclib-linux-x86.zip",
       "library": "grclib.so",
       "path": "native/linux-386/grclib.so",
-      "sha256": "b0d7c35da39b30c6ebf880946589e3bc10f59de50ace8d7fa5ea4d1bcd8f096c"
+      "sha256": "6bd37a242aac29a062cb58e4f60f9d31a3b5749b48300c2295c8b5df25563237"
     },
     "linux-amd64": {
       "goos": "linux",
@@ -33,7 +33,7 @@
       "asset": "grclib-linux-x64.zip",
       "library": "grclib.so",
       "path": "native/linux-amd64/grclib.so",
-      "sha256": "00ccb2d55bd97c3a6ea039873dcf44e2203cf11ca9e197122bff33c2a553c632"
+      "sha256": "d1edc699ca3de3eb57a52750fa244ed0686703a9117bfac6aaa46106dd886f85"
     },
     "windows-386": {
       "goos": "windows",
@@ -41,7 +41,7 @@
       "asset": "grclib-windows-x86.zip",
       "library": "grclib.dll",
       "path": "native/windows-386/grclib.dll",
-      "sha256": "2570fbc8e69523eaf0d881f2542346ad3ff3396393852564c419fff8af234b19"
+      "sha256": "9893feac544fe3a60783dc549563a22d856961cf9f862be0aeb82a082a7e63c3"
     },
     "windows-amd64": {
       "goos": "windows",
@@ -49,7 +49,7 @@
       "asset": "grclib-windows-x64.zip",
       "library": "grclib64.dll",
       "path": "native/windows-amd64/grclib64.dll",
-      "sha256": "d35742971d2afd61f80fea98291367b44fb2fbca064855691c4ea16b476aebff"
+      "sha256": "50bd0b76b4dd8abe72558d5d0d4069ed694c2155661dcbd8e6bd959e0e744352"
     }
   }
 }

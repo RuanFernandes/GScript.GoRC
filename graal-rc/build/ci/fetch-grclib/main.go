@@ -69,7 +69,7 @@ var targets = []nativeTarget{
 
 func main() {
 	rootFlag := flag.String("root", ".", "GoRC repository root")
-	releaseFlag := flag.String("release", "v1.0.46", "GScript.GRClib release tag")
+	releaseFlag := flag.String("release", "v1.0.51", "GScript.GRClib release tag")
 	checkFlag := flag.Bool("check", false, "validate the checked-in native libraries without network access")
 	forceFlag := flag.Bool("force", false, "redownload libraries even when the manifest already matches")
 	flag.Parse()
@@ -320,7 +320,7 @@ func writeAtomic(path string, data []byte, windows bool) error {
 func normalizeTag(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return "v1.0.46"
+		return "v1.0.51"
 	}
 	if !strings.HasPrefix(strings.ToLower(value), "v") {
 		return "v" + value
