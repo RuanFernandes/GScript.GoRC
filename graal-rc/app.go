@@ -2789,7 +2789,10 @@ func (a *App) AppendPmLog(otherAccount, line string) error {
 	if !enabled || dir == "" {
 		return nil
 	}
-	server := sanitizeName(a.sessions.Status().ServerName)
+	// Incoming PMs are logged from a grclib callback that holds the native call
+	// lock, so the server name must come from session state, not a native probe.
+	identity, _ := a.sessions.SessionIdentity()
+	server := sanitizeName(identity.ServerName)
 	other := sanitizeName(otherAccount)
 	if err := os.MkdirAll(filepath.Join(dir, server), 0o755); err != nil {
 		return err

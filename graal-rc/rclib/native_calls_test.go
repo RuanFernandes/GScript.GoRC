@@ -85,6 +85,30 @@ func TestNativeWatchdogRepeatsStallsAndReportsProgress(t *testing.T) {
 	}
 }
 
+func TestNativeWatchdogDumpsStacksOncePerStalledCall(t *testing.T) {
+	var watchdog nativeCallWatchdog
+	var reports []nativeCallReport
+	report := func(value nativeCallReport) { reports = append(reports, value) }
+	started := time.Unix(100, 0)
+	stats := NativeCallStats{ActiveOperation: "rc_process_events", ActiveCallID: 1}
+
+	stats.ActiveDuration = nativeStallThreshold
+	watchdog.observe(stats, started.Add(stats.ActiveDuration), report)
+	stats.ActiveDuration = nativeStackDumpThreshold + nativeStallThreshold
+	watchdog.observe(stats, started.Add(stats.ActiveDuration), report)
+	stats.ActiveDuration += 2 * nativeReportInterval
+	watchdog.observe(stats, started.Add(stats.ActiveDuration), report)
+	if len(reports) != 3 || reports[0].dumpStacks || !reports[1].dumpStacks || reports[2].dumpStacks {
+		t.Fatalf("stack dump was not emitted exactly once after threshold: %+v", reports)
+	}
+
+	stats = NativeCallStats{ActiveOperation: "rc_process_events", ActiveCallID: 2, ActiveDuration: nativeStackDumpThreshold}
+	watchdog.observe(stats, started.Add(10*time.Minute), report)
+	if last := reports[len(reports)-1]; last.event != "stalled" || !last.dumpStacks {
+		t.Fatalf("a new stalled call did not get its own stack dump: %+v", reports)
+	}
+}
+
 func TestNativeWatchdogSummarizesOnlyChangedSlowCounters(t *testing.T) {
 	var watchdog nativeCallWatchdog
 	var reports []nativeCallReport
