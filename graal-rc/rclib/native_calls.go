@@ -2,6 +2,7 @@ package rclib
 
 import (
 	"log"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -12,6 +13,10 @@ const (
 	nativeSlowWaitThreshold = 250 * time.Millisecond
 	nativeStallThreshold    = 5 * time.Second
 	nativeReportInterval    = 30 * time.Second
+	// A call blocked this long is dumped once with every goroutine stack, since
+	// the owner of a lock that a callback waits on is otherwise invisible.
+	nativeStackDumpThreshold = 30 * time.Second
+	nativeStackDumpMaxBytes  = 4 << 20
 )
 
 // NativeCallStats contains timings and counts only. Operation names are native
@@ -137,14 +142,16 @@ func MonitorNativeCalls(stop <-chan struct{}) {
 }
 
 type nativeCallReport struct {
-	event     string
-	operation string
-	stats     NativeCallStats
+	event      string
+	operation  string
+	stats      NativeCallStats
+	dumpStacks bool
 }
 
 type nativeCallWatchdog struct {
 	stalledID        uint64
 	stalledOperation string
+	dumpedID         uint64
 	lastStallReport  time.Time
 	lastSlowReport   time.Time
 	reportedSlow     uint64
@@ -174,7 +181,11 @@ func (w *nativeCallWatchdog) observe(stats NativeCallStats, now time.Time, repor
 	}
 	if stats.ActiveCallID != 0 && stats.ActiveDuration >= nativeStallThreshold &&
 		(w.stalledID != stats.ActiveCallID || now.Sub(w.lastStallReport) >= nativeReportInterval) {
-		report(nativeCallReport{event: "stalled", operation: stats.ActiveOperation, stats: stats})
+		dumpStacks := stats.ActiveDuration >= nativeStackDumpThreshold && w.dumpedID != stats.ActiveCallID
+		if dumpStacks {
+			w.dumpedID = stats.ActiveCallID
+		}
+		report(nativeCallReport{event: "stalled", operation: stats.ActiveOperation, stats: stats, dumpStacks: dumpStacks})
 		w.stalledID = stats.ActiveCallID
 		w.stalledOperation = stats.ActiveOperation
 		w.lastStallReport = now
@@ -188,11 +199,25 @@ func (w *nativeCallWatchdog) observe(stats NativeCallStats, now time.Time, repor
 	}
 }
 
+func goroutineStacks() []byte {
+	buf := make([]byte, 256<<10)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) || len(buf) >= nativeStackDumpMaxBytes {
+			return buf[:n]
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+}
+
 func logNativeCallReport(report nativeCallReport) {
 	s := report.stats
 	switch report.event {
 	case "stalled":
 		log.Printf("[rclib] native call stalled operation=%s elapsed=%s waiting=%d; call remains active", report.operation, s.ActiveDuration.Round(time.Millisecond), s.WaitingCalls)
+		if report.dumpStacks {
+			log.Printf("[rclib] goroutine stacks during stalled %s:\n%s", report.operation, goroutineStacks())
+		}
 	case "resumed":
 		log.Printf("[rclib] native call exited after stall operation=%s completed=%d waiting=%d", report.operation, s.CompletedCalls, s.WaitingCalls)
 	case "slow":
