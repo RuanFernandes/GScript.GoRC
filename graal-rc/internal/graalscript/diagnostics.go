@@ -504,7 +504,7 @@ func (p *semicolonParser) isControlKeyword(index int) bool {
 		return false
 	}
 	switch strings.ToLower(p.tokens[index].text) {
-	case "if", "for", "while", "switch", "with", "else", "try", "catch", "finally", "do":
+	case "if", "elseif", "for", "while", "switch", "with", "else", "try", "catch", "finally", "do":
 		return true
 	default:
 		return false

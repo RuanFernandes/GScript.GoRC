@@ -89,6 +89,24 @@ func TestDiagnosticsReportMissingSemicolonsWithoutFlaggingControlBlocks(t *testi
 	}
 }
 
+func TestDiagnosticsAllowElseifBlocks(t *testing.T) {
+	text := `function onCreated() {
+  if (temp.a == 1) {
+    temp.value = 1;
+  }
+  elseif (temp.a >= 0.4) {
+    temp.value = 2;
+  }
+  else {
+    temp.value = 3;
+  }
+}`
+
+	if diagnostics := parseDocument("memory://elseif-blocks", text, 1).diagnostics(); len(diagnostics) != 0 {
+		t.Fatalf("elseif block produced diagnostics: %#v", diagnostics)
+	}
+}
+
 func TestDiagnosticsAllowNestedGUIObjectBlocksWithoutSemicolons(t *testing.T) {
 	text := `new GuiControl("Name") {
   this.width = 10;
