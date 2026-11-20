@@ -3,6 +3,8 @@ package connection
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -52,6 +54,94 @@ func TestRunScriptFetchJobsDoesNotTreatAllTimeoutsAsEmptyServer(t *testing.T) {
 	}, nil)
 	if len(replies) != 0 || !errors.Is(err, ErrIncompleteScriptSnapshot) {
 		t.Fatalf("fetch returned %d replies, %v; want an incomplete snapshot", len(replies), err)
+	}
+}
+
+func TestRetryScriptFailuresReadsNeighboursOfALostReplyOnTheirOwn(t *testing.T) {
+	failures := []scriptFetchFailure{
+		{job: scriptFetchJob{stype: "weapon", key: "neighbour", name: "neighbour"}, err: errors.New("script request timed out")},
+		{job: scriptFetchJob{stype: "weapon", key: "Staff/News", name: "Staff/News"}, err: errors.New("script request timed out")},
+		{job: scriptFetchJob{stype: "npc", key: "1004", name: "Guard"}, err: errors.New("script request timed out")},
+	}
+	var order []string
+	recovered, unreadable, err := retryScriptFailures(context.Background(), failures, func(_ context.Context, job scriptFetchJob) (rclib.ScriptReply, error) {
+		order = append(order, job.stype+":"+job.key)
+		if job.key == "Staff/News" {
+			return rclib.ScriptReply{}, errors.New("script request timed out")
+		}
+		return rclib.ScriptReply{Type: job.stype, Script: "content"}, nil
+	})
+	if err != nil {
+		t.Fatalf("retry error = %v", err)
+	}
+	if got := fmt.Sprint(order); got != "[weapon:neighbour weapon:Staff/News npc:1004]" {
+		t.Fatalf("retry order = %s; each failed script is read again, in order", got)
+	}
+	if len(recovered) != 2 || recovered[0].Type != "weapon" {
+		t.Fatalf("recovered = %+v; want the neighbour and the NPC", recovered)
+	}
+	if recovered[1].Type != "npc" || recovered[1].Name != "Guard" {
+		t.Fatalf("recovered NPC = %+v; the name of the cached list is kept", recovered[1])
+	}
+	if len(unreadable) != 1 || unreadable[0].job.key != "Staff/News" {
+		t.Fatalf("unreadable = %+v; want only the script that failed again", unreadable)
+	}
+}
+
+func TestRetryScriptFailuresStopsWhenTheConnectionGoesAway(t *testing.T) {
+	failures := []scriptFetchFailure{
+		{job: scriptFetchJob{stype: "weapon", key: "a", name: "a"}, err: errors.New("script request timed out")},
+		{job: scriptFetchJob{stype: "weapon", key: "b", name: "b"}, err: errors.New("script request timed out")},
+	}
+	for _, lost := range []error{errNCUnavailable, errConnectionSessionChanged} {
+		calls := 0
+		_, unreadable, err := retryScriptFailures(context.Background(), failures, func(context.Context, scriptFetchJob) (rclib.ScriptReply, error) {
+			calls++
+			return rclib.ScriptReply{}, lost
+		})
+		if !errors.Is(err, lost) || calls != 1 || len(unreadable) != 0 {
+			t.Fatalf("%v: err=%v calls=%d unreadable=%d; a lost connection must end the pass, not mark scripts unreadable", lost, err, calls, len(unreadable))
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := retryScriptFailures(ctx, failures, func(context.Context, scriptFetchJob) (rclib.ScriptReply, error) {
+		t.Fatal("a canceled context still started a read")
+		return rclib.ScriptReply{}, nil
+	}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled retry error = %v", err)
+	}
+}
+
+func TestUnreadableScriptsErrorIsAnIncompleteSnapshotThatNamesEachScript(t *testing.T) {
+	err := error(newUnreadableScriptsError([]scriptFetchFailure{
+		{job: scriptFetchJob{stype: "weapon", key: "Staff/News", name: "Staff/News"}, err: errors.New("script request timed out")},
+		{job: scriptFetchJob{stype: "npc", key: "1004", name: "Guard"}, err: errors.New("script request timed out")},
+	}, 3702))
+	if !errors.Is(err, ErrIncompleteScriptSnapshot) {
+		t.Fatal("a caller that does not know about unreadable scripts must still see an incomplete snapshot")
+	}
+	var unreadable *UnreadableScriptsError
+	if !errors.As(err, &unreadable) {
+		t.Fatal("the typed error is not reachable")
+	}
+	scripts, reasons := unreadable.UnreadableScripts()
+	if len(scripts) != 2 || scripts[0].Type != "weapon" || scripts[0].Name != "Staff/News" || scripts[1].Type != "npc" || scripts[1].ID != 1004 || scripts[1].Name != "Guard" {
+		t.Fatalf("scripts = %+v", scripts)
+	}
+	if len(reasons) != 2 || reasons[0] != "script request timed out" {
+		t.Fatalf("reasons = %v", reasons)
+	}
+	for _, want := range []string{"2 of 3702", "weapon:Staff/News", "npc:Guard"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q does not mention %q", err.Error(), want)
+		}
+	}
+	// The returned copies cannot be used to change the error.
+	scripts[0].Name = "changed"
+	if again, _ := unreadable.UnreadableScripts(); again[0].Name != "Staff/News" {
+		t.Fatal("UnreadableScripts returned the error's own slice")
 	}
 }
 

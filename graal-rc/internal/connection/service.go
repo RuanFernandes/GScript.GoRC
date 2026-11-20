@@ -553,7 +553,7 @@ func (s *Service) awaitEditor(w *editorWait, key string, isNew bool, kind string
 
 // resolvePending delivers a reply to the waiter for key (if any) and drops it.
 // Called from pump-goroutine callbacks; closing the waiter is non-blocking.
-func (s *Service) resolvePending(key string, reply rclib.ScriptReply) {
+func (s *Service) resolvePending(key string, reply rclib.ScriptReply) bool {
 	s.pendingMu.Lock()
 	w, ok := s.pending[key]
 	if ok {
@@ -561,6 +561,7 @@ func (s *Service) resolvePending(key string, reply rclib.ScriptReply) {
 		w.finish(reply, nil)
 	}
 	s.pendingMu.Unlock()
+	return ok
 }
 
 // cancelPending removes a waiter only if it is still the request that
@@ -3106,7 +3107,13 @@ func (s *Service) handleScriptReceived(scriptType, name string, id int, script s
 	if key == "" {
 		return
 	}
-	s.resolvePending(pendingKey(scriptType, key), rclib.ScriptReply{Type: scriptType, Name: name, ID: id, Script: script})
+	if !s.resolvePending(pendingKey(scriptType, key), rclib.ScriptReply{Type: scriptType, Name: name, ID: id, Script: script}) {
+		// Replies are matched to requests by exact name. A reply nobody waits for
+		// is either late (its request already timed out) or carries a name that
+		// differs from the one requested, which shows up as a request timeout.
+		// The quoted name makes stray whitespace and case differences visible.
+		log.Printf("[script reply] no waiter for %s name=%q id=%d bytes=%d", scriptType, name, id, len(script))
+	}
 }
 
 // requireHandle returns the active handle or an error.
@@ -3383,8 +3390,12 @@ func (s *Service) IsNCAuthenticated() bool {
 // waits on its own pending reply channel, so many requests are in flight at
 // once rather than strictly sequential — a large server that took a minute
 // serially now takes seconds. A single hung script times out (scriptTimeout,
-// 15s) does not abort other reads, but marks the snapshot incomplete. progress (optional)
-// reports done/total so the UI can show a background bar.
+// 15s) without aborting the other reads. Up to maxUnreadableScripts failed
+// reads are then repeated one at a time; scripts that fail again are returned
+// in an *UnreadableScriptsError together with every reply that did arrive.
+// More failures than that, or a lost connection, leave the snapshot simply
+// incomplete. progress (optional) reports done/total so the UI can show a
+// background bar.
 func (s *Service) FetchAllScripts(ctx context.Context, allowed func(scriptType, name string) bool, progress func(done, total int)) ([]rclib.ScriptReply, error) {
 	scope, err := s.captureSession()
 	if err != nil {
@@ -3454,44 +3465,140 @@ func (s *Service) FetchAllScripts(ctx context.Context, allowed func(scriptType, 
 	total := len(jobs)
 	log.Printf("[sync fetch] permission filter kept=%d skipped=%d", total, skipped)
 
-	replies, fetchErr := s.fetchScriptJobs(ctx, jobs, progress)
-	if err := s.checkSession(scope); err != nil {
-		return nil, err
+	fetch := func(ctx context.Context, job scriptFetchJob) (rclib.ScriptReply, error) {
+		return s.openScriptContext(ctx, job.stype, job.key, job.name)
 	}
 	// A dropped NC can leave a valid-looking partial reply slice while the
 	// workers are unwinding. Never let that slice become a reconciliation
 	// snapshot: the caller must retry after the socket is restored.
-	if errors.Is(fetchErr, errNCUnavailable) {
-		return nil, errNCUnavailable
+	usable := func(fetchErr error) error {
+		if err := s.checkSession(scope); err != nil {
+			return err
+		}
+		if errors.Is(fetchErr, errNCUnavailable) || !s.IsNCConnected() || !s.IsNCAuthenticated() {
+			return errNCUnavailable
+		}
+		return nil
 	}
-	if !s.IsNCConnected() || !s.IsNCAuthenticated() {
-		return nil, errNCUnavailable
+
+	// Keeping the job queue bounded is important here: a server can
+	// legitimately expose thousands of scripts, and creating one goroutine per
+	// script would retain a large amount of stack and scheduler state while the
+	// workers wait on the NC request limit.
+	result := collectScriptFetchJobs(ctx, jobs, ncFetchConcurrency, fetch, progress)
+	fetchErr := result.err(ctx, total)
+	if err := usable(fetchErr); err != nil {
+		return nil, err
 	}
-	return replies, fetchErr
+	if len(result.failures) == 0 || result.terminal != nil || ctx.Err() != nil {
+		return result.replies, fetchErr
+	}
+	if len(result.failures) > maxUnreadableScripts {
+		// This many failures is a connection problem, not a few scripts the
+		// server cannot deliver.
+		return result.replies, fetchErr
+	}
+
+	// The connection is usable and only a few reads failed. Ask for each of
+	// them again with nothing else in flight: a reply the server drops can take
+	// the reply batched next to it along, and that neighbour reads fine alone.
+	log.Printf("[sync fetch] %d script read(s) failed; reading them again one at a time", len(result.failures))
+	recovered, unreadable, retryErr := retryScriptFailures(ctx, result.failures, fetch)
+	if err := usable(retryErr); err != nil {
+		return nil, err
+	}
+	replies := append(result.replies, recovered...)
+	if retryErr != nil {
+		return replies, errors.Join(fetchErr, retryErr)
+	}
+	if len(unreadable) == 0 {
+		return replies, nil
+	}
+	return replies, newUnreadableScriptsError(unreadable, total)
 }
 
-// fetchScriptJobs processes a bulk script fetch with a fixed number of
-// workers. Keeping the job queue bounded is important here: a server can
-// legitimately expose thousands of scripts, and creating one goroutine per
-// script would retain a large amount of stack and scheduler state while the
-// workers wait on the NC request limit.
-func (s *Service) fetchScriptJobs(ctx context.Context, jobs []scriptFetchJob, progress func(done, total int)) ([]rclib.ScriptReply, error) {
-	return runScriptFetchJobs(ctx, jobs, ncFetchConcurrency, func(ctx context.Context, job scriptFetchJob) (rclib.ScriptReply, error) {
-		return s.openScriptContext(ctx, job.stype, job.key, job.name)
-	}, progress)
+// maxUnreadableScripts bounds how many failed reads FetchAllScripts will
+// repeat one at a time (each waits up to scriptTimeout) and report as
+// unreadable instead of failing the snapshot.
+const maxUnreadableScripts = 16
+
+// scriptFetchFailure is one script read that did not produce a reply.
+type scriptFetchFailure struct {
+	job scriptFetchJob
+	err error
+}
+
+// scriptFetchResult is the outcome of one pass over a list of script reads.
+type scriptFetchResult struct {
+	replies  []rclib.ScriptReply
+	failures []scriptFetchFailure // in the order they failed
+	// terminal is set when the pass stopped because the NC connection or the
+	// session went away; the remaining reads were not attempted.
+	terminal error
+}
+
+// err folds the result into the error FetchAllScripts has always reported.
+func (r scriptFetchResult) err(ctx context.Context, total int) error {
+	if r.terminal != nil {
+		return r.terminal
+	}
+	if len(r.failures) > 0 {
+		first := r.failures[0]
+		firstErr := fmt.Errorf("%s:%s: %w", first.job.stype, first.job.key, first.err)
+		return errors.Join(fmt.Errorf("%w: %d of %d script reads failed: %w", ErrIncompleteScriptSnapshot, len(r.failures), total, firstErr), ctx.Err())
+	}
+	return ctx.Err()
+}
+
+// retryScriptFailures reads each failed script again, one at a time. It
+// returns the replies that arrived this time and the scripts that failed
+// again. err is set, and the pass abandoned, when the connection, the session
+// or the context ended.
+func retryScriptFailures(ctx context.Context, failures []scriptFetchFailure, fetch func(context.Context, scriptFetchJob) (rclib.ScriptReply, error)) (recovered []rclib.ScriptReply, unreadable []scriptFetchFailure, err error) {
+	for _, failure := range failures {
+		if err := ctx.Err(); err != nil {
+			return recovered, unreadable, err
+		}
+		reply, fetchErr := fetch(ctx, failure.job)
+		if fetchErr == nil {
+			if reply.Type == "npc" && reply.Name == "" {
+				reply.Name = failure.job.name
+			}
+			recovered = append(recovered, reply)
+			log.Printf("[sync fetch] %s:%s was read on its own", failure.job.stype, failure.job.key)
+			continue
+		}
+		if errors.Is(fetchErr, errNCUnavailable) || errors.Is(fetchErr, errConnectionSessionChanged) {
+			return recovered, unreadable, fetchErr
+		}
+		if err := ctx.Err(); err != nil {
+			return recovered, unreadable, err
+		}
+		log.Printf("[sync fetch] %s:%s failed again on its own: %v", failure.job.stype, failure.job.key, fetchErr)
+		unreadable = append(unreadable, scriptFetchFailure{job: failure.job, err: fetchErr})
+	}
+	return recovered, unreadable, nil
 }
 
 func runScriptFetchJobs(ctx context.Context, jobs []scriptFetchJob, workerCount int, fetch func(context.Context, scriptFetchJob) (rclib.ScriptReply, error), progress func(done, total int)) ([]rclib.ScriptReply, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	result := collectScriptFetchJobs(ctx, jobs, workerCount, fetch, progress)
+	return result.replies, result.err(ctx, len(jobs))
+}
+
+// collectScriptFetchJobs processes a bulk script fetch with a fixed number of
+// workers and keeps every failure, so the caller can tell a few scripts the
+// server did not deliver from a connection that stopped answering.
+func collectScriptFetchJobs(ctx context.Context, jobs []scriptFetchJob, workerCount int, fetch func(context.Context, scriptFetchJob) (rclib.ScriptReply, error), progress func(done, total int)) scriptFetchResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	total := len(jobs)
 	out := make([]rclib.ScriptReply, 0, total)
-	if total == 0 {
-		return out, ctx.Err()
-	}
-	if err := ctx.Err(); err != nil {
-		return out, err
+	if total == 0 || ctx.Err() != nil {
+		return scriptFetchResult{replies: out}
 	}
 	workCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -3506,8 +3613,7 @@ func runScriptFetchJobs(ctx context.Context, jobs []scriptFetchJob, workerCount 
 	var outMu sync.Mutex
 	var fetchErrMu sync.Mutex
 	var terminalFetchErr error
-	var firstFetchErr error
-	failed := 0
+	var failures []scriptFetchFailure
 	var wg sync.WaitGroup
 	var done int32
 	wg.Add(workerCount)
@@ -3535,10 +3641,7 @@ func runScriptFetchJobs(ctx context.Context, jobs []scriptFetchJob, workerCount 
 						outMu.Unlock()
 					} else {
 						fetchErrMu.Lock()
-						failed++
-						if firstFetchErr == nil {
-							firstFetchErr = fmt.Errorf("%s:%s: %w", j.stype, j.key, err)
-						}
+						failures = append(failures, scriptFetchFailure{job: j, err: err})
 						if errors.Is(err, errNCUnavailable) || errors.Is(err, errConnectionSessionChanged) {
 							if terminalFetchErr == nil {
 								terminalFetchErr = err
@@ -3569,16 +3672,8 @@ sendJobs:
 	}
 	close(jobCh)
 	wg.Wait()
-	fetchErrMu.Lock()
-	deferredErr := terminalFetchErr
-	fetchErrMu.Unlock()
-	if deferredErr != nil {
-		return out, deferredErr
-	}
-	if failed > 0 {
-		return out, errors.Join(fmt.Errorf("%w: %d of %d script reads failed: %w", ErrIncompleteScriptSnapshot, failed, total, firstFetchErr), ctx.Err())
-	}
-	return out, ctx.Err()
+	// Every worker has returned, so the shared slices are no longer written.
+	return scriptFetchResult{replies: out, failures: failures, terminal: terminalFetchErr}
 }
 
 // AddWeapon creates a weapon by name.

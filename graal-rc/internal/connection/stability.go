@@ -22,6 +22,50 @@ var (
 	ErrConnectionSessionChanged = errConnectionSessionChanged
 )
 
+// UnreadableScriptsError reports listed scripts the server did not deliver,
+// not even when each was requested again on its own, while the NC connection
+// stayed usable and every other script was read. A reply too large for one NC
+// frame is the known cause: the server sends nothing for that script.
+//
+// It still is an incomplete snapshot (errors.Is(err,
+// ErrIncompleteScriptSnapshot)), so a caller that knows nothing about it fails
+// as before. A caller that leaves those scripts alone can use the replies
+// returned with it: they are complete for every other script.
+type UnreadableScriptsError struct {
+	scripts []rclib.ScriptReply
+	reasons []string
+	total   int
+}
+
+func newUnreadableScriptsError(failures []scriptFetchFailure, total int) *UnreadableScriptsError {
+	e := &UnreadableScriptsError{total: total}
+	for _, failure := range failures {
+		script := rclib.ScriptReply{Type: failure.job.stype, Name: failure.job.name}
+		if failure.job.stype == "npc" {
+			script.ID, _ = strconv.Atoi(failure.job.key)
+		}
+		e.scripts = append(e.scripts, script)
+		e.reasons = append(e.reasons, failure.err.Error())
+	}
+	return e
+}
+
+func (e *UnreadableScriptsError) Error() string {
+	names := make([]string, 0, len(e.scripts))
+	for i, script := range e.scripts {
+		names = append(names, fmt.Sprintf("%s:%s: %s", script.Type, script.Name, e.reasons[i]))
+	}
+	return fmt.Sprintf("%v: %d of %d scripts were not delivered by the server: %s", ErrIncompleteScriptSnapshot, len(e.scripts), e.total, strings.Join(names, "; "))
+}
+
+func (e *UnreadableScriptsError) Unwrap() error { return ErrIncompleteScriptSnapshot }
+
+// UnreadableScripts identifies each script by Type, Name and (for an NPC) ID,
+// with the reason its read failed at the same index.
+func (e *UnreadableScriptsError) UnreadableScripts() (scripts []rclib.ScriptReply, reasons []string) {
+	return append([]rclib.ScriptReply(nil), e.scripts...), append([]string(nil), e.reasons...)
+}
+
 // SessionIdentity contains no credentials and can safely identify local drafts.
 // Epoch is process-local and prevents work started before a transition from
 // opening a window or dispatching a request in the replacement session.

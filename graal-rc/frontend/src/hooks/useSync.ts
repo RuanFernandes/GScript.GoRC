@@ -24,6 +24,7 @@ const EMPTY_STATUS: SyncStatus = {
   syncGeneration: 0,
   reviewCount: 0,
   items: [],
+  unreadable: [],
   progress: {active: false, phase: "", current: "", completed: 0, total: 0},
   nextSyncAt: 0,
   permissionsReady: false,
