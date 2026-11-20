@@ -19,6 +19,8 @@ type Backend interface {
 	FileBrowserCd(path string) error
 	FileBrowserFiles() ([]File, error)
 	ReadFile(path string) ([]byte, error)
+
+	ScriptBackend
 }
 
 type ChatLine struct {
@@ -107,6 +109,20 @@ func (s *Server) call(ctx context.Context, method string, raw json.RawMessage) (
 }
 
 func toolDefinitions() []map[string]any {
+	return append(sessionToolDefinitions(), scriptToolDefinitions()...)
+}
+
+// ToolNames lists every tool the server exposes, in tools/list order.
+func ToolNames() []string {
+	definitions := toolDefinitions()
+	names := make([]string, 0, len(definitions))
+	for _, definition := range definitions {
+		names = append(names, definition["name"].(string))
+	}
+	return names
+}
+
+func sessionToolDefinitions() []map[string]any {
 	return []map[string]any{
 		{"name": "get_rc_chat", "description": "Retorna as últimas mensagens do RC Chat com timestamp.", "inputSchema": objectSchema(map[string]any{
 			"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 50, "default": 50},
@@ -127,8 +143,36 @@ func toolDefinitions() []map[string]any {
 	}
 }
 
-func objectSchema(properties map[string]any) map[string]any {
-	return map[string]any{"type": "object", "properties": properties, "additionalProperties": false}
+func objectSchema(properties map[string]any, required ...string) map[string]any {
+	schema := map[string]any{"type": "object", "properties": properties, "additionalProperties": false}
+	if len(required) > 0 {
+		schema["required"] = required
+	}
+	return schema
+}
+
+func textResult(value any) (any, *rpcError) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil, &rpcError{-32603, err.Error()}
+	}
+	return map[string]any{"content": []map[string]string{{"type": "text", "text": string(encoded)}}, "isError": false}, nil
+}
+
+func toolError(err error) (any, *rpcError) {
+	if err == nil {
+		err = errors.New("tool failed")
+	}
+	return map[string]any{"content": []map[string]string{{"type": "text", "text": err.Error()}}, "isError": true}, nil
+}
+
+// toolDone reports an action that has no payload: an error result when it
+// failed, {"ok":true} when it worked.
+func toolDone(err error) (any, *rpcError) {
+	if err != nil {
+		return toolError(err)
+	}
+	return textResult(map[string]any{"ok": true})
 }
 
 func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcError) {
@@ -142,19 +186,7 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 	if err := ctx.Err(); err != nil {
 		return nil, &rpcError{-32603, err.Error()}
 	}
-	textResult := func(value any) (any, *rpcError) {
-		encoded, err := json.Marshal(value)
-		if err != nil {
-			return nil, &rpcError{-32603, err.Error()}
-		}
-		return map[string]any{"content": []map[string]string{{"type": "text", "text": string(encoded)}}, "isError": false}, nil
-	}
-	fail := func(err error) (any, *rpcError) {
-		if err == nil {
-			err = errors.New("tool failed")
-		}
-		return map[string]any{"content": []map[string]string{{"type": "text", "text": err.Error()}}, "isError": true}, nil
-	}
+	fail := toolError
 	switch p.Name {
 	case "get_rc_chat":
 		limit := intArg(p.Arguments, "limit", 50)
@@ -167,7 +199,7 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 		if !ok || strings.TrimSpace(message) == "" {
 			return nil, &rpcError{-32602, "message is required"}
 		}
-		return fail(s.backend.SendRCChat(message))
+		return toolDone(s.backend.SendRCChat(message))
 	case "filebrowser_list":
 		if err := s.backend.FileBrowserStart(); err != nil {
 			return fail(err)
@@ -182,7 +214,7 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 		if !ok {
 			return nil, &rpcError{-32602, "path is required"}
 		}
-		return fail(s.backend.FileBrowserCd(path))
+		return toolDone(s.backend.FileBrowserCd(path))
 	case "filebrowser_search":
 		query, ok := stringArg(p.Arguments, "query")
 		if !ok || strings.TrimSpace(query) == "" {
@@ -217,6 +249,9 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 		}
 		return textResult(map[string]any{"path": path, "content": string(content)})
 	default:
+		if result, rpcErr, handled := s.callScriptTool(p.Name, p.Arguments); handled {
+			return result, rpcErr
+		}
 		return nil, &rpcError{-32601, "unknown tool: " + p.Name}
 	}
 }

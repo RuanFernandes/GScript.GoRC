@@ -13,12 +13,17 @@ import (
 	"strings"
 	"time"
 
+	"graal-rc/internal/fileutil"
 	"graal-rc/internal/mcp"
 )
 
 const defaultMCPAddress = "127.0.0.1:8765"
 
-const mcpInstructionsStart = "#Nullborne Go RC INSTRUCTIONS START#"
+const (
+	mcpInstructionsStart = "#Nullborne Go RC INSTRUCTIONS START#"
+	mcpInstructionsEnd   = "#END"
+	mcpInstructionsFence = "#-----------#"
+)
 
 type MCPAgentStatus struct {
 	Name          string `json:"name"`
@@ -41,28 +46,87 @@ func mcpInstructionBlock() string {
 #Nullborne Go RC INSTRUCTIONS START#
 
 You can use the Graal RC MCP server at http://127.0.0.1:8765/mcp when the Graal
-RC desktop client is running. It uses the MCP HTTP JSON-RPC
-transport. Use these tools only when the user asks you to inspect or operate
-their connected Graal RC session:
+RC desktop client is running. It uses the MCP HTTP JSON-RPC transport. Use
+these tools only when the user asks you to inspect or operate their connected
+Graal RC session.
 
 This MCP is specifically for Graal development, including GraalScript and GS2.
-When helping with GraalScript/GS2 code, use it to inspect the latest RC Chat
-messages for runtime errors and to read relevant remote scripts through the
-Graal File Browser when the user requests that context.
+Use it to read and change the server's weapons, classes and NPCs, to read
+remote files through the Graal File Browser, and to read the RC Chat for the
+server's confirmations and script errors.
 
-- get_rc_chat: read the latest RC Chat messages with UTC timestamps. It accepts
-  an optional limit from 1 to 50 and is useful for diagnosing server commands
-  and runtime errors.
-- send_rc_chat: send a message or RC command. Ask for confirmation before
-  sending anything consequential or public.
+How a script change reaches the server
+--------------------------------------
+There is no upload, deploy or "apply on the server" step. Never tell the user
+to update, upload or reload a script on the server, and never ask them to do it
+for you: saving the change is the deployment.
+
+- Graal RC keeps a local folder synchronized with the server's scripts. Call
+  sync_status to get that folder. It holds weapons/<name>.gs2,
+  classes/<name>.gs2 and npcs/<name>.gs2.
+- When one of those files is saved with at least one character changed, Graal
+  RC uploads it within about a second and the server applies the new script
+  immediately. Saving a file whose content did not change uploads nothing.
+- A new .gs2 file in weapons/ or classes/ creates that weapon or class. A new
+  file in npcs/ does not create an NPC: use npc_add.
+- script_write, weapon_add, class_add and npc_add change the server directly
+  and take effect at once as well; the local file is then refreshed from the
+  server, so do not also edit the file for the same change.
+- After every change, call get_rc_chat. The server prints a line such as
+  "Weapon/GUI-script <name> added/updated by <account>", "Script <class>
+  updated by <account>" or "The script of NPC <name> has been updated by
+  <account>", followed by any script error. That line is the proof that the
+  change is live. If it is missing, call sync_status: sync may be paused, in
+  panic mode, have auto push turned off, or the NC connection may be down.
+- Nothing here deletes scripts. Removing a local file does not remove the
+  script from the server, and there is no delete tool; deleting a weapon,
+  class or NPC is something the user does in Graal RC.
+
+Tools
+-----
+RC Chat
+- get_rc_chat: read the latest RC Chat messages with UTC timestamps. Optional
+  {"limit"} from 1 to 50. Use it to confirm a script change and to read
+  runtime errors.
+- send_rc_chat: send a message or RC command with {"message"}. Ask for
+  confirmation before sending anything consequential or public.
+
+Scripts (type is "weapon", "class" or "npc"; names are case-sensitive; an NPC
+is addressed by {"id"}, or by {"name"} when the name is unique)
+- script_list: list the scripts this account can read. Optional {"type"} and
+  {"query"} (part of the name).
+- script_read: read one script from the server with {"type", "name"} or
+  {"type": "npc", "id"}. The reply includes "localPath", the synchronized file,
+  when sync is enabled.
+- script_write: replace the content of an existing script with {"type",
+  "name" or "id", "script"}. It does not create scripts.
+- weapon_add: create a weapon with {"name"} and optional {"script"}.
+- class_add: create a class with {"name"} and optional {"script"}.
+- npc_add: create a database NPC with {"name"} and optional {"id", "npcType",
+  "scripter", "level", "x", "y", "script"}. Without "id" it uses the first free
+  id from 1000 up.
+- npc_reset: restart an NPC.
+- npc_warp: move an NPC with {"level", "x", "y"}.
+- npc_flags_read / npc_flags_write: read or replace an NPC's flags ({"flags"}
+  is the complete text, one flag per line).
+- npc_attributes_read: read an NPC's attributes.
+- script_refresh: ask the server for the weapon list again.
+- sync_status: the sync folder, whether auto push and auto pull are on, and
+  whether sync is paused or failing.
+
+The add tools refuse a name that already exists, so they cannot overwrite a
+script; use script_write for that. Before a large rewrite, read the script
+first and keep the parts you are not changing.
+
+File Browser
 - filebrowser_list: refresh and list the current remote File Browser folder.
 - filebrowser_cd: change the current remote File Browser folder with {"path"}.
 - filebrowser_search: search the current File Browser snapshot with {"query"}.
 - filebrowser_read: download and read a remote UTF-8 text file with {"path"}.
 
 The server is local-only and may be unavailable when Graal RC is closed. Do not
-expose it on a public interface. Never infer or invent file contents when a
-tool call fails; report the failure and ask the user what to do next.
+expose it on a public interface. Never infer or invent file or script contents
+when a tool call fails; report the failure and ask the user what to do next.
 #END
 #-----------#
 `
@@ -116,37 +180,69 @@ func (a *App) SetupMCP(name string) (MCPSetupResult, error) {
 		}
 	}
 	content, readErr := os.ReadFile(path)
-	if readErr == nil && strings.Contains(string(content), mcpInstructionsStart) {
-		return MCPSetupResult{Name: name, Path: path, Configured: true}, nil
-	}
 	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
 		return MCPSetupResult{}, readErr
+	}
+	created := readErr != nil
+	updated, err := withMCPInstructions(string(content))
+	if err != nil {
+		return MCPSetupResult{}, fmt.Errorf("%s: %w", path, err)
+	}
+	if !created && updated == string(content) {
+		return MCPSetupResult{Name: name, Path: path, Configured: true}, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return MCPSetupResult{}, err
 	}
-	if len(content) > 0 && !strings.HasSuffix(string(content), "\n") {
-		content = append(content, '\n')
-	}
 	mode := os.FileMode(0o600)
-	created := readErr != nil
 	if !created {
 		if info, statErr := os.Stat(path); statErr == nil {
 			mode = info.Mode().Perm()
 		}
 	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, mode)
-	if err != nil {
-		return MCPSetupResult{}, err
-	}
-	if _, err := file.Write(append(content, []byte(mcpInstructionBlock())...)); err != nil {
-		_ = file.Close()
-		return MCPSetupResult{}, err
-	}
-	if err := file.Close(); err != nil {
+	// The file belongs to the user and usually holds their own instructions, so
+	// it is replaced atomically and the previous version is kept as path+.bak.
+	if err := fileutil.AtomicWriteFile(path, []byte(updated), mode); err != nil {
 		return MCPSetupResult{}, err
 	}
 	return MCPSetupResult{Name: name, Path: path, Configured: true, Created: created}, nil
+}
+
+// withMCPInstructions returns content with the current instruction block
+// installed. A block written by an earlier version is replaced in place, so
+// agents that were already set up learn about new tools; otherwise the block
+// is appended after the user's own instructions.
+func withMCPInstructions(content string) (string, error) {
+	block := strings.TrimLeft(mcpInstructionBlock(), "\n")
+	start := strings.Index(content, mcpInstructionsStart)
+	if start < 0 {
+		if content == "" {
+			return block, nil
+		}
+		if !strings.HasSuffix(content, "\n") {
+			content += "\n"
+		}
+		return content + "\n" + block, nil
+	}
+
+	endMarker := "\n" + mcpInstructionsEnd
+	relativeEnd := strings.Index(content[start:], endMarker)
+	if relativeEnd < 0 {
+		return "", errors.New("the existing Graal RC instruction block has no #END line; remove the block by hand and run the setup again")
+	}
+	end := start + relativeEnd + len(endMarker)
+
+	// Take the fence lines around the block along with it.
+	if fence := strings.LastIndex(content[:start], mcpInstructionsFence); fence >= 0 &&
+		strings.TrimSpace(content[fence+len(mcpInstructionsFence):start]) == "" {
+		start = fence
+	}
+	if rest := strings.TrimLeft(content[end:], "\r\n"); strings.HasPrefix(rest, mcpInstructionsFence) {
+		end = len(content) - len(rest) + len(mcpInstructionsFence)
+	}
+	// The block ends with its own line break.
+	rest := strings.TrimPrefix(strings.TrimPrefix(content[end:], "\r"), "\n")
+	return content[:start] + block + rest, nil
 }
 
 // OpenMCPAgentFile opens the detected global instruction file with the

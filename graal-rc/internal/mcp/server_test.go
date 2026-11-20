@@ -14,7 +14,49 @@ type fakeBackend struct {
 	chat  []ChatLine
 	files []File
 	sent  string
+
+	// Script surface. calls counts every script method the server invoked.
+	scripts     []ScriptEntry
+	scriptErr   error
+	calls       int
+	listedKind  string
+	wroteRef    ScriptRef
+	wroteScript string
+	added       NewScript
 }
+
+func (f *fakeBackend) ListScripts(kind string) ([]ScriptEntry, error) {
+	f.calls++
+	f.listedKind = kind
+	return f.scripts, f.scriptErr
+}
+func (f *fakeBackend) ReadScript(ref ScriptRef) (Script, error) {
+	f.calls++
+	return Script{Type: ref.Type, Name: ref.Name}, f.scriptErr
+}
+func (f *fakeBackend) WriteScript(ref ScriptRef, script string) (Script, error) {
+	f.calls++
+	f.wroteRef, f.wroteScript = ref, script
+	return Script{Type: ref.Type, Name: ref.Name, Script: script}, f.scriptErr
+}
+func (f *fakeBackend) AddScript(spec NewScript) (Script, error) {
+	f.calls++
+	f.added = spec
+	return Script{Type: spec.Type, Name: spec.Name, Script: spec.Script}, f.scriptErr
+}
+func (f *fakeBackend) RefreshScripts() error    { f.calls++; return f.scriptErr }
+func (f *fakeBackend) ResetNPC(ScriptRef) error { f.calls++; return f.scriptErr }
+func (f *fakeBackend) WarpNPC(ScriptRef, string, float64, float64) error {
+	f.calls++
+	return f.scriptErr
+}
+func (f *fakeBackend) ReadNPCFlags(ScriptRef) (string, error) { f.calls++; return "", f.scriptErr }
+func (f *fakeBackend) WriteNPCFlags(ScriptRef, string) error  { f.calls++; return f.scriptErr }
+func (f *fakeBackend) ReadNPCAttributes(ScriptRef) (string, error) {
+	f.calls++
+	return "", f.scriptErr
+}
+func (f *fakeBackend) SyncStatus() SyncInfo { f.calls++; return SyncInfo{Layout: SyncLayout} }
 
 func (f *fakeBackend) GetRCChat(limit int) []ChatLine {
 	if limit > len(f.chat) {
