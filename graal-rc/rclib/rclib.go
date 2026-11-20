@@ -637,16 +637,26 @@ const maxString = 16 << 20
 // stop visibly and cancel waiters instead of continuing as if events were
 // healthy. Mirrors the try/catch around each event in grclib's
 // rc_process_events (grclib.cpp ~5042).
+//
+// recover() only stops a panic when the deferred function itself calls it, so
+// both entry points call it directly and hand the value on. Go 1.26+ enforces
+// that rule strictly; delegating the recover() to a helper lets the panic
+// through.
 func safeRecover(label string, userData uintptr) {
-	safeRecoverHandle(label, Handle(userData))
+	reportCallbackPanic(label, Handle(userData), recover())
 }
 
 func safeRecoverHandle(label string, h Handle) {
-	if r := recover(); r != nil {
-		err := fmt.Errorf("callback %s panicked: %v", label, r)
-		recordCallbackFault(h, err)
-		log.Printf("[rclib] %v\n%s", err, debug.Stack())
+	reportCallbackPanic(label, h, recover())
+}
+
+func reportCallbackPanic(label string, h Handle, r any) {
+	if r == nil {
+		return
 	}
+	err := fmt.Errorf("callback %s panicked: %v", label, r)
+	recordCallbackFault(h, err)
+	log.Printf("[rclib] %v\n%s", err, debug.Stack())
 }
 
 // callbackFault is a per-handle hand-off from a C-callable callback shim to the
