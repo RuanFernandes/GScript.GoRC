@@ -52,6 +52,7 @@ import {useFileBrowser} from "@/hooks/useFileBrowser"
 import {rcService} from "@/services/rcService"
 import type {FileBrowserEntry} from "@/types"
 import {buildFileBrowserTree, flattenFileBrowserTree, type FileBrowserTreeNode} from "@/lib/fileBrowserTree"
+import {startRemoteFileDrag} from "@/lib/fileDrag"
 
 // humanize turns a byte count into a compact human-readable size.
 function humanize(bytes: number): string {
@@ -115,6 +116,9 @@ export function FileBrowserWindowScreen() {
   const {t} = useLanguage()
   const fb = useFileBrowser(rcService)
   const [dragging, setDragging] = useState(false)
+  // URL prefix for dragging a remote file out to Explorer; null until the
+  // backend answers, which simply leaves the rows undraggable.
+  const [dragBase, setDragBase] = useState<string | null>(null)
   const fileDropTargetRef = useRef<HTMLElement>(null)
   const uploadInputRef = useRef<HTMLInputElement>(null)
   const [query, setQuery] = useState("")
@@ -126,6 +130,14 @@ export function FileBrowserWindowScreen() {
   const imageThumbnailsRef = useRef<Record<string, string>>({})
   const [visibleThumbnailPaths, setVisibleThumbnailPaths] = useState<Set<string>>(() => new Set())
   const [viewMode, setViewMode] = useState<"list" | "grid">("list")
+
+  useEffect(() => {
+    let cancelled = false
+    rcService.getFileDragBase()
+      .then((base) => { if (!cancelled) setDragBase(base) })
+      .catch(() => { /* dragging out is optional; the rest of the browser works without it */ })
+    return () => { cancelled = true }
+  }, [])
 
   useEffect(() => {
     const target = fileDropTargetRef.current
@@ -808,6 +820,7 @@ export function FileBrowserWindowScreen() {
               onContextMenu={(entry, x, y) => setCtx({x, y, entry})}
               onOpen={openFile}
               onThumbnailVisibility={updateThumbnailVisibility}
+              dragBase={dragBase}
             />
           ) : (
             <FileTable
@@ -823,6 +836,7 @@ export function FileBrowserWindowScreen() {
               onSelect={(path) => setSelected(path)}
               onContextMenu={(entry, x, y) => setCtx({x, y, entry})}
               onOpen={openFile}
+              dragBase={dragBase}
             />
           )}
           {dragging && (
@@ -1266,6 +1280,19 @@ type FileListingProps = {
   onContextMenu: (entry: FileBrowserEntry, x: number, y: number) => void
   onOpen: (entry: FileBrowserEntry) => void
   onThumbnailVisibility?: (path: string, visible: boolean) => void
+  /** URL prefix for dragging a file out to Explorer; files are not draggable without it. */
+  dragBase?: string | null
+}
+
+// A file row or card is draggable only when there is something to drag: a file,
+// and a base URL to point the drop target at.
+function remoteFileDragProps(entry: FileBrowserEntry, dragBase: string | null | undefined) {
+  return {
+    draggable: !entry.isDirectory && !!dragBase,
+    onDragStart: (event: React.DragEvent) => {
+      if (!startRemoteFileDrag(event.dataTransfer, dragBase ?? null, entry)) event.preventDefault()
+    },
+  }
 }
 
 function FileTable({
@@ -1281,6 +1308,7 @@ function FileTable({
   onSelect,
   onContextMenu,
   onOpen,
+  dragBase,
 }: FileListingProps) {
   const {t} = useLanguage()
   const [widths, setWidths] = useState({...DEFAULT_WIDTHS})
@@ -1417,6 +1445,7 @@ function FileTable({
                 e.preventDefault()
                 onContextMenu(entry, e.clientX, e.clientY)
               }}
+              {...remoteFileDragProps(entry, dragBase)}
             >
               <td className="overflow-hidden px-3 py-1.5">
                 <div className="flex min-w-0 items-center gap-2 text-left" title={basename(entry.path)}>
@@ -1436,6 +1465,7 @@ function FileTable({
                       alt=""
                       loading="lazy"
                       decoding="async"
+                      draggable={false}
                       className="border-border/60 size-8 shrink-0 rounded border object-cover"
                     />
                   ) : entry.isDirectory ? (
@@ -1484,6 +1514,7 @@ function FileGrid({
   onContextMenu,
   onOpen,
   onThumbnailVisibility,
+  dragBase,
 }: FileListingProps) {
   const {t} = useLanguage()
   const selectAllRef = useRef<HTMLInputElement>(null)
@@ -1563,6 +1594,7 @@ function FileGrid({
                 onContextMenu(entry, event.clientX, event.clientY)
               }}
               title={entry.path}
+              {...remoteFileDragProps(entry, dragBase)}
             >
               {!entry.isDirectory && (
                 <input
@@ -1581,6 +1613,7 @@ function FileGrid({
                     alt={name}
                     loading="lazy"
                     decoding="async"
+                    draggable={false}
                     className="size-full object-contain"
                   />
                 ) : entry.isDirectory ? (

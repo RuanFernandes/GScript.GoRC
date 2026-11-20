@@ -29,6 +29,7 @@ import (
 	"graal-rc/internal/credentials"
 	deploylib "graal-rc/internal/deploy"
 	"graal-rc/internal/drafts"
+	filedraglib "graal-rc/internal/filedrag"
 	gallerylib "graal-rc/internal/gallery"
 	"graal-rc/internal/graalscript"
 	pluginlib "graal-rc/internal/plugins"
@@ -52,6 +53,8 @@ type App struct {
 	sessions          *connection.Service
 	vault             *credentials.Vault
 	mcpServer         *http.Server
+	fileDrag          *filedraglib.Server
+	fileDragOnce      sync.Once
 	draftsMu          sync.Mutex
 	draftStore        *drafts.Store
 	recovery          connectionRecovery

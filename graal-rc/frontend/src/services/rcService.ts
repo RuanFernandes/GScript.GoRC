@@ -259,6 +259,7 @@ export interface RcService {
   cancelFileBrowserBackup(): Promise<void>
   uploadFileBytes(path: string, b64: string, remoteFileExists: boolean): Promise<void>
   uploadDroppedFile(localPath: string, remoteFolder: string): Promise<void>
+  getFileDragBase(): Promise<string>
   getFileBrowserConfig(): Promise<FileBrowserConfig>
   setFileBrowserConfig(downloadDir: string): Promise<void>
   setFileBrowserImageThumbnails(enabled: boolean): Promise<void>
@@ -613,6 +614,7 @@ export const rcService: RcService = {
   cancelFileBrowserBackup: () => App.CancelFileBrowserBackup(),
   uploadFileBytes: (path, b64, remoteFileExists) => App.UploadFileBytes(path, b64, remoteFileExists),
   uploadDroppedFile: (localPath, remoteFolder) => App.UploadDroppedFile(localPath, remoteFolder),
+  getFileDragBase: () => App.GetFileDragBase(),
   getFileBrowserConfig: () => App.GetFileBrowserConfig(),
   setFileBrowserConfig: (downloadDir) => App.SetFileBrowserConfig(downloadDir),
   setFileBrowserImageThumbnails: (enabled) => App.SetFileBrowserImageThumbnails(enabled),
