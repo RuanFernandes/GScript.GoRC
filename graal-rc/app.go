@@ -2060,9 +2060,16 @@ func (a *App) UploadFileBytes(remotePath, b64 string, _ bool) error {
 // and held until the upload is sent. Its fresh listing decides whether a file
 // is being replaced.
 func (a *App) uploadFileContent(remotePath string, content []byte) error {
+	_, err := a.uploadRemoteFile(remotePath, content)
+	return err
+}
+
+// uploadRemoteFile is uploadFileContent that also tells whether a file was
+// replaced.
+func (a *App) uploadRemoteFile(remotePath string, content []byte) (replaced bool, err error) {
 	checked := false
-	err := a.withRemoteFile(remotePath, func(file remoteFile) error {
-		checked = true
+	err = a.withRemoteFile(remotePath, func(file remoteFile) error {
+		checked, replaced = true, file.Exists
 		var entries []rclib.FileBrowserEntry
 		if file.Exists {
 			entries = []rclib.FileBrowserEntry{{Path: fileBrowserUploadBackupDownloadPath(remotePath)}}
@@ -2072,7 +2079,7 @@ func (a *App) uploadFileContent(remotePath string, content []byte) error {
 	if err != nil && !checked {
 		a.recordAudit("upload", "file", remotePath, "failed", err.Error())
 	}
-	return err
+	return replaced, err
 }
 
 // uploadIntoFolder uploads into the open folder whose listing is entries. An

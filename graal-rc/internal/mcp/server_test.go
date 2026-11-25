@@ -12,6 +12,8 @@ import (
 )
 
 type fakeBackend struct {
+	download DownloadedFile
+	uploaded UploadRequest
 	chat []ChatLine
 	sent string
 
@@ -62,6 +64,15 @@ func (f *fakeBackend) ReadNPCAttributes(ScriptRef) (string, error) {
 }
 func (f *fakeBackend) SyncStatus() SyncInfo { f.calls++; return SyncInfo{Layout: SyncLayout} }
 
+func (f *fakeBackend) DownloadFile(context.Context, string) (DownloadedFile, error) {
+	f.calls++
+	return f.download, nil
+}
+func (f *fakeBackend) UploadFile(_ context.Context, upload UploadRequest) (UploadResult, error) {
+	f.calls++
+	f.uploaded = upload
+	return UploadResult{Path: upload.Path}, nil
+}
 func (f *fakeBackend) GetRCChat(limit int) []ChatLine {
 	if limit > len(f.chat) {
 		limit = len(f.chat)

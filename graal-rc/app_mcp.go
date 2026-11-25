@@ -139,6 +139,18 @@ File Browser
   current folder, without entering subfolders. Before any folder is opened it
   matches the accessible folder patterns.
 - filebrowser_read: download and read a remote UTF-8 text file with {"path"}.
+- filebrowser_download: download any remote file with {"path"}. It is saved on
+  this computer and the reply gives "localPath" and "size". Text up to 256 KiB
+  also comes in "content"; PNG, GIF and JPG up to 2 MiB also come as an image.
+  Open any other file from "localPath". Downloading it again replaces the local
+  copy.
+- filebrowser_upload: write a file to the server with {"path"}, the full remote
+  destination including the file name, and either {"localPath"} (absolute path
+  on this computer) or {"content"} (text), never both. It takes effect at once
+  and replaces an existing file ("replaced" in the reply says so), after the
+  safety backup configured in Graal RC. Ask for confirmation before replacing a
+  file the user did not ask you to change. The reply means the file was sent,
+  not that the server accepted it: check with filebrowser_list.
 
 The server is local-only and may be unavailable when Graal RC is closed. Do not
 expose it on a public interface. Never infer or invent file or script contents

@@ -23,8 +23,14 @@ To build a redistributable, production mode package, use `wails build`.
 Ao iniciar, o cliente expõe um servidor MCP HTTP somente no loopback em
 `http://127.0.0.1:8765/mcp`. O endpoint implementa `initialize`, `tools/list` e
 `tools/call`, com as ferramentas `get_rc_chat`, `send_rc_chat`,
-`filebrowser_list`, `filebrowser_cd`, `filebrowser_search` e
-`filebrowser_read`.
+`filebrowser_list`, `filebrowser_cd`, `filebrowser_search`, `filebrowser_read`,
+`filebrowser_download` e `filebrowser_upload`.
+
+`filebrowser_download` salva qualquer arquivo remoto em `alpaxis-rc/mcp-downloads` (na pasta de configuração do
+usuário) e retorna o caminho local; texto de até 256 KiB e imagens PNG, GIF e JPG de até 2 MiB vêm também na
+resposta. `filebrowser_upload` envia um arquivo local (`localPath`) ou um texto (`content`) para o destino `path`,
+com o mesmo backup, limite de tamanho e auditoria do envio pela interface. Como o MCP não autentica programas
+locais, qualquer um deles pode enviar ao servidor um arquivo que o app consiga ler.
 
 O endereço pode ser alterado com `RC_MCP_ADDR`. A integração é deliberadamente
 local; não use `0.0.0.0` sem colocar autenticação e uma camada de rede segura na

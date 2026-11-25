@@ -39,6 +39,7 @@ Register this server as "${serverName}" in your MCP configuration. Then remember
 - Use get_rc_chat to inspect the latest 50 RC Chat messages with timestamps when debugging.
 - Ask before using send_rc_chat for any consequential or public message.
 - Use filebrowser_list, filebrowser_cd, filebrowser_search, and filebrowser_read to inspect remote UTF-8 text files through the RC File Browser.
+- Use filebrowser_download to get any remote file (it is saved locally and its path is returned) and filebrowser_upload to send a local file or text to a full remote path. An upload replaces an existing file at once, so ask before replacing a file the user did not ask you to change.
 - The server is local-only and is available while the Graal RC desktop client is running.
 
 After configuring it, verify the connection by listing the MCP tools.`

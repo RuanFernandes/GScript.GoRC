@@ -27,6 +27,7 @@ type Backend interface {
 	FileBrowserList(ctx context.Context, folder string) (Listing, error)
 	ReadFile(path string) ([]byte, error)
 
+	FileTransferBackend
 	ScriptBackend
 }
 
@@ -99,6 +100,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.write(w, response{JSONRPC: "2.0", ID: req.ID, Error: &rpcError{-32600, "invalid JSON-RPC request"}})
 		return
 	}
+	extendTransferDeadline(w, req.Method, req.Params)
 	result, rpcErr := s.call(r.Context(), req.Method, req.Params)
 	// Notifications do not receive a response per JSON-RPC.
 	if len(req.ID) == 0 || string(req.ID) == "null" {
@@ -136,7 +138,8 @@ func (s *Server) call(ctx context.Context, method string, raw json.RawMessage) (
 }
 
 func toolDefinitions() []map[string]any {
-	return append(sessionToolDefinitions(), scriptToolDefinitions()...)
+	definitions := append(sessionToolDefinitions(), fileToolDefinitions()...)
+	return append(definitions, scriptToolDefinitions()...)
 }
 
 // ToolNames lists every tool the server exposes, in tools/list order.
@@ -299,6 +302,9 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 		}
 		return textResult(map[string]any{"path": path, "content": string(content)})
 	default:
+		if result, rpcErr, handled := s.callFileTool(ctx, p.Name, p.Arguments); handled {
+			return result, rpcErr
+		}
 		if result, rpcErr, handled := s.callScriptTool(p.Name, p.Arguments); handled {
 			return result, rpcErr
 		}
