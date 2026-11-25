@@ -137,16 +137,42 @@ func writeRuleTargetsPrefix(pattern, prefix string) bool {
 	// Most server responses use rules such as WEAPONS/* or
 	// WEAPONS/MyWeapon. This fast path also catches exact writable scripts that
 	// are not present in the NC list yet.
-	if pattern == strings.TrimSuffix(prefix, "/") || strings.HasPrefix(pattern, prefix) {
+	lower, lowerPrefix := strings.ToLower(pattern), strings.ToLower(prefix)
+	if lower == strings.TrimSuffix(lowerPrefix, "/") || strings.HasPrefix(lower, lowerPrefix) {
 		return true
 	}
 
 	// A broad rule such as * or */WEAPONS/* can still match a resource below the
 	// requested directory. Probe a safe synthetic name instead of treating an
 	// arbitrary wildcard as a grant for every script type.
-	probe := prefix + "__gorc_write_permission_probe__"
-	matched, err := path.Match(pattern, probe)
-	return err == nil && matched
+	return matches(pattern, prefix+"__gorc_write_permission_probe__")
+}
+
+// matches compares a rule with a script path as Alpaxis needs: without regard
+// to case, "?" is one character and "*" is any run of characters, slashes
+// included, because a script name such as "-Staff/DevTools" is not a folder.
+func matches(pattern, resource string) bool {
+	p, r := []rune(strings.ToLower(pattern)), []rune(strings.ToLower(resource))
+	i, j, star, mark := 0, 0, -1, 0
+	for j < len(r) {
+		switch {
+		case i < len(p) && p[i] == '*':
+			star, mark = i, j
+			i++
+		case i < len(p) && (p[i] == '?' || p[i] == r[j]):
+			i++
+			j++
+		case star >= 0:
+			mark++
+			i, j = star+1, mark
+		default:
+			return false
+		}
+	}
+	for i < len(p) && p[i] == '*' {
+		i++
+	}
+	return i == len(p)
 }
 
 func (a Access) has(scriptType, name string, right rune) bool {
@@ -161,8 +187,7 @@ func (a Access) has(scriptType, name string, right rune) bool {
 
 	allowed := false
 	for _, rule := range a.entries {
-		matched, err := path.Match(rule.pattern, resource)
-		if err != nil || !matched {
+		if !matches(rule.pattern, resource) {
 			continue
 		}
 

@@ -12,7 +12,7 @@ func TestParseAndMatchFolderRights(t *testing.T) {
 		write      bool
 	}{
 		{
-			name:       "single segment wildcard does not include nested scripts",
+			name:       "wildcard covers a plain name",
 			raw:        "rw WEAPONS/*",
 			scriptType: "weapon",
 			scriptName: "Rifle",
@@ -20,12 +20,12 @@ func TestParseAndMatchFolderRights(t *testing.T) {
 			write:      true,
 		},
 		{
-			name:       "single segment wildcard excludes slash names",
+			name:       "wildcard covers slash names",
 			raw:        "rw WEAPONS/*",
 			scriptType: "weapon",
 			scriptName: "Ruan/SQL",
-			read:       false,
-			write:      false,
+			read:       true,
+			write:      true,
 		},
 		{
 			name:       "nested wildcard includes slash names",
