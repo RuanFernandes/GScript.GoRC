@@ -24,6 +24,7 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/events"
 	"github.com/wailsapp/wails/v3/pkg/services/notifications"
 
+	"graal-rc/internal/appid"
 	auditlib "graal-rc/internal/audit"
 	"graal-rc/internal/connection"
 	"graal-rc/internal/credentials"
@@ -237,14 +238,11 @@ type App struct {
 }
 
 // NewApp creates a new App with a fresh connection service and an encrypted
-// account vault. If a legacy single-credential file exists, it is imported into
-// the vault and removed.
+// account vault.
 func NewApp() *App {
 	vault, err := credentials.NewVault()
 	if err != nil {
 		log.Printf("credentials vault: %v", err)
-	} else {
-		migrateLegacyCredentials(vault)
 	}
 	gallerySessionStore, gallerySessionErr := gallerylib.NewSessionStore()
 	if gallerySessionErr != nil {
@@ -1188,82 +1186,26 @@ func (a *App) PluginRequest(id string, request PluginHTTPRequest) (PluginHTTPRes
 	return a.plugins.Request(id, request)
 }
 
-// migrateLegacyCredentials imports the old plaintext credentials.json (written
-// by earlier builds) into the encrypted vault, then deletes the legacy file.
-func migrateLegacyCredentials(vault *credentials.Vault) {
-	existing, err := vault.Load()
-	if err != nil {
-		log.Printf("vault load during migration: %v", err)
-		return
-	}
-	if len(existing) > 0 {
-		return
-	}
-	legacy, err := credentials.NewStore()
-	if err != nil {
-		return
-	}
-	c, ok, err := legacy.Load()
-	if err != nil || !ok {
-		return
-	}
-	if err := vault.Add(credentials.Account{
-		ProfileName: profileNameForLegacyNickname(c.Nickname),
-		Account:     c.Account,
-		Password:    c.Password,
-	}); err != nil {
-		log.Printf("migrate legacy credentials: %v", err)
-		return
-	}
-	if err := legacy.Clear(); err != nil {
-		log.Printf("remove legacy credentials file: %v", err)
-	}
-}
-
 // LoginRequest is the payload sent from the Add Account screen.
 type LoginRequest struct {
-	ProfileName string `json:"profileName"`
-	Account     string `json:"account"`
-	Password    string `json:"password"`
+	Account  string `json:"account"`
+	Password string `json:"password"`
 }
 
 // AccountSummary is the password-less account projection exposed to the
 // frontend. Aliased so the generated Wails model matches the credentials type.
 type AccountSummary = credentials.AccountSummary
 
-// PreagonalListserverHost is the alternate listserver endpoint, selected
-// implicitly when an account's nickname is prefixed "Preagonal:". The default
-// listserver (listserver.graalonline.com) is used otherwise.
-const PreagonalListserverHost = "listserver.graal.in"
-
-// preagonalPrefix marks a nickname as routing to the alternate listserver.
-const preagonalPrefix = "Preagonal:"
-
-func profileNameForLegacyNickname(nickname string) string {
-	if strings.HasPrefix(nickname, preagonalPrefix) {
-		return preagonalPrefix
-	}
-	return ""
-}
-
-// listserverForProfile returns the listserver endpoint for a profile name. A profile name
-// prefixed "Preagonal:" selects the alternate endpoint; everything else uses the
-// default Graal listserver. The prefix is a hidden, client-only routing key.
-func listserverForProfile(profileName string) (host string, port int) {
-	if strings.HasPrefix(strings.TrimSpace(profileName), preagonalPrefix) {
-		return PreagonalListserverHost, rclib.DefaultListserverPort
-	}
-	return rclib.DefaultListserverHost, rclib.DefaultListserverPort
-}
-
 func toCreds(req LoginRequest) connection.Credentials {
-	host, port := listserverForProfile(req.ProfileName)
-	return connection.Credentials{Account: req.Account, Password: req.Password, Host: host, Port: port}
+	return alpaxisCreds(req.Account, req.Password)
 }
 
 func accountToCreds(a credentials.Account) connection.Credentials {
-	host, port := listserverForProfile(a.ProfileName)
-	return connection.Credentials{Account: a.Account, Password: a.Password, Host: host, Port: port}
+	return alpaxisCreds(a.Account, a.Password)
+}
+
+func alpaxisCreds(account, password string) connection.Credentials {
+	return connection.Credentials{Account: account, Password: password, Host: rclib.DefaultListserverHost, Port: rclib.DefaultListserverPort}
 }
 
 // ListAccounts returns the saved accounts without passwords.
@@ -1322,9 +1264,8 @@ func (a *App) AddAccount(req LoginRequest, nickname string) ([]rclib.Server, err
 	}
 	if a.vault != nil {
 		if saveErr := a.vault.Add(credentials.Account{
-			ProfileName: req.ProfileName,
-			Account:     req.Account,
-			Password:    req.Password,
+			Account:  req.Account,
+			Password: req.Password,
 		}); saveErr != nil {
 			log.Printf("save account: %v", saveErr)
 		}
@@ -2186,7 +2127,7 @@ func fileCacheDir() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	p := filepath.Join(dir, "graal-rc", "filecache")
+	p := filepath.Join(dir, appid.ID(), "filecache")
 	if err := os.MkdirAll(p, 0o755); err != nil {
 		return "", err
 	}
@@ -2726,13 +2667,13 @@ func (a *App) refreshServerChromeWithPlayerCount(loadPlayerCount bool) {
 		a.playerCount.Store(0)
 	}
 
-	mainTitle := "Graal Remote Control"
+	mainTitle := appid.DisplayName()
 	playersTitle := "Players"
 	scriptsTitle := "Script Manager"
 	settingsTitle := "Settings"
 	filesTitle := "File Browser"
 	backupTitle := "File Browser Backup"
-	tooltip := "Graal Remote Control"
+	tooltip := appid.DisplayName()
 	if connected {
 		mainTitle = serverWindowTitle(st.ServerName, "RC")
 		playersTitle = serverWindowTitle(st.ServerName, "Players")
@@ -3672,7 +3613,7 @@ func languagePath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "graal-rc", "language.json"), nil
+	return filepath.Join(dir, appid.ID(), "language.json"), nil
 }
 
 func loadLanguage() string {
@@ -3743,7 +3684,7 @@ func chatSettingsPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "graal-rc", "chat.json"), nil
+	return filepath.Join(dir, appid.ID(), "chat.json"), nil
 }
 
 // loadChatSettingsLocked reads chat settings from the per-user backend file.
@@ -3831,7 +3772,7 @@ func codingPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "graal-rc", "coding.json"), nil
+	return filepath.Join(dir, appid.ID(), "coding.json"), nil
 }
 
 // loadCodingSettings reads the persisted coding settings (defaults on first run
@@ -3943,7 +3884,7 @@ func appThemesPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "graal-rc", "app-themes.json"), nil
+	return filepath.Join(dir, appid.ID(), "app-themes.json"), nil
 }
 
 func normalizeAppTheme(theme AppTheme) AppTheme {
@@ -4155,7 +4096,7 @@ func fileBrowserPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "graal-rc", "filebrowser.json"), nil
+	return filepath.Join(dir, appid.ID(), "filebrowser.json"), nil
 }
 
 // loadFileBrowserConfigLocked reads the persisted file-browser config. Caller
@@ -4260,7 +4201,7 @@ func remoteThemePath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "graal-rc", "remote-theme.json"), nil
+	return filepath.Join(dir, appid.ID(), "remote-theme.json"), nil
 }
 
 // GetRemoteTheme returns the cached remote theme (empty if none).
@@ -4309,7 +4250,7 @@ func customThemesPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "graal-rc", "custom-themes.json"), nil
+	return filepath.Join(dir, appid.ID(), "custom-themes.json"), nil
 }
 
 func (a *App) GetCustomThemes() ([]CustomTheme, error) {

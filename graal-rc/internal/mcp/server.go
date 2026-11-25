@@ -10,6 +10,9 @@ import (
 	"net/http"
 	"strings"
 	"unicode/utf8"
+
+
+	"graal-rc/internal/appid"
 )
 
 type Backend interface {
@@ -117,7 +120,7 @@ func (s *Server) call(ctx context.Context, method string, raw json.RawMessage) (
 		return map[string]any{
 			"protocolVersion": "2025-06-18",
 			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo":      map[string]string{"name": "graal-rc", "version": "1.0"},
+			"serverInfo":      map[string]string{"name": appid.ID(), "version": "1.0"},
 		}, nil
 	case "notifications/initialized":
 		return nil, nil

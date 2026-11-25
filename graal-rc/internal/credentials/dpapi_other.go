@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 
+	"graal-rc/internal/appid"
 	"graal-rc/internal/fileutil"
 )
 
@@ -35,7 +36,7 @@ func keyPath() (string, error) {
 			return "", err
 		}
 	}
-	dir := filepath.Join(base, "graal-rc")
+	dir := filepath.Join(base, appid.ID())
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}

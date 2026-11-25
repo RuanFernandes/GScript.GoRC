@@ -110,7 +110,7 @@ export function AccountSelectScreen({
     <div className="flex min-h-svh items-center justify-center bg-background p-4">
       <Card className="w-full max-w-sm">
         <CardHeader>
-          <CardTitle className="text-xl">Graal Remote Control (v{version})</CardTitle>
+          <CardTitle className="text-xl">Alpaxis Remote Control (v{version})</CardTitle>
           <CardDescription>{t("login.selectAccount")}</CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4">

@@ -6,10 +6,10 @@
 		"0000": {
 			"ProductVersion": "5.2.9",
 			"CompanyName": "RuanFernandes",
-			"FileDescription": "Graal Remote Control client",
+			"FileDescription": "Alpaxis Remote Control client",
 			"LegalCopyright": "© 2026, RuanFernandes",
-			"ProductName": "Graal Remote Control",
-			"Comments": "Graal Remote Control client"
+			"ProductName": "Alpaxis Remote Control",
+			"Comments": "Alpaxis Remote Control client"
 		}
 	}
 }

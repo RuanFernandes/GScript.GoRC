@@ -17,31 +17,17 @@ interface LoginFormProps {
 
 export function LoginForm({busy = false, defaultValues, onLogin}: LoginFormProps) {
   const {t} = useLanguage()
-  const [profileName, setProfileName] = useState(defaultValues?.profileName ?? "")
   const [account, setAccount] = useState(defaultValues?.account ?? "")
   const [password, setPassword] = useState(defaultValues?.password ?? "")
   const [showPassword, setShowPassword] = useState(false)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    await onLogin({profileName, account, password})
+    await onLogin({account, password})
   }
 
   return (
     <form onSubmit={handleSubmit} className="grid gap-4">
-      <div className="grid gap-2">
-        <Label htmlFor="profile-name">{t("login.profileName")}</Label>
-        <Input
-          id="profile-name"
-          placeholder={t("login.profilePlaceholder")}
-          value={profileName}
-          autoComplete="organization"
-          onChange={(e) => setProfileName(e.target.value)}
-        />
-        <p className="text-muted-foreground text-xs">
-          {t("login.profileHelp")}
-        </p>
-      </div>
       <div className="grid gap-2">
         <Label htmlFor="account">{t("login.account")}</Label>
         <Input

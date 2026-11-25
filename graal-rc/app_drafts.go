@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 
+	"graal-rc/internal/appid"
 	"graal-rc/internal/connection"
 	"graal-rc/internal/drafts"
 )
@@ -20,7 +21,7 @@ func (a *App) editorDraftStore() (*drafts.Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	a.draftStore, err = drafts.New(filepath.Join(dir, "graal-rc", "editor-drafts"))
+	a.draftStore, err = drafts.New(filepath.Join(dir, appid.ID(), "editor-drafts"))
 	return a.draftStore, err
 }
 

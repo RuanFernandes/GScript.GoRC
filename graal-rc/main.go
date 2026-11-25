@@ -5,6 +5,9 @@ import (
 	"log"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
+
+
+	"graal-rc/internal/appid"
 )
 
 // Wails embeds the built frontend (frontend/dist) into the binary.
@@ -19,12 +22,12 @@ func applicationOptions(a *App) application.Options {
 	}
 
 	return application.Options{
-		Name:        "graal-rc",
+		Name:        appid.ID(),
 		Description: "Graal Remote Control client",
 		Linux: application.LinuxOptions{
 			// Keep the desktop/taskbar identity aligned with the installed
 			// .desktop file so frameless windows remain grouped correctly.
-			ProgramName: "graal-rc",
+			ProgramName: appid.ID(),
 		},
 		Windows: application.WindowsOptions{
 			// Keep recovery timers alive after idle, but leave renderer priority and
@@ -56,7 +59,7 @@ func main() {
 	// Main window: the account/server/RC flow.
 	mainWindow := app.Window.NewWithOptions(hardenedWebviewWindowOptions(application.WebviewWindowOptions{
 		Name:             "main",
-		Title:            "Graal Remote Control",
+		Title:            appid.DisplayName(),
 		Width:            1024,
 		Height:           768,
 		Frameless:        true,

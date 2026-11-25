@@ -201,6 +201,7 @@ export interface RcService {
   fetchRemoteChangelog(): Promise<RemoteChangelog>
   getRemoteTheme(): Promise<RemoteTheme | null>
   saveRemoteTheme(name: string, definition: string): Promise<void>
+  getMCPEndpoint(): Promise<string>
   getMCPAgentStatuses(): Promise<MCPAgentStatus[] | null>
   setupMCP(name: string): Promise<MCPSetupResult>
   openMCPAgentFile(name: string): Promise<void>
@@ -464,6 +465,7 @@ export const rcService: RcService = {
   fetchRemoteChangelog: () => App.FetchRemoteChangelog(),
   getRemoteTheme: () => App.GetRemoteTheme(),
   saveRemoteTheme: (name, definition) => App.SaveRemoteTheme(name, definition),
+  getMCPEndpoint: () => App.GetMCPEndpoint(),
   getMCPAgentStatuses: () => App.GetMCPAgentStatuses(),
   setupMCP: (name) => App.SetupMCP(name),
   openMCPAgentFile: (name) => App.OpenMCPAgentFile(name),

@@ -26,7 +26,7 @@ func TestWithMCPInstructionsAppendsAfterUserContent(t *testing.T) {
 
 func TestWithMCPInstructionsReplacesAnOlderBlockInPlace(t *testing.T) {
 	block := strings.TrimLeft(mcpInstructionBlock(), "\n")
-	old := "#-----------#\n#Nullborne Go RC INSTRUCTIONS START#\n\n- get_rc_chat: old text\n#END\n#-----------#\n"
+	old := "#-----------#\n#Nullborne Go RC Alpaxis INSTRUCTIONS START#\n\n- get_rc_chat: old text\n#END\n#-----------#\n"
 
 	for name, lineBreak := range map[string]string{"LF": "\n", "CRLF": "\r\n"} {
 		before := strings.ReplaceAll("# My rules\nBe brief.\n\n", "\n", lineBreak)
@@ -43,7 +43,7 @@ func TestWithMCPInstructionsReplacesAnOlderBlockInPlace(t *testing.T) {
 		if strings.Contains(got, "old text") {
 			t.Fatalf("%s: the old block survived", name)
 		}
-		if strings.Count(got, mcpInstructionsStart) != 1 {
+		if strings.Count(got, mcpStartMarker()) != 1 {
 			t.Fatalf("%s: expected exactly one block", name)
 		}
 		// Running the setup again must not change an up-to-date file.
@@ -55,7 +55,7 @@ func TestWithMCPInstructionsReplacesAnOlderBlockInPlace(t *testing.T) {
 }
 
 func TestWithMCPInstructionsRefusesABlockWithoutEnd(t *testing.T) {
-	content := "# My rules\n#-----------#\n#Nullborne Go RC INSTRUCTIONS START#\nhalf a block\n\n# Something the user wrote later\n"
+	content := "# My rules\n#-----------#\n#Nullborne Go RC Alpaxis INSTRUCTIONS START#\nhalf a block\n\n# Something the user wrote later\n"
 	if _, err := withMCPInstructions(content); err == nil {
 		t.Fatal("a block without #END must not be replaced, since its end is unknown")
 	}

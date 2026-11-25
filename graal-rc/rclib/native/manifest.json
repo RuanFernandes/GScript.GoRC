@@ -49,7 +49,7 @@
       "asset": "grclib-windows-x64.zip",
       "library": "grclib64.dll",
       "path": "native/windows-amd64/grclib64.dll",
-      "sha256": "50bd0b76b4dd8abe72558d5d0d4069ed694c2155661dcbd8e6bd959e0e744352"
+      "sha256": "69696c6da073436dc13eed38dfa87f18484909209daf5ba7078eb182460d246c"
     }
   }
 }

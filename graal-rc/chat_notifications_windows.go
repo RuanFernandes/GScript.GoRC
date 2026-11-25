@@ -22,12 +22,15 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/services/notifications"
 	"github.com/wailsapp/wails/v3/pkg/w32"
 	"golang.org/x/sys/windows/registry"
+
+
+	"graal-rc/internal/appid"
 )
 
-const (
-	windowsChatNotificationAppID       = "graal-rc"
+var (
+	windowsChatNotificationAppID       = appid.ID()
 	windowsChatNotificationRegistryKey = "Software\\Classes\\AppUserModelId\\" + windowsChatNotificationAppID
-	windowsChatNotificationIconName    = "graal-rc-chat.png"
+	windowsChatNotificationIconName    = appid.ID() + "-chat.png"
 )
 
 var windowsChatNotificationIconMu sync.Mutex
@@ -184,7 +187,7 @@ func windowsToastDisplayName(serverName string) string {
 		return value
 	}, strings.TrimSpace(serverName))
 	if clean == "" {
-		return "Graal Remote Control"
+		return appid.DisplayName()
 	}
 	runes := []rune(clean)
 	if len(runes) > 128 {

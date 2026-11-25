@@ -8,18 +8,16 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 
+	"graal-rc/internal/appid"
 	"graal-rc/internal/fileutil"
 )
 
-// Account is a full persisted login (profile name/nickname/account/password). DisplayName and
-// Photo are client-only profile data — they are never sent to the server; only
-// Account/Password are. The listserver endpoint is selected from the
-// ProfileName, while the nickname is supplied per session.
+// Account is a full persisted login (account/password). DisplayName and Photo
+// are client-only profile data — they are never sent to the server; only
+// Account/Password are. The nickname is supplied per session.
 type Account struct {
-	ProfileName string `json:"profileName,omitempty"`
 	Account     string `json:"account"`
 	Password    string `json:"password"`
 	DisplayName string `json:"displayName,omitempty"`
@@ -28,7 +26,6 @@ type Account struct {
 
 // AccountSummary is the password-less projection exposed to the frontend.
 type AccountSummary struct {
-	ProfileName string `json:"profileName"`
 	Account     string `json:"account"`
 	DisplayName string `json:"displayName"`
 	Photo       string `json:"photo"`
@@ -37,7 +34,6 @@ type AccountSummary struct {
 // Summary drops the password for safe hand-off to the frontend.
 func (a Account) Summary() AccountSummary {
 	return AccountSummary{
-		ProfileName: a.ProfileName,
 		Account:     a.Account,
 		DisplayName: a.DisplayName,
 		Photo:       a.Photo,
@@ -55,13 +51,13 @@ type Vault struct {
 func Protect(data []byte) ([]byte, error)   { return protect(data) }
 func Unprotect(data []byte) ([]byte, error) { return unprotect(data) }
 
-// NewVault resolves <UserConfigDir>/graal-rc/accounts.dat.
+// NewVault resolves <UserConfigDir>/alpaxis-rc/accounts.dat.
 func NewVault() (*Vault, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return nil, err
 	}
-	root := filepath.Join(dir, "graal-rc")
+	root := filepath.Join(dir, appid.ID())
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, err
 	}
@@ -84,67 +80,30 @@ func (v *Vault) Load() ([]Account, error) {
 
 func (v *Vault) loadUnlocked() ([]Account, error) {
 	data, ok, err := fileutil.ReadAndRecover(v.path, 0o600, func(data []byte) error {
-		_, _, err := decodeAccounts(data)
+		_, err := decodeAccounts(data)
 		return err
 	})
 	if err != nil || !ok {
 		return nil, err
 	}
 
-	accounts, migrated, err := decodeAccounts(data)
+	return decodeAccounts(data)
+}
+
+func decodeAccounts(data []byte) ([]Account, error) {
+	plain, err := unprotect(data)
 	if err != nil {
 		return nil, err
 	}
-	if accounts == nil {
-		return nil, nil
-	}
-
-	if migrated {
-		if err := v.saveUnlocked(accounts); err != nil {
-			return nil, err
-		}
+	var accounts []Account
+	if err := json.Unmarshal(plain, &accounts); err != nil {
+		return nil, err
 	}
 	return accounts, nil
 }
 
-type storedAccount struct {
-	ProfileName string `json:"profileName,omitempty"`
-	Nickname    string `json:"nickname,omitempty"`
-	Account     string `json:"account"`
-	Password    string `json:"password"`
-	DisplayName string `json:"displayName,omitempty"`
-	Photo       string `json:"photo,omitempty"`
-}
-
-func decodeAccounts(data []byte) ([]Account, bool, error) {
-	plain, err := unprotect(data)
-	if err != nil {
-		return nil, false, err
-	}
-	var stored []storedAccount
-	if err := json.Unmarshal(plain, &stored); err != nil {
-		return nil, false, err
-	}
-	accounts := make([]Account, len(stored))
-	migrated := false
-	for i, old := range stored {
-		accounts[i] = Account{
-			ProfileName: old.ProfileName,
-			Account:     old.Account,
-			Password:    old.Password,
-			DisplayName: old.DisplayName,
-			Photo:       old.Photo,
-		}
-		if accounts[i].ProfileName == "" && strings.HasPrefix(old.Nickname, "Preagonal:") {
-			accounts[i].ProfileName = "Preagonal:"
-			migrated = true
-		}
-	}
-	return accounts, migrated, nil
-}
-
 func validVaultPayload(data []byte) error {
-	_, _, err := decodeAccounts(data)
+	_, err := decodeAccounts(data)
 	return err
 }
 

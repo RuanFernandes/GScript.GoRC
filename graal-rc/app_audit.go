@@ -15,6 +15,7 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 
+	"graal-rc/internal/appid"
 	auditlib "graal-rc/internal/audit"
 	deploylib "graal-rc/internal/deploy"
 )
@@ -28,7 +29,7 @@ func newLocalChangeStores() (*auditlib.Store, *deploylib.Store, *changeRetention
 		log.Printf("change history: %v", err)
 		return nil, nil, nil
 	}
-	root := filepath.Join(configDir, "graal-rc")
+	root := filepath.Join(configDir, appid.ID())
 	var auditStore *auditlib.Store
 	if store, err := auditlib.New(filepath.Join(root, "audit.jsonl")); err != nil {
 		log.Printf("audit store: %v", err)

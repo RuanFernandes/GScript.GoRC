@@ -13,11 +13,10 @@ import (
 	"strings"
 	"time"
 
+	"graal-rc/internal/appid"
 	"graal-rc/internal/fileutil"
 	"graal-rc/internal/mcp"
 )
-
-const defaultMCPAddress = "127.0.0.1:8765"
 
 const (
 	mcpInstructionsStart = "#Nullborne Go RC INSTRUCTIONS START#"
@@ -40,8 +39,21 @@ type MCPSetupResult struct {
 	Created    bool   `json:"created"`
 }
 
+// mcpStartMarker keeps this app's block apart from the official one, so setting
+// up one never replaces the other.
+func mcpStartMarker() string {
+	return strings.Replace(mcpInstructionsStart, "RC", "RC Alpaxis", 1)
+}
+
 func mcpInstructionBlock() string {
-	return `
+	return strings.NewReplacer(
+		mcpInstructionsStart, mcpStartMarker(),
+		appid.OfficialMCPAddress, appid.MCPAddress(),
+		"Graal RC MCP server", "Alpaxis RC MCP server",
+	).Replace(officialMCPInstructionBlock)
+}
+
+const officialMCPInstructionBlock = `
 #-----------#
 #Nullborne Go RC INSTRUCTIONS START#
 
@@ -134,7 +146,6 @@ when a tool call fails; report the failure and ask the user what to do next.
 #END
 #-----------#
 `
-}
 
 func mcpAgentCandidates(home string) map[string][]string {
 	return map[string][]string{
@@ -158,13 +169,18 @@ func (a *App) GetMCPAgentStatuses() ([]MCPAgentStatus, error) {
 			content, readErr := os.ReadFile(candidate)
 			if readErr == nil {
 				status.Path, status.Exists = candidate, true
-				status.Configured = strings.Contains(string(content), mcpInstructionsStart)
+				status.Configured = strings.Contains(string(content), mcpStartMarker())
 				break
 			}
 		}
 		statuses = append(statuses, status)
 	}
 	return statuses, nil
+}
+
+// GetMCPEndpoint is the address agents use to reach this build.
+func (a *App) GetMCPEndpoint() string {
+	return "http://" + appid.MCPAddress() + "/mcp"
 }
 
 func (a *App) SetupMCP(name string) (MCPSetupResult, error) {
@@ -218,7 +234,7 @@ func (a *App) SetupMCP(name string) (MCPSetupResult, error) {
 // is appended after the user's own instructions.
 func withMCPInstructions(content string) (string, error) {
 	block := strings.TrimLeft(mcpInstructionBlock(), "\n")
-	start := strings.Index(content, mcpInstructionsStart)
+	start := strings.Index(content, mcpStartMarker())
 	if start < 0 {
 		if content == "" {
 			return block, nil
@@ -351,7 +367,7 @@ func (b appMCPBackend) ReadFile(path string) ([]byte, error) {
 func (a *App) startMCPServer() {
 	address := os.Getenv("RC_MCP_ADDR")
 	if address == "" {
-		address = defaultMCPAddress
+		address = appid.MCPAddress()
 	}
 	server := &http.Server{
 		Addr:              address,

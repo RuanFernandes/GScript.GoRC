@@ -14,6 +14,7 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 
+	"graal-rc/internal/appid"
 	"graal-rc/internal/fileutil"
 	"graal-rc/internal/sync"
 )
@@ -25,7 +26,7 @@ func syncPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "graal-rc", "sync.json"), nil
+	return filepath.Join(dir, appid.ID(), "sync.json"), nil
 }
 
 // syncFile is the on-disk shape: a map of server name → config. Each server

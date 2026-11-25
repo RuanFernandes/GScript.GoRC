@@ -8,6 +8,9 @@ import (
 	"unicode"
 
 	"github.com/wailsapp/wails/v3/pkg/services/notifications"
+
+
+	"graal-rc/internal/appid"
 )
 
 const maxChatMentionNotificationRunes = 1000
@@ -59,7 +62,7 @@ func (a *App) chatMentionServerName() string {
 			}
 		}
 	}
-	return "Graal Remote Control"
+	return appid.DisplayName()
 }
 
 func chatMentionNotificationTitle(language string) string {

@@ -11,6 +11,9 @@ import (
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
+
+
+	"graal-rc/internal/appid"
 )
 
 // trayIcon is the PNG icon embedded for the system tray. Wails' Windows tray
@@ -83,7 +86,7 @@ func (a *App) setupTray(main *application.WebviewWindow) {
 	tray := a.app.SystemTray.New()
 	a.tray = tray
 	tray.SetIcon(trayBadgeIcon(false))
-	tray.SetTooltip("Graal Remote Control")
+	tray.SetTooltip(appid.DisplayName())
 
 	menu := application.NewMenu()
 	menu.Add("Open").OnClick(func(ctx *application.Context) {

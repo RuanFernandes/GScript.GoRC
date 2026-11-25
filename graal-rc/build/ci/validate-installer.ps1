@@ -48,7 +48,7 @@ if (-not (Test-Path -LiteralPath $bootstrapper -PathType Leaf)) {
     throw "WebView2 bootstrapper was not generated: $bootstrapper"
 }
 
-$installerPath = Join-Path $repositoryRoot "bin\graal-rc-$Architecture-installer.exe"
+$installerPath = Join-Path $repositoryRoot "bin\alpaxis-rc-$Architecture-installer.exe"
 $compileScript = Join-Path $repositoryRoot 'build\windows\compile-nsis.ps1'
 
 # Keep the release installer on the legacy machine-wide path. This lets it
@@ -58,7 +58,7 @@ $compileScript = Join-Path $repositoryRoot 'build\windows\compile-nsis.ps1'
 & $compileScript `
     -InstallScope machine `
     -Architecture $Architecture `
-    -AppName graal-rc `
+    -AppName alpaxis-rc `
     -ExecutablePath $BinaryPath `
     -NativeLibraryPath $nativePath `
     -NativeLibraryName $nativeName `
@@ -71,7 +71,7 @@ if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {
     throw "NSIS did not produce the expected installer: $installerPath"
 }
 
-$artifactPath = Join-Path $OutputDirectory "graal-rc-$Architecture-installer.exe"
+$artifactPath = Join-Path $OutputDirectory "alpaxis-rc-$Architecture-installer.exe"
 Copy-Item -LiteralPath $installerPath -Destination $artifactPath -Force
 $hash = (Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
 [System.IO.File]::WriteAllText((Join-Path $OutputDirectory 'SHA256SUMS.txt'), "$hash  $([System.IO.Path]::GetFileName($artifactPath))`r`n", [System.Text.Encoding]::ASCII)

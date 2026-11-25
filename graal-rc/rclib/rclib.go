@@ -323,9 +323,9 @@ var (
 	procOnMaxUploadFileSize       *connectionProc
 )
 
-// Default listserver endpoint used by the reference client.
+// Default listserver endpoint: this build connects to Alpaxis.
 const (
-	DefaultListserverHost = "listserver.graalonline.com"
+	DefaultListserverHost = "listserver.alpaxis.net"
 	DefaultListserverPort = 14922
 
 	// PacketNPCServerQuery asks the main RC socket for the current NPC-server

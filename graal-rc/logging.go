@@ -12,6 +12,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+
+	"graal-rc/internal/appid"
 )
 
 const (
@@ -234,9 +237,9 @@ func resolveLogDir() (string, error) {
 	}
 
 	if configDir, err := os.UserConfigDir(); err == nil && configDir != "" {
-		candidates = append(candidates, filepath.Join(configDir, "graal-rc", "logs"))
+		candidates = append(candidates, filepath.Join(configDir, appid.ID(), "logs"))
 	}
-	candidates = append(candidates, filepath.Join(os.TempDir(), "graal-rc", "logs"))
+	candidates = append(candidates, filepath.Join(os.TempDir(), appid.ID(), "logs"))
 
 	seen := make(map[string]struct{}, len(candidates))
 	var errs []error

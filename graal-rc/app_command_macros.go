@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"graal-rc/internal/appid"
 	"graal-rc/internal/fileutil"
 )
 
@@ -66,7 +67,7 @@ func commandMacrosPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "graal-rc", "command-macros.json"), nil
+	return filepath.Join(dir, appid.ID(), "command-macros.json"), nil
 }
 
 func commandMacroServerKey(serverName string) string {

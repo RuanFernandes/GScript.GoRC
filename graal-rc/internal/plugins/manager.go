@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"graal-rc/internal/appid"
 	"graal-rc/internal/fileutil"
 )
 
@@ -600,7 +601,7 @@ func NewManager() (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	root := filepath.Join(dir, "graal-rc", "plugins")
+	root := filepath.Join(dir, appid.ID(), "plugins")
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, err
 	}

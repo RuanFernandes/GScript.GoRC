@@ -18,6 +18,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+
+	"graal-rc/internal/appid"
 )
 
 const (
@@ -143,6 +146,9 @@ func (a *App) InstallUpdate() error {
 	if err := ensureAppRunning(a); err != nil {
 		return err
 	}
+	if !appid.SelfUpdates {
+		return errors.New("this app does not update itself; install a newer Alpaxis build instead")
+	}
 
 	platform, architecture := localReleaseTarget()
 	if runtime.GOOS != "windows" && !(runtime.GOOS == "linux" && platform == "ubuntu") {
@@ -216,6 +222,10 @@ func (a *App) scheduleUpdateExit() {
 }
 
 func localReleaseTarget() (string, string) {
+	// The release service only publishes the official app.
+	if !appid.SelfUpdates {
+		return "", ""
+	}
 	if runtime.GOOS == "linux" {
 		executablePath, _ := os.Executable()
 		return linuxReleaseTarget(runtime.GOARCH, os.Getenv("APPIMAGE"), executablePath, isDpkgManagedExecutable(executablePath))

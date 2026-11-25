@@ -8,16 +8,19 @@ import type {MCPAgentStatus} from "@/types"
 
 type Translator = (key: string, vars?: Record<string, string | number>) => string
 
+// Its own name, so it can be registered next to the official Graal RC.
+const serverName = "alpaxis-rc"
+
 const agents = [
   {id: "claude-code", label: "Claude Code", tone: "text-orange-400", mark: "CC"},
   {id: "codex", label: "Codex", tone: "text-emerald-400", mark: "CX"},
   {id: "opencode", label: "OpenCode", tone: "text-sky-400", mark: "OC"},
 ]
 
-function setupPrompt(agent: string) {
+function setupPrompt(agent: string, endpoint: string) {
   return `Configure the Graal RC MCP integration for ${agent}.
 
-MCP endpoint: http://127.0.0.1:8765/mcp
+MCP endpoint: ${endpoint}
 Transport: HTTP JSON-RPC
 
 This MCP is specifically for Graal development, including GraalScript and GS2.
@@ -25,7 +28,7 @@ Use it to read and change the server's weapons, classes and NPCs, to read
 remote files through the Graal File Browser, and to read the RC Chat for the
 server's confirmations and script errors.
 
-Register this server as "graal-rc" in your MCP configuration. Then remember these instructions for future Graal RC tasks:
+Register this server as "${serverName}" in your MCP configuration. Then remember these instructions for future Graal RC tasks:
 - There is no upload, deploy or "apply on the server" step, so never ask the user to update a script on the server. Graal RC keeps a local folder synchronized with the server (sync_status returns it: weapons/<name>.gs2, classes/<name>.gs2, npcs/<name>.gs2). Saving one of those files with at least one character changed uploads it within about a second and the server applies it immediately.
 - After every script change, call get_rc_chat: the server prints a line such as "Weapon/GUI-script <name> added/updated by <account>", followed by any script error. That line is the proof the change is live; if it is missing, call sync_status.
 - Use script_list and script_read to find and read weapons, classes and NPCs (type is "weapon", "class" or "npc"; an NPC is addressed by id).
@@ -43,16 +46,20 @@ After configuring it, verify the connection by listing the MCP tools.`
 
 export function MCPSection({t}: {t: Translator}) {
   const [statuses, setStatuses] = useState<MCPAgentStatus[]>([])
+  const [endpoint, setEndpoint] = useState("")
   const [busy, setBusy] = useState("")
   const [copied, setCopied] = useState("")
   const [error, setError] = useState("")
 
   const refresh = () => rcService.getMCPAgentStatuses().then((value) => setStatuses(value ?? [])).catch(() => setError(t("settings.mcpLoadFailed")))
-  useEffect(() => { void refresh() }, [])
+  useEffect(() => {
+    void refresh()
+    rcService.getMCPEndpoint().then(setEndpoint).catch(() => setError(t("settings.mcpLoadFailed")))
+  }, [])
 
   const copyPrompt = async (agent: string) => {
     try {
-      await navigator.clipboard.writeText(setupPrompt(agent))
+      await navigator.clipboard.writeText(setupPrompt(agent, endpoint))
       setCopied(agent)
       window.setTimeout(() => setCopied(""), 1800)
     } catch {
@@ -93,7 +100,7 @@ export function MCPSection({t}: {t: Translator}) {
 
       <div className="border-primary/25 bg-primary/5 flex items-start gap-3 rounded-lg border p-4">
         <ShieldCheck className="text-primary mt-0.5 size-5 shrink-0" />
-        <div className="grid gap-1 text-sm"><p className="font-medium">{t("settings.mcpLocalOnly")}</p><p className="text-muted-foreground text-xs leading-relaxed">{t("settings.mcpLocalOnlyDescription")}</p><code className="text-primary mt-1 text-xs">http://127.0.0.1:8765/mcp</code></div>
+        <div className="grid gap-1 text-sm"><p className="font-medium">{t("settings.mcpLocalOnly")}</p><p className="text-muted-foreground text-xs leading-relaxed">{t("settings.mcpLocalOnlyDescription")}</p><code className="text-primary mt-1 text-xs">{endpoint}</code></div>
       </div>
 
       <div className="grid gap-3">
@@ -112,7 +119,7 @@ export function MCPSection({t}: {t: Translator}) {
 
       {error && <p className="text-destructive text-xs">{error}</p>}
 
-      <div className="border-border bg-muted/25 grid gap-3 rounded-lg border p-4"><div className="flex items-center gap-2"><ExternalLink className="text-muted-foreground size-4" /><p className="text-sm font-medium">{t("settings.mcpManualTitle")}</p></div><p className="text-muted-foreground text-xs leading-relaxed">{t("settings.mcpManualDescription")}</p><pre className="bg-background overflow-auto rounded-md border p-3 font-mono text-xs leading-relaxed">{setupPrompt("your AI")}</pre><Button variant="outline" size="sm" className="w-fit gap-1.5" onClick={() => void copyPrompt("your AI")}>{copied === "your AI" ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}{copied === "your AI" ? t("settings.mcpCopied") : t("settings.mcpCopyPrompt")}</Button></div>
+      <div className="border-border bg-muted/25 grid gap-3 rounded-lg border p-4"><div className="flex items-center gap-2"><ExternalLink className="text-muted-foreground size-4" /><p className="text-sm font-medium">{t("settings.mcpManualTitle")}</p></div><p className="text-muted-foreground text-xs leading-relaxed">{t("settings.mcpManualDescription")}</p><pre className="bg-background overflow-auto rounded-md border p-3 font-mono text-xs leading-relaxed">{setupPrompt("your AI", endpoint)}</pre><Button variant="outline" size="sm" className="w-fit gap-1.5" onClick={() => void copyPrompt("your AI")}>{copied === "your AI" ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}{copied === "your AI" ? t("settings.mcpCopied") : t("settings.mcpCopyPrompt")}</Button></div>
     </div>
   )
 }

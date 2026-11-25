@@ -204,7 +204,7 @@ function ThemePreview({theme}: {theme: EditableAppTheme}) {
     <div style={style} className="grid gap-3 rounded-md border border-border bg-background p-4 text-foreground">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p className="text-sm font-medium">Graal Remote Control</p>
+          <p className="text-sm font-medium">Alpaxis Remote Control</p>
           <p className="text-xs text-muted-foreground">{theme.name}</p>
         </div>
         <span className="rounded-full border border-border bg-muted px-2 py-1 text-[10px] font-medium text-muted-foreground">{theme.mode}</span>

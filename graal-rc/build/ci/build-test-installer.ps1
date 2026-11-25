@@ -17,10 +17,10 @@ $buildScript = Join-Path $repositoryRoot 'build\ci\build-windows.ps1'
 $compileScript = Join-Path $repositoryRoot 'build\windows\compile-nsis.ps1'
 $binaryPath = Join-Path $repositoryRoot "ci-artifacts\windows\$Architecture\graal-rc-windows-$Architecture.exe"
 $nativeLibraryPath = Join-Path $repositoryRoot 'rclib\native\windows-amd64\grclib64.dll'
-$canonicalInstallerPath = Join-Path $repositoryRoot "bin\graal-rc-$Architecture-installer.exe"
+$canonicalInstallerPath = Join-Path $repositoryRoot "bin\alpaxis-rc-$Architecture-installer.exe"
 
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {
-    $OutputPath = Join-Path $repositoryRoot "bin\graal-rc-$Architecture-installer-test-$Version.exe"
+    $OutputPath = Join-Path $repositoryRoot "bin\alpaxis-rc-$Architecture-installer-test-$Version.exe"
 }
 elseif (-not [System.IO.Path]::IsPathRooted($OutputPath)) {
     $OutputPath = Join-Path $repositoryRoot $OutputPath
@@ -62,7 +62,7 @@ try {
     & $compileScript `
         -InstallScope machine `
         -Architecture $Architecture `
-        -AppName graal-rc `
+        -AppName alpaxis-rc `
         -ExecutablePath $binaryPath `
         -NativeLibraryPath $nativeLibraryPath `
         -NativeLibraryName grclib64.dll `

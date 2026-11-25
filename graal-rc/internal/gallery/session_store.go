@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"graal-rc/internal/appid"
 	"graal-rc/internal/credentials"
 	"graal-rc/internal/fileutil"
 )
@@ -42,7 +43,7 @@ func NewSessionStore() (*SessionStore, error) {
 			return nil, err
 		}
 	}
-	root := filepath.Join(base, "graal-rc")
+	root := filepath.Join(base, appid.ID())
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, err
 	}
