@@ -72,31 +72,35 @@ export function PlayerListWindowScreen() {
     ? t("player.selectedCount", {count: selectedIds.size, suffix: selectedIds.size === 1 ? "" : "s"})
     : t("player.allPlayers")
 
-  const sendMassPM = async (message: string) => {
+  const sendMassPM = async (message: string): Promise<boolean> => {
     const ids = selectedRecipients.map((p) => p.id)
     if (ids.length === 0) {
       toast.error(t("player.noPlayersMessage"))
-      return
+      return false
     }
     if (containsUnsafePrivateMessageMarkup(message)) {
       toast.error(t("player.pmUnsafeContent"))
-      return
+      return false
     }
     try {
       await rcService.sendMassPM(ids, message)
       toast.success(t("player.massPmSent", {count: ids.length, suffix: ids.length === 1 ? "" : "s"}))
       clearSelection()
+      return true
     } catch (err) {
       toast.error(t("player.massPmFailed"), {description: err instanceof Error ? err.message : String(err)})
+      return false
     }
   }
 
-  const sendAdminAll = async (message: string) => {
+  const sendAdminAll = async (message: string): Promise<boolean> => {
     try {
       await rcService.sendAdminMessageAll(message)
       toast.success(t("player.adminSent"))
+      return true
     } catch (err) {
       toast.error(t("player.adminFailed"), {description: err instanceof Error ? err.message : String(err)})
+      return false
     }
   }
 

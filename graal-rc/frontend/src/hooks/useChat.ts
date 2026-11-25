@@ -24,12 +24,18 @@ import {Events} from "@wailsio/runtime"
 
 import type {RcService} from "@/services/rcService"
 import type {ChatMessage, ChatTab, GsFunction} from "@/types"
+import {
+  appendChatMessage,
+  clearChannelMessages,
+  initialChatSession,
+  moveChatTab,
+  reconcileChannelTabs,
+  retainChannelHistory,
+  SERVER_CHANNEL,
+} from "@/lib/chatSession"
 import {loadGsFunctions, refreshGsFunctions, searchFunctions} from "@/lib/gscriptApi"
 import {pluginRuntime} from "@/plugins/runtime"
 import {useLanguage} from "@/hooks/useLanguage"
-
-const SERVER_CHANNEL = ""
-const MAX_LINES_PER_TAB = 1000
 
 // SERVERDATA_HIDDEN are serverdata dataTypes that are pure server-state pushes
 // with no human-readable value for chat — they previously rendered as bare grey
@@ -40,14 +46,6 @@ const SERVERDATA_HIDDEN = new Set<string>(["clearweapons", "staffguilds", "statu
 
 type Source = ChatMessage["source"]
 
-function appendLine(tab: ChatTab, msg: ChatMessage): ChatTab {
-  const messages = [...tab.messages, msg]
-  if (messages.length > MAX_LINES_PER_TAB) {
-    messages.splice(0, messages.length - MAX_LINES_PER_TAB)
-  }
-  return {...tab, messages}
-}
-
 export interface UseChatResult {
   tabs: ChatTab[]
   activeChannel: string
@@ -56,32 +54,33 @@ export interface UseChatResult {
   reorderTabs: (from: number, to: number) => void
 }
 
-export function useChat(service: RcService): UseChatResult {
+// onLine is called exactly once for every line added to any tab, as it
+// arrives, whether or not that tab is on screen.
+export function useChat(service: RcService, onLine?: (message: ChatMessage) => void): UseChatResult {
   const {t} = useLanguage()
   const idRef = useRef(0)
   const nextId = useCallback(() => ++idRef.current, [])
-  const [tabs, setTabs] = useState<ChatTab[]>([
-    {channel: SERVER_CHANNEL, label: t("rc.chat"), messages: []},
-  ])
+  const [session, setSession] = useState(() => initialChatSession(t("rc.chat")))
+  const {tabs} = session
   const [activeChannel, setActiveChannel] = useState(SERVER_CHANNEL)
+  // A ref keeps the event subscription below stable: resubscribing would reset
+  // its sequence buffer.
+  const onLineRef = useRef(onLine)
+  onLineRef.current = onLine
+
+  const addLine = useCallback((message: ChatMessage) => {
+    onLineRef.current?.(message)
+    setSession((prev) => appendChatMessage(prev, message))
+  }, [])
 
   // push appends a line to a tab, creating the tab lazily for a new channel
   // (mirrors appendChannelMessage's lazy GtkWidget creation).
   const push = useCallback(
     (channel: string, text: string, source: Source, mentionTarget?: string) => {
       const target = channel || SERVER_CHANNEL
-      const msg: ChatMessage = {id: nextId(), channel: target, text, source, ts: Date.now(), ...(mentionTarget ? {mentionTarget} : {})}
-      setTabs((prev) => {
-        const idx = prev.findIndex((t) => t.channel === target)
-        if (idx === -1) {
-          return [...prev, {channel: target, label: target, messages: [msg]}]
-        }
-        const next = [...prev]
-        next[idx] = appendLine(next[idx], msg)
-        return next
-      })
+      addLine({id: nextId(), channel: target, text, source, ts: Date.now(), ...(mentionTarget ? {mentionTarget} : {})})
     },
-    [nextId]
+    [addLine, nextId]
   )
 
   // reconcileChannels mirrors the tabs against Go's authoritative joined-set
@@ -89,15 +88,7 @@ export function useChat(service: RcService): UseChatResult {
   // newly joined channels, drop tabs for channels no longer joined.
   const reconcileChannels = useCallback((channels: string[]) => {
     const want = new Set(channels)
-    setTabs((prev) => {
-      let next = prev.filter((t) => t.channel === SERVER_CHANNEL || want.has(t.channel))
-      for (const ch of channels) {
-        if (!next.some((t) => t.channel === ch)) {
-          next = [...next, {channel: ch, label: ch, messages: []}]
-        }
-      }
-      return next
-    })
+    setSession((prev) => reconcileChannelTabs(prev, channels))
     setActiveChannel((cur) => (cur !== SERVER_CHANNEL && !want.has(cur) ? SERVER_CHANNEL : cur))
   }, [])
 
@@ -155,6 +146,11 @@ export function useChat(service: RcService): UseChatResult {
           } else if (!SERVERDATA_HIDDEN.has(dataType)) {
             push(SERVER_CHANNEL, `[${dataType}] ${content}`, "system")
           }
+          break
+        }
+        case "rc:disconnected": {
+          // data[1] is true when the app is going to reconnect by itself.
+          if (m.data?.[1] === true) setSession(retainChannelHistory)
           break
         }
         default:
@@ -229,7 +225,7 @@ export function useChat(service: RcService): UseChatResult {
   // clearChannel wipes one channel's rendered messages (frontend only).
   const clearChannel = useCallback((channel: string) => {
     const target = channel || SERVER_CHANNEL
-    setTabs((prev) => prev.map((t) => (t.channel === target ? {...t, messages: []} : t)))
+    setSession((prev) => clearChannelMessages(prev, target))
   }, [])
 
   // pushScriptHelp appends a /scripthelp2 result line: a system-style line whose
@@ -237,23 +233,16 @@ export function useChat(service: RcService): UseChatResult {
   const pushScriptHelp = useCallback(
     (channel: string, query: string, entries: GsFunction[]) => {
       const target = channel || SERVER_CHANNEL
-      const msg: ChatMessage = {
+      addLine({
         id: nextId(),
         channel: target,
         text: query,
         source: "system",
         ts: Date.now(),
         scriptHelp: entries,
-      }
-      setTabs((prev) => {
-        const idx = prev.findIndex((t) => t.channel === target)
-        if (idx === -1) return [...prev, {channel: target, label: target, messages: [msg]}]
-        const next = [...prev]
-        next[idx] = appendLine(next[idx], msg)
-        return next
       })
     },
-    [nextId]
+    [addLine, nextId]
   )
 
   // handleScriptHelp fetches (cached) the gscript.dev reference and pushes the
@@ -367,14 +356,7 @@ export function useChat(service: RcService): UseChatResult {
   // reorderTabs moves a tab (drag-and-drop reorder). The server tab stays in
   // place conceptually but can be repositioned too.
   const reorderTabs = useCallback((from: number, to: number) => {
-    if (from === to) return
-    setTabs((prev) => {
-      if (from < 0 || from >= prev.length || to < 0 || to >= prev.length) return prev
-      const next = [...prev]
-      const [moved] = next.splice(from, 1)
-      next.splice(to, 0, moved)
-      return next
-    })
+    setSession((prev) => moveChatTab(prev, from, to))
   }, [])
 
   return {tabs, activeChannel, setActiveChannel, send, reorderTabs}

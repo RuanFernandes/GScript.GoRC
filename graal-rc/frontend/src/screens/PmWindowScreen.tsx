@@ -10,6 +10,7 @@ import {usePlayers} from "@/hooks/usePlayers"
 import {useLanguage} from "@/hooks/useLanguage"
 import {usePrivateMessages} from "@/hooks/usePrivateMessages"
 import {buildPlayerMentionMatcher} from "@/lib/playerMentions"
+import {watchPmRead} from "@/lib/pmRead"
 import {rcService} from "@/services/rcService"
 import type {Player} from "@/types"
 
@@ -43,14 +44,31 @@ export function PmWindowScreen() {
   }, [])
 
   useEffect(() => {
-    if (playerID !== null) markRead(playerID)
-  }, [markRead, playerID])
-
-  useEffect(() => {
     void rcService.setPmLogConfig(chat.settings.pmLog, chat.settings.pmLogDir).catch(() => {})
   }, [chat.settings.pmLog, chat.settings.pmLogDir])
 
   const conversation = state.conversations.find((candidate) => candidate.playerId === playerID)
+  // The backend counts every incoming PM as unread, including ones that arrive
+  // while this window is open. conversation changes with each state update.
+  useEffect(() => {
+    if (playerID === null) return
+    return watchPmRead({
+      unread: conversation?.unread ?? 0,
+      isVisible: () => document.visibilityState === "visible",
+      isFocused: () => document.hasFocus(),
+      subscribe: (check) => {
+        const events = ["focus", "pointerdown", "keydown"] as const
+        events.forEach((name) => window.addEventListener(name, check))
+        document.addEventListener("visibilitychange", check)
+        return () => {
+          events.forEach((name) => window.removeEventListener(name, check))
+          document.removeEventListener("visibilitychange", check)
+        }
+      },
+      markRead: () => markRead(playerID),
+    })
+  }, [conversation, markRead, playerID])
+
   const target = useMemo<PmTarget | null>(() => {
     if (playerID === null) return null
     if (conversation) {

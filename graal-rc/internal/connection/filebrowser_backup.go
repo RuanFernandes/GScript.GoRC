@@ -122,12 +122,14 @@ func (s *Service) registerFileBrowserListing(folder string) *fileBrowserListingW
 	return wait
 }
 
-func (s *Service) resolveFileBrowserListing(folder string) {
+func (s *Service) resolveFileBrowserListing(folder string, count int) {
 	requested := normalizeFileBrowserTransferPath(folder)
 	s.fileBrowserListingWaitMu.Lock()
 	defer s.fileBrowserListingWaitMu.Unlock()
 	wait := s.fileBrowserListingWait
-	if wait == nil || wait.closed || wait.requested != requested {
+	// The native library reports an empty listing without its folder name.
+	emptyListing := requested == "" && count == 0
+	if wait == nil || wait.closed || (!emptyListing && wait.requested != requested) {
 		return
 	}
 	wait.closed = true
@@ -209,6 +211,75 @@ func (s *Service) listFileBrowserFolderContext(ctx context.Context, scope sessio
 		err := errors.New("file-browser folder listing timed out")
 		s.cancelFileBrowserListing(wait, err)
 		return nil, err
+	}
+}
+
+// lockFileBrowserOperation takes the operation lock exclusively, polling
+// instead of queueing: downloads hold the read lock for as long as they run,
+// and a queued writer would stall every other File Browser call behind them.
+func (s *Service) lockFileBrowserOperation(ctx context.Context) error {
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for !s.fileBrowserOperationMu.TryLock() {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("the file browser is busy with a transfer: %w", ctx.Err())
+		case <-ticker.C:
+		}
+	}
+	return nil
+}
+
+// ListFileBrowserFolder opens a folder and returns its listing once the server
+// has delivered it. FileBrowserCd alone only sends the request. It also returns
+// the normalized folder name ("" is the root).
+func (s *Service) ListFileBrowserFolder(ctx context.Context, folder string) (string, []rclib.FileBrowserEntry, error) {
+	cleaned, err := normalizeFileBrowserBackupPath(folder, true)
+	if err != nil {
+		return "", nil, err
+	}
+	// A backup holds the operation lock until it ends; don't queue behind it.
+	if s.fileBrowserBackupActive.Load() {
+		return "", nil, errors.New("a file-browser backup is running; try again when it finishes")
+	}
+	if err := s.lockFileBrowserOperation(ctx); err != nil {
+		return "", nil, err
+	}
+	defer s.fileBrowserOperationMu.Unlock()
+	scope, err := s.captureSession()
+	if err != nil {
+		return "", nil, err
+	}
+	entries, err := s.listFileBrowserFolderContext(ctx, scope, cleaned)
+	if err != nil {
+		return "", nil, err
+	}
+	return cleaned, entries, nil
+}
+
+// WaitFileBrowserFolders returns the accessible folder patterns. It asks the
+// server only when none are cached, because starting the file browser again
+// clears the listing the File Browser window is showing.
+func (s *Service) WaitFileBrowserFolders(ctx context.Context) ([]rclib.FileBrowserFolder, error) {
+	folders, err := s.GetFileBrowserFolders()
+	if err != nil || len(folders) > 0 {
+		return folders, err
+	}
+	if err := s.StartFileBrowser(); err != nil {
+		return nil, err
+	}
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("waiting for the file-browser folder list: %w", ctx.Err())
+		case <-ticker.C:
+			folders, err := s.GetFileBrowserFolders()
+			if err != nil || len(folders) > 0 {
+				return folders, err
+			}
+		}
 	}
 }
 

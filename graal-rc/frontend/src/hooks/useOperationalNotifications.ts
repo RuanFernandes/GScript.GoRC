@@ -62,10 +62,13 @@ export function useOperationalNotifications(): OperationalNotificationsResult {
     }
   }, [notifications])
 
-  const push = useCallback((level: OperationalNotificationLevel, title: string, message: string) => {
+  const push = useCallback((level: OperationalNotificationLevel, title: string, message: string, onceWhileUnread = false) => {
     const normalizedMessage = message.trim() || title
     const timestamp = Date.now()
     setNotifications((current) => {
+      if (onceWhileUnread && current.some((item) => !item.read && item.title === title && item.message === normalizedMessage)) {
+        return current
+      }
       const previous = current[0]
       if (previous && previous.level === level && previous.title === title && previous.message === normalizedMessage && timestamp - previous.timestamp < 1500) {
         return current
@@ -108,7 +111,7 @@ export function useOperationalNotifications(): OperationalNotificationsResult {
     const handleConflict = (event: {data: string}) => {
       const item = parseObject(event.data)
       const name = typeof item?.name === "string" ? item.name : t("notifications.script")
-      push("warning", t("notifications.sync"), t("notifications.syncConflict", {name}))
+      push("warning", t("notifications.sync"), t("notifications.syncConflict", {name}), true)
     }
 
     const offs = [

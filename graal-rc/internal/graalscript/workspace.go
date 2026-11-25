@@ -127,7 +127,10 @@ func (w *Workspace) setRoot(root string) error {
 				}
 				kind, keys := workspaceSymbolKeys(abs, path)
 				uri := pathToURI(path)
-				doc := parseDocument(uri, string(text), 0)
+				doc, ok := parseForScan(path, func() *Document { return parseDocument(uri, string(text), 0) })
+				if !ok {
+					continue
+				}
 				results <- scanResult{
 					path: path,
 					kind: kind,

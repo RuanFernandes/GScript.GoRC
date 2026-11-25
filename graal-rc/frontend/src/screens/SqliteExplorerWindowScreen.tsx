@@ -4,7 +4,9 @@
 //
 // Editing is DEFERRED: cell edits, inserts (+Row), and deletes are staged in a
 // frontend overlay and applied as ONE transaction on Save (atomic; a failing
-// statement rolls back, nothing is written). Discard clears the overlay. Three
+// statement rolls back, nothing is written). Discard clears the overlay. The
+// overlay belongs to one table: switching is blocked until it is saved or
+// discarded, and editing is locked while a save is running. Three
 // tabs: Data (inline-editable grid), Diagram (reactflow ER overview), SQL
 // (Monaco console with keyword/table/column autocomplete).
 import {useCallback, useEffect, useMemo, useRef, useState} from "react"
@@ -20,8 +22,12 @@ import {Button} from "@/components/ui/button"
 import {ScrollArea} from "@/components/ui/scroll-area"
 import {Tabs, TabsContent, TabsList, TabsTrigger} from "@/components/ui/tabs"
 import {rcService} from "@/services/rcService"
-import type {SqliteChanges, SqliteResult, SqliteSchema, SqliteTable} from "@/types"
+import type {SqliteResult, SqliteSchema, SqliteTable} from "@/types"
 import {useLanguage} from "@/hooks/useLanguage"
+import {
+  addPendingRow, buildChanges, canSwitchTable, coerceValue, createLatestGate, createSingleFlight, editPendingCell,
+  emptyStaged, isDirty, removePendingRow, stageCell, stageDelete, stagedFor, type StagedChanges,
+} from "@/lib/sqliteStaging"
 
 const KIND = "sqlite"
 
@@ -32,23 +38,10 @@ function parsePath(): string {
   return new URLSearchParams(hash.slice(q + 1)).get("p") ?? ""
 }
 
-// coerceValue: edited cell text → JSON value (number when numeric, else text).
-function coerceValue(text: string): unknown {
-  if (text === "") return ""
-  if (/^-?\d+$/.test(text)) return Number(text)
-  if (/^-?\d+\.\d+$/.test(text)) return Number(text)
-  return text
-}
-
 function cellText(v: unknown): string {
   if (v === null || v === undefined) return "NULL"
   if (typeof v === "string") return v.startsWith("base64:") ? "(blob)" : v
   return String(v)
-}
-
-interface PendingRow {
-  tempId: string
-  cells: Record<string, string>
 }
 
 // --- reactflow table card node ---
@@ -79,14 +72,20 @@ export function SqliteExplorerWindowScreen() {
   const [tables, setTables] = useState<SqliteTable[]>([])
   const [schema, setSchema] = useState<SqliteSchema[]>([])
   const [active, setActive] = useState<string | null>(null)
-  const [data, setData] = useState<SqliteResult | null>(null)
+  // Rows are tagged with their table so they are never shown or edited as
+  // another table's rows.
+  const [data, setData] = useState<{table: string; result: SqliteResult} | null>(null)
   const [loadingTables, setLoadingTables] = useState(true)
   const [loadingData, setLoadingData] = useState(false)
 
-  // Deferred overlay.
-  const [edits, setEdits] = useState<Map<string, unknown>>(new Map())
-  const [deletes, setDeletes] = useState<Set<number>>(new Set())
-  const [pending, setPending] = useState<PendingRow[]>([])
+  // Deferred overlay. The ref lets event handlers and save() read the latest
+  // staged changes without waiting for a render.
+  const [staged, setStaged] = useState<StagedChanges>(() => emptyStaged())
+  const stagedRef = useRef(staged)
+  const [saving, setSaving] = useState(false)
+  const savingRef = useRef(false)
+  const saveFlight = useRef(createSingleFlight<boolean>()).current
+  const dataGate = useRef(createLatestGate()).current
   const [edit, setEdit] = useState<{rowid?: number; tempId?: string; col: string; value: string} | null>(null)
 
   const [sql, setSql] = useState("")
@@ -94,11 +93,14 @@ export function SqliteExplorerWindowScreen() {
   const [running, setRunning] = useState(false)
   const [confirmClose, setConfirmClose] = useState(false)
 
-  const dirty = edits.size > 0 || deletes.size > 0 || pending.length > 0
+  const dirty = isDirty(staged)
 
   const baseName = remotePath.includes("/") ? remotePath.slice(remotePath.lastIndexOf("/") + 1) : remotePath
-  const cols = data?.columns ?? []
-  const rows = data?.rows ?? []
+  const shown = data && data.table === active ? data.result : null
+  const shownTable = shown ? active : null
+  const {edits, deletes, pending} = stagedFor(staged, shownTable)
+  const cols = shown?.columns ?? []
+  const rows = shown?.rows ?? []
 
   const loadTables = useCallback(async () => {
     setLoadingTables(true)
@@ -117,17 +119,18 @@ export function SqliteExplorerWindowScreen() {
 
   const loadData = useCallback(async () => {
     if (!active) return
+    const isCurrent = dataGate()
     setLoadingData(true)
     setEdit(null)
     try {
       const res = await rcService.sqliteQuery(remotePath, `SELECT rowid, * FROM "${active}" LIMIT 200`, [])
-      setData(res)
+      if (isCurrent()) setData({table: active, result: res})
     } catch (err) {
-      toast.error(t("sqlite.queryFailed"), {description: String(err)})
+      if (isCurrent()) toast.error(t("sqlite.queryFailed"), {description: String(err)})
     } finally {
-      setLoadingData(false)
+      if (isCurrent()) setLoadingData(false)
     }
-  }, [remotePath, active, t])
+  }, [remotePath, active, t, dataGate])
 
   useEffect(() => {
     void loadTables()
@@ -150,74 +153,95 @@ export function SqliteExplorerWindowScreen() {
     }
   }, [remotePath])
 
-  const discardAll = useCallback(() => {
-    setEdits(new Map())
-    setDeletes(new Set())
-    setPending([])
+  const replaceStaged = useCallback((next: StagedChanges) => {
+    stagedRef.current = next
+    setStaged(next)
   }, [])
+  // Every user edit goes through here, so nothing changes while saving.
+  const updateStaged = useCallback((apply: (current: StagedChanges) => StagedChanges) => {
+    if (!savingRef.current) replaceStaged(apply(stagedRef.current))
+  }, [replaceStaged])
+
+  const discardAll = useCallback(() => {
+    updateStaged(() => emptyStaged())
+  }, [updateStaged])
+
+  const selectTable = useCallback((name: string) => {
+    if (!canSwitchTable(stagedRef.current, savingRef.current, active, name)) {
+      toast.warning(t("sqlite.saveOrDiscardBeforeSwitching"))
+      return
+    }
+    if (name !== active) setEdit(null)
+    setActive(name)
+  }, [active, t])
 
   // Commit one cell edit into the overlay (no DB write).
   const commitEdit = useCallback(() => {
-    if (!edit) return
-    if (edit.rowid !== undefined) {
-      setEdits((m) => {
-        const next = new Map(m)
-        next.set(`${edit.rowid}:${edit.col}`, coerceValue(edit.value))
-        return next
-      })
-    } else if (edit.tempId) {
-      setPending((rows) => rows.map((r) => (r.tempId === edit.tempId ? {...r, cells: {...r.cells, [edit.col]: edit.value}} : r)))
+    if (!edit || !shownTable) return
+    const {rowid, tempId, col, value} = edit
+    if (rowid !== undefined) {
+      updateStaged((s) => stageCell(s, shownTable, rowid, col, coerceValue(value)))
+    } else if (tempId) {
+      updateStaged((s) => editPendingCell(s, shownTable, tempId, col, value))
     }
     setEdit(null)
-  }, [edit])
+  }, [edit, shownTable, updateStaged])
+
+  const startEdit = useCallback((next: {rowid?: number; tempId?: string; col: string; value: string}) => {
+    if (!savingRef.current) setEdit(next)
+  }, [])
 
   const addRow = useCallback(() => {
-    setPending((rows) => [...rows, {tempId: `t${Date.now()}`, cells: {}}])
-  }, [])
+    if (shownTable) updateStaged((s) => addPendingRow(s, shownTable, `t${Date.now()}`))
+  }, [shownTable, updateStaged])
 
   const removeExisting = useCallback((rowid: number) => {
-    setDeletes((s) => new Set(s).add(rowid))
-  }, [])
+    if (shownTable) updateStaged((s) => stageDelete(s, shownTable, rowid))
+  }, [shownTable, updateStaged])
   const removePending = useCallback((tempId: string) => {
-    setPending((rows) => rows.filter((r) => r.tempId !== tempId))
-  }, [])
+    if (shownTable) updateStaged((s) => removePendingRow(s, shownTable, tempId))
+  }, [shownTable, updateStaged])
 
-  const save = useCallback(async () => {
-    if (!active || !dirty) return
-    const changes: SqliteChanges = {
-      table: active,
-      inserts: pending.map((r) => {
-        const cells: Record<string, unknown> = {}
-        for (const [k, v] of Object.entries(r.cells)) cells[k] = coerceValue(v)
-        return cells
-      }),
-      updates: [...edits.entries()].map(([k, v]) => {
-        const [rowid, col] = k.split(":")
-        return {rowid: Number(rowid), column: col, value: v}
-      }),
-      deletes: [...deletes],
-    }
+  // Resolves true when nothing is left unsaved. A call made while a save is
+  // running joins it, so staged inserts are never committed twice.
+  const save = useCallback(() => saveFlight(async () => {
+    const changes = buildChanges(stagedRef.current)
+    if (!changes) return true
+    savingRef.current = true
+    setSaving(true)
+    setEdit(null)
     try {
       await rcService.commitSqlite(remotePath, changes)
-      discardAll()
+      replaceStaged(emptyStaged())
       await loadData()
       toast.success(t("sqlite.saved"))
+      return true
     } catch (err) {
       toast.error(t("common.saveFailed"), {description: String(err)})
+      return false
+    } finally {
+      savingRef.current = false
+      setSaving(false)
     }
-  }, [active, dirty, pending, edits, deletes, remotePath, discardAll, loadData, t])
+  }), [saveFlight, remotePath, replaceStaged, loadData, t])
+
+  const closeWindow = useCallback(async () => {
+    // Clear the backend flag first so the close hook does not prompt again.
+    await rcService.setEditorDirty(KIND, remotePath, false)
+    await rcService.closeScriptEditor(KIND, remotePath)
+  }, [remotePath])
 
   const saveAndClose = useCallback(async () => {
     setConfirmClose(false)
-    await save()
-  }, [save])
+    if (await save()) await closeWindow().catch(() => {})
+  }, [save, closeWindow])
 
   const discardAndClose = useCallback(() => {
+    if (savingRef.current) return
     setConfirmClose(false)
     discardAll()
-    rcService.setEditorDirty(KIND, remotePath, false).catch(() => {})
-    rcService.closeScriptEditor(KIND, remotePath).catch(() => {})
-  }, [remotePath, discardAll])
+    closeWindow().catch(() => {})
+  }, [discardAll, closeWindow])
 
   const runSql = useCallback(async () => {
     setRunning(true)
@@ -264,19 +288,19 @@ export function SqliteExplorerWindowScreen() {
         {dirty && <span className="text-xs text-amber-500">{t("sqlite.unsaved")}</span>}
         <div className="ml-auto flex items-center gap-2">
           {dirty && (
-            <Button size="sm" variant="ghost" onClick={discardAll} title={t("sqlite.discardChanges")}>
+            <Button size="sm" variant="ghost" onClick={discardAll} disabled={saving} title={t("sqlite.discardChanges")}>
               <RotateCcw />
               {t("sqlite.discard")}
             </Button>
           )}
           {active && (
-            <Button size="sm" variant="outline" onClick={addRow} title={t("sqlite.addRow")}>
+            <Button size="sm" variant="outline" onClick={addRow} disabled={saving || !shownTable} title={t("sqlite.addRow")}>
               <Plus />
               {t("sqlite.row")}
             </Button>
           )}
-          <Button size="sm" onClick={save} disabled={!dirty} title={t("sqlite.applyUpload")}>
-            <Save />
+          <Button size="sm" onClick={() => void save()} disabled={!dirty || saving} title={t("sqlite.applyUpload")}>
+            {saving ? <Loader2 className="animate-spin" /> : <Save />}
             {t("sqlite.save")}
           </Button>
         </div>
@@ -299,7 +323,8 @@ export function SqliteExplorerWindowScreen() {
                     className={`hover:bg-accent flex w-full items-center rounded px-2 py-1.5 text-left text-sm ${
                       active === t.name ? "bg-accent" : ""
                     }`}
-                    onClick={() => setActive(t.name)}
+                    onClick={() => selectTable(t.name)}
+                    disabled={saving}
                     title={t.schema}
                   >
                     <span className="truncate">{t.name}</span>
@@ -343,20 +368,20 @@ export function SqliteExplorerWindowScreen() {
                           return (
                             <tr key={r} className="border-b border-white/5 last:border-0 hover:bg-accent/40">
                               <td className="px-2 py-1">
-                                <button className="text-muted-foreground hover:text-destructive" title={t("sqlite.deleteRow")} onClick={() => removeExisting(rowid)}>
+                                <button className="text-muted-foreground hover:text-destructive" disabled={saving} title={t("sqlite.deleteRow")} onClick={() => removeExisting(rowid)}>
                                   <Trash2 className="size-3.5" />
                                 </button>
                               </td>
                               {row.map((v, c) => {
                                 const col = cols[c]
                                 const edited = c > 0 ? edits.get(`${rowid}:${col}`) : undefined
-                                const shown = c > 0 && edited !== undefined ? edited : v
+                                const value = c > 0 && edited !== undefined ? edited : v
                                 const editing = edit && edit.rowid === rowid && edit.col === col
                                 return (
                                   <td
                                     key={c}
                                     className="cursor-text whitespace-nowrap px-2 py-1"
-                                    onDoubleClick={() => c > 0 && setEdit({rowid, col, value: cellText(shown) === "NULL" ? "" : cellText(shown)})}
+                                    onDoubleClick={() => c > 0 && startEdit({rowid, col, value: cellText(value) === "NULL" ? "" : cellText(value)})}
                                   >
                                     {editing ? (
                                       <input
@@ -372,7 +397,7 @@ export function SqliteExplorerWindowScreen() {
                                       />
                                     ) : (
                                       <span className={c > 0 && edited !== undefined ? "text-sky-400" : v === null ? "text-muted-foreground italic" : ""}>
-                                        {cellText(shown)}
+                                        {cellText(value)}
                                       </span>
                                     )}
                                   </td>
@@ -385,18 +410,18 @@ export function SqliteExplorerWindowScreen() {
                         {pending.map((p) => (
                           <tr key={p.tempId} className="border-b border-white/5 bg-emerald-500/5">
                             <td className="px-2 py-1">
-                              <button className="text-muted-foreground hover:text-destructive" title={t("sqlite.removeRow")} onClick={() => removePending(p.tempId)}>
+                              <button className="text-muted-foreground hover:text-destructive" disabled={saving} title={t("sqlite.removeRow")} onClick={() => removePending(p.tempId)}>
                                 <Trash2 className="size-3.5" />
                               </button>
                             </td>
                             {cols.map((col, c) => {
                               const editing = edit && edit.tempId === p.tempId && edit.col === col
-                              const shown = c > 0 ? p.cells[col] ?? "" : t("sqlite.newRow")
+                              const value = c > 0 ? p.cells[col] ?? "" : t("sqlite.newRow")
                               return (
                                 <td
                                   key={c}
                                   className="cursor-text whitespace-nowrap px-2 py-1"
-                                  onDoubleClick={() => c > 0 && setEdit({tempId: p.tempId, col, value: p.cells[col] ?? ""})}
+                                  onDoubleClick={() => c > 0 && startEdit({tempId: p.tempId, col, value: p.cells[col] ?? ""})}
                                 >
                                   {c === 0 ? (
                                     <span className="text-muted-foreground italic">{t("sqlite.newRow")}</span>
@@ -413,7 +438,7 @@ export function SqliteExplorerWindowScreen() {
                                       }}
                                     />
                                   ) : (
-                                    <span className="text-emerald-400">{shown || "—"}</span>
+                                    <span className="text-emerald-400">{value || "—"}</span>
                                   )}
                                 </td>
                               )
@@ -461,7 +486,7 @@ export function SqliteExplorerWindowScreen() {
             <Button variant="ghost" onClick={() => setConfirmClose(false)}>
               {t("common.cancel")}
             </Button>
-            <Button variant="destructive" onClick={discardAndClose}>
+            <Button variant="destructive" onClick={discardAndClose} disabled={saving}>
               {t("sqlite.discard")}
             </Button>
             <Button onClick={saveAndClose}>{t("sqlite.save")}</Button>

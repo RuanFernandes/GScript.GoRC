@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -108,5 +109,98 @@ func TestRecoveryCleansBackendBeforePublishingFailure(t *testing.T) {
 	}
 	if !cleaned.Load() {
 		t.Fatal("terminal failure did not clean the backend")
+	}
+}
+
+// finishRecovery runs a recovery to completion and returns every status.
+func finishRecovery(t *testing.T, recovery *connectionRecovery, delays []time.Duration, attempt func(context.Context) error, onFailure ...func(context.Context)) []ConnectionRecoveryStatus {
+	t.Helper()
+	var mu sync.Mutex
+	var published []ConnectionRecoveryStatus
+	recovery.start("timeout", delays, attempt, func(status ConnectionRecoveryStatus) {
+		mu.Lock()
+		published = append(published, status)
+		mu.Unlock()
+	}, onFailure...)
+	recovery.mu.Lock()
+	done := recovery.done
+	recovery.mu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("recovery did not finish")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	return published
+}
+
+func TestRecoveryReconnectsAgainWhenTheNewSessionDropsBeforeItFinishes(t *testing.T) {
+	var recovery connectionRecovery
+	var calls atomic.Int32
+	finishRecovery(t, &recovery, []time.Duration{0, 0, 0}, func(context.Context) error {
+		if calls.Add(1) == 1 {
+			// Reconnected, then dropped while the attempt was finishing.
+			recovery.noteDisconnect("connection reset by peer")
+		}
+		return nil
+	})
+	if calls.Load() != 2 {
+		t.Fatalf("attempts = %d, want a second reconnect", calls.Load())
+	}
+	if status := recovery.snapshot(); status.Active || status.Phase != "connected" {
+		t.Fatalf("status = %+v", status)
+	}
+}
+
+func TestRecoveryDoesNotReportConnectedAfterAKickWhileFinishing(t *testing.T) {
+	var recovery connectionRecovery
+	var calls atomic.Int32
+	var cleaned atomic.Bool
+	published := finishRecovery(t, &recovery, []time.Duration{0, 0}, func(context.Context) error {
+		calls.Add(1)
+		recovery.noteDisconnect("you have been kicked")
+		return nil
+	}, func(context.Context) { cleaned.Store(true) })
+	for _, status := range published {
+		if status.Phase == "connected" {
+			t.Fatalf("reported connected on a dead session: %+v", status)
+		}
+	}
+	if status := recovery.snapshot(); status.Phase != "failed" || calls.Load() != 1 || !cleaned.Load() {
+		t.Fatalf("status=%+v calls=%d cleaned=%v", status, calls.Load(), cleaned.Load())
+	}
+}
+
+func TestRecoveryFailsWhenTheLastAttemptDropsWhileFinishing(t *testing.T) {
+	var recovery connectionRecovery
+	finishRecovery(t, &recovery, []time.Duration{0}, func(context.Context) error {
+		recovery.noteDisconnect("timeout")
+		return nil
+	})
+	if status := recovery.snapshot(); status.Phase != "failed" {
+		t.Fatalf("status = %+v", status)
+	}
+}
+
+func TestRecoveryIgnoresDisconnectsOfEarlierAttempts(t *testing.T) {
+	var recovery connectionRecovery
+	var calls atomic.Int32
+	finishRecovery(t, &recovery, []time.Duration{0, 0, 0}, func(context.Context) error {
+		if calls.Add(1) == 1 {
+			recovery.noteDisconnect("connection reset by peer")
+			return errors.New("connection reset by peer")
+		}
+		return nil
+	})
+	if status := recovery.snapshot(); calls.Load() != 2 || status.Phase != "connected" {
+		t.Fatalf("status=%+v calls=%d", status, calls.Load())
+	}
+}
+
+func TestNoteDisconnectWithoutRecovery(t *testing.T) {
+	var recovery connectionRecovery
+	if recovery.noteDisconnect("timeout") {
+		t.Fatal("an idle recovery claimed the disconnect")
 	}
 }

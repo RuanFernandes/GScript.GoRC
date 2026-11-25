@@ -14,7 +14,7 @@ func TestWindowsNativeLibraryExportsPlayerIdentityCallbacks(t *testing.T) {
 	if err := load(); err != nil {
 		t.Fatalf("load %s: %v", libFileName(), err)
 	}
-	for name, proc := range map[string]*proc{
+	for name, proc := range map[string]*connectionProc{
 		"rc_on_player_joined":             procOnPlayerJoined,
 		"rc_on_player_left":               procOnPlayerLeft,
 		"rc_on_player_prop_changed":       procOnPlayerPropChanged,
@@ -182,7 +182,7 @@ func TestCallbackPanicIsQueuedForPump(t *testing.T) {
 func TestDisconnectedExRejectsStaleRegistrationAndHandle(t *testing.T) {
 	nativeHandle := new(byte)
 	otherHandle := new(byte)
-	testHandle := Handle(uintptr(unsafe.Pointer(nativeHandle)))
+	const testHandle = Handle(0xCA13)
 	reason := append([]byte("Connection closed"), 0)
 	var calls int
 	var receivedHandle Handle
@@ -191,7 +191,8 @@ func TestDisconnectedExRejectsStaleRegistrationAndHandle(t *testing.T) {
 	routeMu.Lock()
 	token := nextDisconnectRouteTokenLocked()
 	disconnectRoutes[token] = &disconnectRoute{
-		handle: testHandle,
+		handle:     testHandle,
+		connection: uintptr(unsafe.Pointer(nativeHandle)),
 		callbacks: &EventCallbacks{
 			DisconnectedEx: func(handle Handle, message string) {
 				calls++

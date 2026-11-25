@@ -7,6 +7,7 @@ import {type FormEvent, useEffect, useRef, useState} from "react"
 import {Modal} from "./Modal"
 import {Button} from "@/components/ui/button"
 import {useLanguage} from "@/hooks/useLanguage"
+import {createSendGuard} from "@/lib/sendGuard"
 
 interface MessageComposeDialogProps {
   open: boolean
@@ -16,7 +17,9 @@ interface MessageComposeDialogProps {
   sendLabel?: string
   singleLine?: boolean
   onClose: () => void
-  onSend: (message: string) => Promise<void>
+  // Resolves true when the message was sent. The dialog stays open, with the
+  // text, on false or rejection; the handler reports the reason.
+  onSend: (message: string) => Promise<boolean>
 }
 
 export function MessageComposeDialog({
@@ -33,11 +36,11 @@ export function MessageComposeDialog({
   const [text, setText] = useState("")
   const [sending, setSending] = useState(false)
   const ref = useRef<HTMLTextAreaElement | null>(null)
+  const [guard] = useState(() => createSendGuard((_key, busy) => setSending(busy)))
 
   useEffect(() => {
     if (open) {
       setText("")
-      setSending(false)
       // Focus after the modal mounts.
       const id = window.setTimeout(() => ref.current?.focus(), 0)
       return () => window.clearTimeout(id)
@@ -47,14 +50,13 @@ export function MessageComposeDialog({
   const submit = async (e: FormEvent) => {
     e.preventDefault()
     const trimmed = text.trim()
-    if (!trimmed || sending) return
-    setSending(true)
-    try {
-      await onSend(trimmed)
-      onClose()
-    } finally {
-      setSending(false)
-    }
+    if (!trimmed) return
+    if (await guard.run("compose", () => onSend(trimmed)) === "sent") onClose()
+  }
+
+  // Closing during a send would discard the text before the result is known.
+  const requestClose = () => {
+    if (!sending) onClose()
   }
 
   return (
@@ -62,7 +64,7 @@ export function MessageComposeDialog({
       open={open}
       title={title}
       description={t("player.toRecipient", {recipient: recipientLabel})}
-      onClose={onClose}
+      onClose={requestClose}
       footer={
         <>
           <Button variant="ghost" onClick={onClose} disabled={sending}>
@@ -80,6 +82,7 @@ export function MessageComposeDialog({
             className="bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:ring-ring h-10 w-full rounded-md border px-3 text-sm outline-none focus-visible:ring-2"
             placeholder={placeholder ?? t("rc.messagePlaceholder")}
             value={text}
+            readOnly={sending}
             onChange={(e) => setText(e.target.value)}
           />
         ) : (
@@ -88,6 +91,7 @@ export function MessageComposeDialog({
             className="bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:ring-ring min-h-[120px] w-full resize-none rounded-md border px-3 py-2 text-sm outline-none focus-visible:ring-2"
             placeholder={placeholder ?? t("rc.messagePlaceholder")}
             value={text}
+            readOnly={sending}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) submit(e)

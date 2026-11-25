@@ -155,6 +155,7 @@ type Service struct {
 	fileBrowserListingWaitMu sync.Mutex
 	fileBrowserListingWait   *fileBrowserListingWait
 	fileBrowserBackupActive  atomic.Bool
+	fileBrowserView          fileBrowserView
 	fileDownloadSlot         chan struct{} // cancellation-aware single-transfer gate, guarded by mu
 	pendingFilesMu           sync.Mutex
 	pendingFiles             map[string]*fileWait
@@ -184,10 +185,19 @@ type Service struct {
 	// instead of racing one value across two waiters.
 	editorMu sync.Mutex
 	editor   map[string]*editorWait
+	// unansweredEditors holds the keys of timed-out requests whose reply may
+	// still arrive, with when to stop expecting it. Guarded by editorMu.
+	unansweredEditors map[string]time.Time
+
+	// One request at a time where grclib labels replies with the latest
+	// request (see replyGate).
+	npcAttrGate replyGate
+	banGate     replyGate
 
 	// banTypes is the latest server-reported ban-types list (name,seconds pairs),
 	// pushed via the BanListData callback with data_type=="bantypes". Guarded by
-	// editorMu. Empty until requested via GetBanTypes.
+	// editorMu. Empty until requested via GetBanTypes, and cleared with the
+	// session because each server has its own list.
 	banTypes string
 
 	// serverText contains the latest server options/flags snapshot. These are
@@ -265,6 +275,10 @@ type ServerScriptContext struct {
 
 // scriptTimeout is how long OpenScript/OpenNPC* waits for the NC server reply.
 const scriptTimeout = 15 * time.Second
+
+// sharedReplyTimeout bounds a caller that joined another caller's request. It
+// outlasts the owner's queue and reply waits.
+const sharedReplyTimeout = 2*scriptTimeout + replyQuarantine + time.Second
 
 var errNCUnavailable = errors.New("NC is not connected")
 
@@ -451,57 +465,6 @@ func completeEditorWait(waiter *editorWait, reply any) bool {
 	return true
 }
 
-// resolveEditorForAccount mirrors the reference client's callback handling:
-// the callback is authoritative and is accepted even when the returned
-// account differs from the requested spelling. Exact normalized matches are
-// preferred; a self request has a dedicated key because /open* commands let
-// the server resolve the current account. If the server still returns an
-// unexpected account, a single in-flight request of that editor kind is an
-// unambiguous fallback. Multiple unrelated requests remain fail-closed.
-func (s *Service) resolveEditorForAccount(kind, account string, reply any) bool {
-	exactKey := editorKey(kind, account)
-	selfKey := editorSelfKey(kind)
-	prefix := kind + ":"
-
-	s.editorMu.Lock()
-	defer s.editorMu.Unlock()
-
-	for _, key := range []string{exactKey, selfKey} {
-		if waiter, ok := s.editor[key]; ok {
-			if completeEditorWait(waiter, reply) {
-				delete(s.editor, key)
-				return true
-			}
-			delete(s.editor, key)
-		}
-	}
-
-	var fallbackKey string
-	for key, waiter := range s.editor {
-		if !strings.HasPrefix(key, prefix) || key == exactKey || key == selfKey {
-			continue
-		}
-		if waiter.closed {
-			delete(s.editor, key)
-			continue
-		}
-		if fallbackKey != "" {
-			return false
-		}
-		fallbackKey = key
-	}
-	if fallbackKey == "" {
-		return false
-	}
-	waiter := s.editor[fallbackKey]
-	if !completeEditorWait(waiter, reply) {
-		delete(s.editor, fallbackKey)
-		return false
-	}
-	delete(s.editor, fallbackKey)
-	return true
-}
-
 // cancelEditor removes a waiter only if it is still the request that registered
 // it. This identity check prevents a late timeout from deleting a newer request
 // reusing the same key.
@@ -512,6 +475,7 @@ func (s *Service) cancelEditor(key string, waiter *editorWait, err error) {
 			waiter.err = err
 			waiter.closed = true
 			close(waiter.done)
+			s.rememberUnansweredLocked(key)
 		}
 		delete(s.editor, key)
 	}
@@ -537,13 +501,18 @@ func (s *Service) dropEditor(key string) {
 // awaitEditor blocks on the wait's reply or the timeout, returning the typed
 // reply. Only the owner (isNew) drops the key on timeout.
 func (s *Service) awaitEditor(w *editorWait, key string, isNew bool, kind string) (any, error) {
+	limit := scriptTimeout
+	if !isNew {
+		// The owner may be queued behind another request before it sends.
+		limit = sharedReplyTimeout
+	}
 	select {
 	case <-w.done:
 		if w.err != nil {
 			return nil, w.err
 		}
 		return w.reply, nil
-	case <-time.After(scriptTimeout):
+	case <-time.After(limit):
 		if isNew {
 			s.cancelEditor(key, w, fmt.Errorf("%s request timed out", kind))
 		}
@@ -652,6 +621,7 @@ func (s *Service) cancelFile(path string, waiter *fileWait, err error) {
 // minutes on a dead callback route.
 func (s *Service) cancelWaiters(err error) {
 	s.cancelCurrentFileBrowserListing(err)
+	s.fileBrowserView.reset()
 
 	s.pendingMu.Lock()
 	for key, waiter := range s.pending {
@@ -661,6 +631,8 @@ func (s *Service) cancelWaiters(err error) {
 	s.pendingMu.Unlock()
 
 	s.editorMu.Lock()
+	s.unansweredEditors = nil
+	s.banTypes = ""
 	for key, waiter := range s.editor {
 		delete(s.editor, key)
 		if !waiter.closed {
@@ -1865,14 +1837,20 @@ func (s *Service) connectToServer(ctx context.Context, index int) (resultErr err
 			s.emitEvent("rc:npcFlags", id, flags)
 		},
 		NPCAttributes: func(id int, attrs string) {
+			s.npcAttrGate.delivered(strconv.Itoa(id))
 			s.resolvePending(pendingKey("npcattr", strconv.Itoa(id)), rclib.ScriptReply{Type: "npcattr", ID: id, Script: attrs})
 			s.emitEvent("rc:npcAttributes", id, attrs)
 		},
 		FileBrowserFolders: func(count int) { s.emitEvent("rc:fbFolders", count) },
 		FileBrowserFiles: func(folder string, count int) {
-			s.resolveFileBrowserListing(folder)
-			if !s.fileBrowserBackupActive.Load() {
-				s.emitEvent("rc:fbFiles", folder, count)
+			// Decided before the listing waiter wakes and changes the view.
+			label, hidden := folder, s.fileBrowserBackupActive.Load()
+			if !hidden {
+				label, hidden = s.fileBrowserView.delivered(folder, count)
+			}
+			s.resolveFileBrowserListing(folder, count)
+			if !hidden {
+				s.emitEvent("rc:fbFiles", label, count)
 			}
 		},
 		FileBrowserMessage: func(message string) { s.emitEvent("rc:fbMessage", message) },
@@ -1908,6 +1886,7 @@ func (s *Service) connectToServer(ctx context.Context, index int) (resultErr err
 		},
 		BanData: func(account, computerID, details string) {
 			log.Printf("[editor-cb] ban_data account=%q", account)
+			s.banGate.delivered(account)
 			resolved := s.resolveEditorForAccount("ban", account, BanData{
 				Account: account, ComputerID: computerID, Details: details,
 			})
@@ -1921,9 +1900,7 @@ func (s *Service) connectToServer(ctx context.Context, index int) (resultErr err
 			switch dataType {
 			case "bantypes":
 				// Global list (no account correlation): cache for GetBanTypes.
-				s.editorMu.Lock()
-				s.banTypes = content
-				s.editorMu.Unlock()
+				s.cacheBanTypes(epoch, content)
 				s.resolveEditor(editorKey("bantypes", ""), content)
 			case "banhistory":
 				if !s.resolveEditorForAccount("banhistory", account, content) {
@@ -2914,18 +2891,29 @@ func (s *Service) OpenBan(account string) (BanData, error) {
 	if selfRequest {
 		key = editorSelfKey("ban")
 	}
+	scope, err := s.captureSession()
+	if err != nil {
+		return BanData{}, err
+	}
 	w, isNew := s.registerEditor(key)
 	if isNew {
-		log.Printf("[editor] request ban account=%q self=%v (self creds.Account=%q nickname=%q)", target, selfRequest, s.creds.Account, s.creds.Nickname)
-		var requestErr error
-		if selfRequest {
-			requestErr = rclib.Execute(h, "/openaccess")
-		} else {
-			requestErr = rclib.RequestPlayerBanByAccount(h, target)
+		// grclib can label a ban reply with the last account requested, so
+		// only one ban request is in flight at a time.
+		err := s.banGate.exchange(scope.done, target, func() error {
+			log.Printf("[editor] request ban account=%q self=%v (self creds.Account=%q nickname=%q)", target, selfRequest, s.creds.Account, s.creds.Nickname)
+			if selfRequest {
+				return rclib.Execute(h, "/openaccess")
+			}
+			return rclib.RequestPlayerBanByAccount(h, target)
+		}, w.done, scriptTimeout, replyQuarantine)
+		if errors.Is(err, errReplyTimeout) {
+			err = errors.New("player ban request timed out")
+			s.cancelEditor(key, w, err)
+			return BanData{}, err
 		}
-		if requestErr != nil {
+		if err != nil {
 			s.dropEditor(key)
-			return BanData{}, requestErr
+			return BanData{}, err
 		}
 	} else {
 		log.Printf("[editor] dedup ban account=%q self=%v (awaiting in-flight request)", target, selfRequest)
@@ -4082,9 +4070,15 @@ func (s *Service) OpenNPCFlags(id int) (rclib.ScriptReply, error) {
 	}
 }
 
-// OpenNPCAttributes requests an NPC's attributes and waits for the reply.
+// OpenNPCAttributes requests an NPC's attributes and waits for the reply. The
+// reply carries no NPC id: grclib labels it with the last id requested, so these
+// requests are sent one at a time.
 func (s *Service) OpenNPCAttributes(id int) (rclib.ScriptReply, error) {
 	h, err := s.requireHandle()
+	if err != nil {
+		return rclib.ScriptReply{}, err
+	}
+	scope, err := s.captureSession()
 	if err != nil {
 		return rclib.ScriptReply{}, err
 	}
@@ -4092,7 +4086,13 @@ func (s *Service) OpenNPCAttributes(id int) (rclib.ScriptReply, error) {
 	pending := pendingKey("npcattr", key)
 	waiter, isNew := s.registerPending(pending)
 	if isNew {
-		if err := rclib.RequestNPCAttributes(h, id); err != nil {
+		err := s.npcAttrGate.exchange(scope.done, key, func() error {
+			return rclib.RequestNPCAttributes(h, id)
+		}, waiter.done, scriptTimeout, replyQuarantine)
+		if err != nil {
+			if errors.Is(err, errReplyTimeout) {
+				err = errors.New("npc attributes request timed out")
+			}
 			s.cancelPending(pending, waiter, err)
 			return rclib.ScriptReply{}, err
 		}
@@ -4100,10 +4100,7 @@ func (s *Service) OpenNPCAttributes(id int) (rclib.ScriptReply, error) {
 	select {
 	case <-waiter.done:
 		return waiter.reply, waiter.err
-	case <-time.After(scriptTimeout):
-		if isNew {
-			s.cancelPending(pending, waiter, errors.New("npc attributes request timed out"))
-		}
+	case <-time.After(sharedReplyTimeout):
 		return rclib.ScriptReply{}, errors.New("npc attributes request timed out")
 	}
 }
@@ -4275,6 +4272,7 @@ func (s *Service) StartFileBrowser() error {
 	if err != nil {
 		return err
 	}
+	s.fileBrowserView.reset()
 	return rclib.FileBrowserStart(h)
 }
 
@@ -4286,6 +4284,7 @@ func (s *Service) FileBrowserCd(folder string) error {
 	if err != nil {
 		return err
 	}
+	s.fileBrowserView.requested(folder)
 	return rclib.FileBrowserCd(h, folder)
 }
 
@@ -4458,11 +4457,8 @@ func (s *Service) finishFileTransfer(scope sessionScope, path string, waiter *fi
 	}
 }
 
-// UploadFile uploads raw bytes to a remote path. When the max upload size is
-// known, oversize uploads are rejected up front with a clear error.
-func (s *Service) UploadFile(path string, content []byte) error {
-	s.fileBrowserOperationMu.RLock()
-	defer s.fileBrowserOperationMu.RUnlock()
+// uploadFileLocked requires fileBrowserOperationMu, shared or exclusive.
+func (s *Service) uploadFileLocked(path string, content []byte) error {
 	h, err := s.requireHandle()
 	if err != nil {
 		return err

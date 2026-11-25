@@ -15,6 +15,7 @@ import type {RcService} from "@/services/rcService"
 import type {FileBrowserConfig, FileBrowserEntry, FileBrowserFolder} from "@/types"
 import {useLanguage} from "@/hooks/useLanguage"
 import {isPreviewTransferMessage, mergeFileBrowserMessage} from "@/lib/fileBrowserMessages"
+import {createLatestRequest} from "@/lib/fileBrowserSnapshot"
 import {fileBrowserFileExists, fileBrowserUploadPath} from "@/lib/fileBrowserUpload"
 
 type Evt = {seq: number; name: string; data: unknown[]}
@@ -121,20 +122,32 @@ export function useFileBrowser(service: RcService): UseFileBrowserResult {
     setMessages((prev) => mergeFileBrowserMessage(prev, msg))
   }, [])
 
-  const snapshotFolders = useCallback(async () => {
-    const list = await service.getFileBrowserFolders().catch(() => null)
-    setFolders(list ?? [])
-    setLoaded(true)
-  }, [service])
+  const [folderRequests] = useState(createLatestRequest)
+  const [fileRequests] = useState(createLatestRequest)
+
+  const snapshotFolders = useCallback(
+    () =>
+      folderRequests.run(
+        () => service.getFileBrowserFolders().catch(() => null),
+        (list) => {
+          setFolders(list ?? [])
+          setLoaded(true)
+        },
+      ),
+    [service, folderRequests],
+  )
 
   const snapshotFiles = useCallback(
-    async (folder: string) => {
-      const list = await service.getFileBrowserFiles().catch(() => null)
-      setCurrentFolder(folder)
-      setFiles(list ?? [])
-      setLoaded(true)
-    },
-    [service],
+    (folder: string) =>
+      fileRequests.run(
+        () => service.getFileBrowserFiles().catch(() => null),
+        (list) => {
+          setCurrentFolder(folder)
+          setFiles(list ?? [])
+          setLoaded(true)
+        },
+      ),
+    [service, fileRequests],
   )
 
   const refresh = useCallback(async () => {
@@ -291,6 +304,8 @@ export function useFileBrowser(service: RcService): UseFileBrowserResult {
             clearTimeout(mutationRefreshTimerRef.current)
             mutationRefreshTimerRef.current = null
           }
+          folderRequests.invalidate()
+          fileRequests.invalidate()
           thumbnailPreviewPathsRef.current = []
           foldersRef.current = []
           currentFolderRef.current = ""
@@ -361,7 +376,7 @@ export function useFileBrowser(service: RcService): UseFileBrowserResult {
         mutationRefreshTimerRef.current = null
       }
     }
-  }, [refresh, cd, snapshotFolders, snapshotFiles, pushMessage, service, uploadDroppedFiles])
+  }, [refresh, cd, snapshotFolders, snapshotFiles, folderRequests, fileRequests, pushMessage, service, uploadDroppedFiles])
 
   return {
     folders,

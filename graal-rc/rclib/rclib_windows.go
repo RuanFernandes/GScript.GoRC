@@ -18,30 +18,6 @@ import (
 // found".
 var procSetDllDirectoryW = syscall.NewLazyDLL("kernel32.dll").NewProc("SetDllDirectoryW")
 
-// proc wraps a syscall.Proc (Windows). Call delegates to syscall.Proc.Call so
-// every call site is unchanged from the pre-cross-platform implementation.
-type proc struct {
-	name string
-	win  *syscall.Proc
-}
-
-// Call invokes the DLL export under dllMu so no two goroutines re-enter grclib
-// concurrently (mirrors the single-threaded reference client; see dllMu in
-// rclib.go). The third return is the syscall error (nil if the call did not set
-// last_error); call sites ignore it.
-func (p *proc) Call(a ...uintptr) (uintptr, uintptr, error) {
-	started := beginNativeCall(p.name)
-	defer endNativeCall(started)
-	return p.win.Call(a...)
-}
-
-// createNPCCall is the Windows entry for CreateNPC (see rclib.go). syscall.Proc
-// handles arbitrary arity here, so it goes through the normal proc.
-func createNPCCall(h, name, id, npcType, scripter, level, x, y uintptr) uintptr {
-	r1, _, _ := procCreateNPCOnServer.Call(h, name, id, npcType, scripter, level, x, y)
-	return r1
-}
-
 // newCallback wraps a Go function as a C-callable callback (syscall.NewCallback
 // on Windows — correct __stdcall thunk for both amd64 and 386 DLLs).
 func newCallback(fn any) uintptr { return syscall.NewCallback(fn) }
@@ -70,6 +46,9 @@ func loadProcs(path string) error {
 		if e != nil {
 			return nil, fmt.Errorf("FindProc(%s): %w", name, e)
 		}
-		return &proc{name: name, win: p}, nil
+		return &proc{name: name, native: func(a []uintptr) uintptr {
+			r1, _, _ := p.Call(a...)
+			return r1
+		}}, nil
 	})
 }

@@ -15,12 +15,26 @@ import (
 type Backend interface {
 	GetRCChat(limit int) []ChatLine
 	SendRCChat(message string) error
-	FileBrowserStart() error
-	FileBrowserCd(path string) error
-	FileBrowserFiles() ([]File, error)
+	// FileBrowserFolders returns the folder patterns this account can reach.
+	FileBrowserFolders(ctx context.Context) ([]Folder, error)
+	// FileBrowserCurrentFolder is the last folder FileBrowserList opened.
+	FileBrowserCurrentFolder() (string, bool)
+	// FileBrowserList opens a folder and returns only after the server has
+	// delivered its listing, making it the current folder.
+	FileBrowserList(ctx context.Context, folder string) (Listing, error)
 	ReadFile(path string) ([]byte, error)
 
 	ScriptBackend
+}
+
+type Folder struct {
+	Pattern string `json:"pattern"`
+	Rights  string `json:"rights"`
+}
+
+type Listing struct {
+	Folder string `json:"folder"`
+	Files  []File `json:"files"`
 }
 
 type ChatLine struct {
@@ -34,9 +48,15 @@ type File struct {
 	IsDirectory bool   `json:"isDirectory"`
 }
 
-type Server struct{ backend Backend }
+type Server struct {
+	backend Backend
+	hosts   []string
+}
 
-func NewServer(backend Backend) *Server { return &Server{backend: backend} }
+// NewServer accepts loopback Host headers plus any allowedHosts (host:port).
+func NewServer(backend Backend, allowedHosts ...string) *Server {
+	return &Server{backend: backend, hosts: allowedHosts}
+}
 
 type request struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -61,6 +81,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		http.Error(w, "MCP endpoint accepts POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	if status, err := s.checkRequest(r); err != nil {
+		http.Error(w, err.Error(), status)
 		return
 	}
 	var req request
@@ -130,13 +154,16 @@ func sessionToolDefinitions() []map[string]any {
 		{"name": "send_rc_chat", "description": "Envia uma mensagem para o RC Chat.", "inputSchema": objectSchema(map[string]any{
 			"message": map[string]any{"type": "string", "minLength": 1},
 		})},
-		{"name": "filebrowser_list", "description": "Lista os arquivos do diretório atual do File Browser.", "inputSchema": objectSchema(map[string]any{})},
-		{"name": "filebrowser_cd", "description": "Navega para um diretório remoto do File Browser.", "inputSchema": objectSchema(map[string]any{
+		{"name": "filebrowser_list", "description": "Lista os arquivos de uma pasta remota (path), ou da pasta atual. Sem pasta atual, retorna as pastas acessíveis.", "inputSchema": objectSchema(map[string]any{
+			"path": map[string]any{"type": "string"},
+		})},
+		{"name": "filebrowser_cd", "description": "Abre um diretório remoto do File Browser e retorna a listagem dele.", "inputSchema": objectSchema(map[string]any{
 			"path": map[string]any{"type": "string", "minLength": 1},
 		})},
-		{"name": "filebrowser_search", "description": "Procura no snapshot do diretório atual por nome/caminho.", "inputSchema": objectSchema(map[string]any{
+		{"name": "filebrowser_search", "description": "Procura por nome/caminho na pasta indicada (path) ou na atual, sem entrar em subpastas. Sem pasta atual, procura nas pastas acessíveis.", "inputSchema": objectSchema(map[string]any{
 			"query": map[string]any{"type": "string", "minLength": 1},
-		})},
+			"path":  map[string]any{"type": "string"},
+		}, "query")},
 		{"name": "filebrowser_read", "description": "Baixa e lê um arquivo remoto como texto UTF-8.", "inputSchema": objectSchema(map[string]any{
 			"path": map[string]any{"type": "string", "minLength": 1},
 		})},
@@ -201,40 +228,60 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 		}
 		return toolDone(s.backend.SendRCChat(message))
 	case "filebrowser_list":
-		if err := s.backend.FileBrowserStart(); err != nil {
-			return fail(err)
+		folder, ok := s.targetFolder(p.Arguments)
+		if !ok {
+			folders, err := s.backend.FileBrowserFolders(ctx)
+			if err != nil {
+				return fail(err)
+			}
+			return textResult(map[string]any{"folders": folders})
 		}
-		files, err := s.backend.FileBrowserFiles()
+		listing, err := s.backend.FileBrowserList(ctx, folder)
 		if err != nil {
 			return fail(err)
 		}
-		return textResult(map[string]any{"files": files})
+		return textResult(listing)
 	case "filebrowser_cd":
 		path, ok := stringArg(p.Arguments, "path")
 		if !ok {
 			return nil, &rpcError{-32602, "path is required"}
 		}
-		return toolDone(s.backend.FileBrowserCd(path))
+		listing, err := s.backend.FileBrowserList(ctx, path)
+		if err != nil {
+			return fail(err)
+		}
+		return textResult(listing)
 	case "filebrowser_search":
 		query, ok := stringArg(p.Arguments, "query")
 		if !ok || strings.TrimSpace(query) == "" {
 			return nil, &rpcError{-32602, "query is required"}
 		}
-		if err := s.backend.FileBrowserStart(); err != nil {
-			return fail(err)
+		query = strings.ToLower(query)
+		folder, ok := s.targetFolder(p.Arguments)
+		if !ok {
+			folders, err := s.backend.FileBrowserFolders(ctx)
+			if err != nil {
+				return fail(err)
+			}
+			matches := make([]Folder, 0)
+			for _, candidate := range folders {
+				if strings.Contains(strings.ToLower(candidate.Pattern), query) {
+					matches = append(matches, candidate)
+				}
+			}
+			return textResult(map[string]any{"folders": matches})
 		}
-		files, err := s.backend.FileBrowserFiles()
+		listing, err := s.backend.FileBrowserList(ctx, folder)
 		if err != nil {
 			return fail(err)
 		}
-		query = strings.ToLower(query)
 		matches := make([]File, 0)
-		for _, file := range files {
+		for _, file := range listing.Files {
 			if strings.Contains(strings.ToLower(file.Path), query) {
 				matches = append(matches, file)
 			}
 		}
-		return textResult(map[string]any{"files": matches})
+		return textResult(Listing{Folder: listing.Folder, Files: matches})
 	case "filebrowser_read":
 		path, ok := stringArg(p.Arguments, "path")
 		if !ok {
@@ -254,6 +301,15 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 		}
 		return nil, &rpcError{-32601, "unknown tool: " + p.Name}
 	}
+}
+
+// targetFolder picks the folder a File Browser tool works on: an explicit
+// "path" wins over the current folder.
+func (s *Server) targetFolder(args map[string]any) (string, bool) {
+	if path, ok := stringArg(args, "path"); ok && strings.TrimSpace(path) != "" {
+		return path, true
+	}
+	return s.backend.FileBrowserCurrentFolder()
 }
 
 func intArg(args map[string]any, name string, fallback int) int {

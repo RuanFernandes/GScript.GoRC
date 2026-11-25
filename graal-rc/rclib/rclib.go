@@ -26,9 +26,6 @@ import (
 	"unsafe"
 )
 
-// Handle is an opaque grclib connection handle (rc_connect return value).
-type Handle uintptr
-
 // RCServer mirrors the in-memory layout of grclib's RCServer struct exactly as
 // declared in include/grclib.h:
 //
@@ -210,128 +207,120 @@ var (
 	once    sync.Once
 	loadErr error
 
-	procConnect          *proc
-	procGetServers       *proc
-	procConnectToServer  *proc
-	procDisconnect       *proc
-	procLastError        *proc
-	procIsConnected      *proc
-	procIsAuthenticated  *proc
-	procSetNewProtocol   *proc
-	procIsNewProtocol    *proc
-	procFree             *proc
-	procProcessEvents    *proc
-	procOnConnected      *proc
-	procOnDisconnected   *proc
-	procOnDisconnectedEx *proc
-	procOnPlayerJoined   *proc
-	procOnPlayerLeft     *proc
-
-	procConnectToNcServer         *proc
-	procDisconnectNc              *proc
-	procIsNcConnected             *proc
-	procIsNcAuthenticated         *proc
-	procHasNcServer               *proc
-	procIrcLogin                  *proc
-	procSendIrcText               *proc
-	procExecute                   *proc
-	procSetNickname               *proc
-	procGetPlayers                *proc
-	procOnPlayerPropChanged       *proc
-	procOnPlayerPropertiesChanged *proc
-	procOnMessage                 *proc
-	procOnIrcMessage              *proc
-	procOnServerData              *proc
-	procOnPrivateMessage          *proc
-	procSendPrivateMessage        *proc
-	procSendMassPM                *proc
-	procSendAdminMessage          *proc
-	procSendAdminMessageAll       *proc
-
-	// Player admin editors (rights / attributes / bans) on the main server.
-	procRequestPlayerRights       *proc
-	procSetPlayerRights           *proc
-	procRequestPlayerAttrs        *proc
-	procSetPlayerAttributes       *proc
+	// Handle-free exports. Everything else takes a connection and must be a
+	// connectionProc; TestOnlyHandleFreeExportsAreRawProcs enforces this list.
+	procConnect                   *proc
+	procFree                      *proc
 	procParsePlayerAttributesText *proc
-	procRequestPlayerBan          *proc
-	procRequestPlayerBanByAccount *proc
-	procRequestBanTypes           *proc
-	procRequestBanHistory         *proc
-	procRequestStaffActivity      *proc
-	procSetBan                    *proc
-	procOnPlayerRights            *proc
-	procOnPlayerAttributes        *proc
-	procOnBanData                 *proc
-	procOnBanListData             *proc
-	procRequestPlayerComments     *proc
-	procSetPlayerComments         *proc
-	procOnPlayerTextData          *proc
+	procFreeFileBrowserFolders    *proc
+	procFreeFileBrowserFiles      *proc
 
-	// Script management (NC server).
-	procGetWeapons           *proc
-	procGetClasses           *proc
-	procGetNPCs              *proc
-	procAddWeapon            *proc
-	procDeleteWeapon         *proc
-	procUpdateWeapon         *proc
-	procAddClass             *proc
-	procDeleteClass          *proc
-	procUpdateClass          *proc
-	procDeleteNPC            *proc
-	procUpdateNPC            *proc
-	procCreateNPCOnServer    *proc
-	procRequestWeaponScript  *proc
-	procRequestClassScript   *proc
-	procRequestNPCScript     *proc
-	procRequestWeaponList    *proc
-	procResetNPC             *proc
-	procRequestNPCAttributes *proc
-	procGetNPCFlags          *proc
-	procSetNPCFlags          *proc
-	procSendNCPacket         *proc
-	procSendRawPacket        *proc
-	procWarpNPC              *proc
-
-	// Server-side text configs (server options / folder config / server flags).
-	// Content arrives via on_server_data ("options"/"folder_config"/"flags").
-	procRequestServerOptions *proc
-	procRequestFolderConfig  *proc
-	procRequestServerFlags   *proc
-	procUploadServerOptions  *proc
-	procUploadFolderConfig   *proc
-	procUploadServerFlags    *proc
-
-	// Script/NC event callbacks.
-	procOnScriptReceived     *proc
-	procOnWeaponAdded        *proc
-	procOnWeaponDeleted      *proc
-	procOnWeaponListReceived *proc
-	procOnClassAdded         *proc
-	procOnClassDeleted       *proc
-	procOnNPCAdded           *proc
-	procOnNPCDeleted         *proc
-	procOnNPCFlags           *proc
-	procOnNPCAttributes      *proc
-
-	// File browser (main server socket).
-	procFileBrowserStart       *proc
-	procFileBrowserCd          *proc
-	procFileBrowserDownload    *proc
-	procFileBrowserDelete      *proc
-	procFileBrowserRename      *proc
-	procFileBrowserMove        *proc
-	procUploadFile             *proc
-	procGetMaxUploadFileSize   *proc
-	procCopyFileBrowserFolders *proc
-	procFreeFileBrowserFolders *proc
-	procCopyFileBrowserFiles   *proc
-	procFreeFileBrowserFiles   *proc
-	procOnFileBrowserFolders   *proc
-	procOnFileBrowserFiles     *proc
-	procOnFileBrowserMessage   *proc
-	procOnFileReceived         *proc
-	procOnMaxUploadFileSize    *proc
+	// Connection exports, callable only through withConnection (handle.go).
+	procGetServers                *connectionProc
+	procConnectToServer           *connectionProc
+	procDisconnect                *connectionProc
+	procLastError                 *connectionProc
+	procIsConnected               *connectionProc
+	procIsAuthenticated           *connectionProc
+	procSetNewProtocol            *connectionProc
+	procIsNewProtocol             *connectionProc
+	procProcessEvents             *connectionProc
+	procOnConnected               *connectionProc
+	procOnDisconnected            *connectionProc
+	procOnDisconnectedEx          *connectionProc
+	procOnPlayerJoined            *connectionProc
+	procOnPlayerLeft              *connectionProc
+	procConnectToNcServer         *connectionProc
+	procDisconnectNc              *connectionProc
+	procIsNcConnected             *connectionProc
+	procIsNcAuthenticated         *connectionProc
+	procHasNcServer               *connectionProc
+	procIrcLogin                  *connectionProc
+	procSendIrcText               *connectionProc
+	procExecute                   *connectionProc
+	procSetNickname               *connectionProc
+	procGetPlayers                *connectionProc
+	procOnPlayerPropChanged       *connectionProc
+	procOnPlayerPropertiesChanged *connectionProc
+	procOnMessage                 *connectionProc
+	procOnIrcMessage              *connectionProc
+	procOnServerData              *connectionProc
+	procOnPrivateMessage          *connectionProc
+	procSendPrivateMessage        *connectionProc
+	procSendMassPM                *connectionProc
+	procSendAdminMessage          *connectionProc
+	procSendAdminMessageAll       *connectionProc
+	procRequestPlayerRights       *connectionProc
+	procSetPlayerRights           *connectionProc
+	procRequestPlayerAttrs        *connectionProc
+	procSetPlayerAttributes       *connectionProc
+	procRequestPlayerBan          *connectionProc
+	procRequestPlayerBanByAccount *connectionProc
+	procRequestBanTypes           *connectionProc
+	procRequestBanHistory         *connectionProc
+	procRequestStaffActivity      *connectionProc
+	procSetBan                    *connectionProc
+	procOnPlayerRights            *connectionProc
+	procOnPlayerAttributes        *connectionProc
+	procOnBanData                 *connectionProc
+	procOnBanListData             *connectionProc
+	procRequestPlayerComments     *connectionProc
+	procSetPlayerComments         *connectionProc
+	procOnPlayerTextData          *connectionProc
+	procGetWeapons                *connectionProc
+	procGetClasses                *connectionProc
+	procGetNPCs                   *connectionProc
+	procAddWeapon                 *connectionProc
+	procDeleteWeapon              *connectionProc
+	procUpdateWeapon              *connectionProc
+	procAddClass                  *connectionProc
+	procDeleteClass               *connectionProc
+	procUpdateClass               *connectionProc
+	procDeleteNPC                 *connectionProc
+	procUpdateNPC                 *connectionProc
+	procCreateNPCOnServer         *connectionProc
+	procRequestWeaponScript       *connectionProc
+	procRequestClassScript        *connectionProc
+	procRequestNPCScript          *connectionProc
+	procRequestWeaponList         *connectionProc
+	procResetNPC                  *connectionProc
+	procRequestNPCAttributes      *connectionProc
+	procGetNPCFlags               *connectionProc
+	procSetNPCFlags               *connectionProc
+	procSendNCPacket              *connectionProc
+	procSendRawPacket             *connectionProc
+	procWarpNPC                   *connectionProc
+	procRequestServerOptions      *connectionProc
+	procRequestFolderConfig       *connectionProc
+	procRequestServerFlags        *connectionProc
+	procUploadServerOptions       *connectionProc
+	procUploadFolderConfig        *connectionProc
+	procUploadServerFlags         *connectionProc
+	procOnScriptReceived          *connectionProc
+	procOnWeaponAdded             *connectionProc
+	procOnWeaponDeleted           *connectionProc
+	procOnWeaponListReceived      *connectionProc
+	procOnClassAdded              *connectionProc
+	procOnClassDeleted            *connectionProc
+	procOnNPCAdded                *connectionProc
+	procOnNPCDeleted              *connectionProc
+	procOnNPCFlags                *connectionProc
+	procOnNPCAttributes           *connectionProc
+	procFileBrowserStart          *connectionProc
+	procFileBrowserCd             *connectionProc
+	procFileBrowserDownload       *connectionProc
+	procFileBrowserDelete         *connectionProc
+	procFileBrowserRename         *connectionProc
+	procFileBrowserMove           *connectionProc
+	procUploadFile                *connectionProc
+	procGetMaxUploadFileSize      *connectionProc
+	procCopyFileBrowserFolders    *connectionProc
+	procCopyFileBrowserFiles      *connectionProc
+	procOnFileBrowserFolders      *connectionProc
+	procOnFileBrowserFiles        *connectionProc
+	procOnFileBrowserMessage      *connectionProc
+	procOnFileReceived            *connectionProc
+	procOnMaxUploadFileSize       *connectionProc
 )
 
 // Default listserver endpoint used by the reference client.
@@ -349,9 +338,23 @@ const (
 )
 
 // proc wraps a resolved grclib symbol so call sites stay identical across OSes.
-// The concrete fields and the Call method are defined per-OS in
-// rclib_windows.go (syscall.Proc) and rclib_unix.go (purego.Dlsym address), so
-// this shared file never references Windows-only syscall types.
+// The OS loaders (rclib_windows.go: syscall.Proc, rclib_unix.go: purego) only
+// supply native, which tests replace with a fake library.
+type proc struct {
+	name   string
+	native func([]uintptr) uintptr
+}
+
+// Call invokes a handle-free export under dllMu so no two goroutines re-enter
+// grclib concurrently. Exports that take a connection handle are
+// connectionProcs and are only reachable through withConnection (handle.go).
+//
+//go:uintptrescapes
+func (p *proc) Call(a ...uintptr) (uintptr, uintptr, error) {
+	started := beginNativeCall(p.name)
+	defer endNativeCall(started)
+	return p.native(a), 0, nil
+}
 
 // arg returns a[i] or 0 when out of range, so the unix SyscallN calls always
 // get a full argument slot regardless of how many were passed.
@@ -460,10 +463,13 @@ func libSearchPaths() []string {
 	return paths
 }
 
-// load resolves and loads the native library exactly once. Subsequent calls
-// return the cached error (nil on success). The OS-specific loadProcs (see
+// load is a variable so tests can run against a fake library.
+var load = loadLibrary
+
+// loadLibrary resolves and loads the native library exactly once. Subsequent
+// calls return the cached error (nil on success). The OS-specific loadProcs (see
 // rclib_windows.go / rclib_unix.go) open the library and register every proc.
-func load() error {
+func loadLibrary() error {
 	once.Do(func() {
 		var libPath string
 		for _, p := range libSearchPaths() {
@@ -493,123 +499,130 @@ func registerAll(resolve func(name string) (*proc, error)) error {
 		}
 		return p
 	}
-	getOptional := func(name string) *proc {
+	wrap := func(p *proc) *connectionProc {
+		if p == nil {
+			return nil
+		}
+		return &connectionProc{export: p}
+	}
+	connection := func(name string) *connectionProc { return wrap(get(name)) }
+	optionalConnection := func(name string) *connectionProc {
 		p, _ := resolve(name)
-		return p
+		return wrap(p)
 	}
 	procConnect = get("rc_connect")
-	procGetServers = get("rc_get_servers")
-	procConnectToServer = get("rc_connect_to_server")
-	procDisconnect = get("rc_disconnect")
-	procLastError = get("rc_last_error")
-	procIsConnected = get("rc_is_connected")
-	procIsAuthenticated = get("rc_is_authenticated")
-	procSetNewProtocol = get("rc_set_new_protocol")
-	procIsNewProtocol = get("rc_is_new_protocol")
+	procGetServers = connection("rc_get_servers")
+	procConnectToServer = connection("rc_connect_to_server")
+	procDisconnect = connection("rc_disconnect")
+	procLastError = connection("rc_last_error")
+	procIsConnected = connection("rc_is_connected")
+	procIsAuthenticated = connection("rc_is_authenticated")
+	procSetNewProtocol = connection("rc_set_new_protocol")
+	procIsNewProtocol = connection("rc_is_new_protocol")
 	procFree = get("rc_free")
-	procProcessEvents = get("rc_process_events")
-	procOnConnected = get("rc_on_connected")
-	procOnDisconnected = get("rc_on_disconnected")
+	procProcessEvents = connection("rc_process_events")
+	procOnConnected = connection("rc_on_connected")
+	procOnDisconnected = connection("rc_on_disconnected")
 	// Older native builds only expose rc_on_disconnected. The reference client
 	// uses the extended callback when available because it carries the native
 	// handle that produced the event, allowing stale disconnects to be ignored.
-	procOnDisconnectedEx = getOptional("rc_on_disconnected_ex")
-	procOnPlayerJoined = get("rc_on_player_joined")
-	procOnPlayerLeft = get("rc_on_player_left")
-	procConnectToNcServer = get("rc_connect_to_nc_server")
-	procDisconnectNc = get("rc_disconnect_nc")
-	procIsNcConnected = get("rc_is_nc_connected")
-	procIsNcAuthenticated = get("rc_is_nc_authenticated")
-	procHasNcServer = get("rc_has_nc_server")
-	procIrcLogin = get("rc_irc_login")
-	procSendIrcText = get("rc_send_irc_text")
-	procExecute = get("rc_execute")
-	procSetNickname = get("rc_set_nickname")
-	procGetPlayers = get("rc_get_players")
-	procOnPlayerPropChanged = get("rc_on_player_prop_changed")
-	procOnPlayerPropertiesChanged = get("rc_on_player_properties_changed")
-	procOnMessage = get("rc_on_message")
-	procOnIrcMessage = get("rc_on_irc_message")
-	procOnServerData = get("rc_on_server_data")
-	procOnPrivateMessage = get("rc_on_private_message")
-	procSendPrivateMessage = get("rc_send_private_message")
-	procSendMassPM = get("rc_send_mass_pm")
-	procSendAdminMessage = get("rc_send_admin_message")
-	procSendAdminMessageAll = get("rc_send_admin_message_all")
-	procRequestPlayerRights = get("rc_request_player_rights")
-	procSetPlayerRights = get("rc_set_player_rights")
-	procRequestPlayerAttrs = get("rc_request_player_attrs")
-	procSetPlayerAttributes = get("rc_set_player_attributes")
+	procOnDisconnectedEx = optionalConnection("rc_on_disconnected_ex")
+	procOnPlayerJoined = connection("rc_on_player_joined")
+	procOnPlayerLeft = connection("rc_on_player_left")
+	procConnectToNcServer = connection("rc_connect_to_nc_server")
+	procDisconnectNc = connection("rc_disconnect_nc")
+	procIsNcConnected = connection("rc_is_nc_connected")
+	procIsNcAuthenticated = connection("rc_is_nc_authenticated")
+	procHasNcServer = connection("rc_has_nc_server")
+	procIrcLogin = connection("rc_irc_login")
+	procSendIrcText = connection("rc_send_irc_text")
+	procExecute = connection("rc_execute")
+	procSetNickname = connection("rc_set_nickname")
+	procGetPlayers = connection("rc_get_players")
+	procOnPlayerPropChanged = connection("rc_on_player_prop_changed")
+	procOnPlayerPropertiesChanged = connection("rc_on_player_properties_changed")
+	procOnMessage = connection("rc_on_message")
+	procOnIrcMessage = connection("rc_on_irc_message")
+	procOnServerData = connection("rc_on_server_data")
+	procOnPrivateMessage = connection("rc_on_private_message")
+	procSendPrivateMessage = connection("rc_send_private_message")
+	procSendMassPM = connection("rc_send_mass_pm")
+	procSendAdminMessage = connection("rc_send_admin_message")
+	procSendAdminMessageAll = connection("rc_send_admin_message_all")
+	procRequestPlayerRights = connection("rc_request_player_rights")
+	procSetPlayerRights = connection("rc_set_player_rights")
+	procRequestPlayerAttrs = connection("rc_request_player_attrs")
+	procSetPlayerAttributes = connection("rc_set_player_attributes")
 	procParsePlayerAttributesText = get("rc_parse_player_attributes_text")
-	procRequestPlayerBan = get("rc_request_player_ban")
-	procRequestPlayerBanByAccount = get("rc_request_player_ban_by_account")
-	procRequestBanTypes = get("rc_request_ban_types")
-	procRequestBanHistory = get("rc_request_ban_history")
-	procRequestStaffActivity = get("rc_request_staff_activity")
-	procSetBan = get("rc_set_ban")
-	procOnPlayerRights = get("rc_on_player_rights")
-	procOnPlayerAttributes = get("rc_on_player_attributes")
-	procOnBanData = get("rc_on_ban_data")
-	procOnBanListData = get("rc_on_ban_list_data")
-	procRequestPlayerComments = get("rc_request_player_comments")
-	procSetPlayerComments = get("rc_set_player_comments")
-	procOnPlayerTextData = get("rc_on_player_text_data")
-	procGetWeapons = get("rc_get_weapons")
-	procGetClasses = get("rc_get_classes")
-	procGetNPCs = get("rc_get_npcs")
-	procAddWeapon = get("rc_add_weapon")
-	procDeleteWeapon = get("rc_delete_weapon")
-	procUpdateWeapon = get("rc_update_weapon")
-	procAddClass = get("rc_add_class")
-	procDeleteClass = get("rc_delete_class")
-	procUpdateClass = get("rc_update_class")
-	procDeleteNPC = get("rc_delete_npc")
-	procUpdateNPC = get("rc_update_npc")
-	procCreateNPCOnServer = get("rc_create_npc_on_server")
-	procRequestWeaponScript = get("rc_request_weapon_script")
-	procRequestClassScript = get("rc_request_class_script")
-	procRequestNPCScript = get("rc_request_npc_script")
-	procRequestWeaponList = get("rc_request_weapon_list")
-	procResetNPC = get("rc_reset_npc")
-	procRequestNPCAttributes = get("rc_request_npc_attributes")
-	procGetNPCFlags = get("rc_get_npc_flags")
-	procSetNPCFlags = get("rc_set_npc_flags")
-	procSendNCPacket = get("rc_send_nc_packet")
-	procSendRawPacket = get("rc_send_raw_packet")
-	procWarpNPC = get("rc_warp_npc")
-	procRequestServerOptions = get("rc_request_server_options")
-	procRequestFolderConfig = get("rc_request_folder_config")
-	procRequestServerFlags = get("rc_request_server_flags")
-	procUploadServerOptions = get("rc_upload_server_options")
-	procUploadFolderConfig = get("rc_upload_folder_config")
-	procUploadServerFlags = get("rc_upload_server_flags")
-	procOnScriptReceived = get("rc_on_script_received")
-	procOnWeaponAdded = get("rc_on_weapon_added")
-	procOnWeaponDeleted = get("rc_on_weapon_deleted")
-	procOnWeaponListReceived = get("rc_on_weapon_list_received")
-	procOnClassAdded = get("rc_on_class_added")
-	procOnClassDeleted = get("rc_on_class_deleted")
-	procOnNPCAdded = get("rc_on_npc_added")
-	procOnNPCDeleted = get("rc_on_npc_deleted")
-	procOnNPCFlags = get("rc_on_npc_flags")
-	procOnNPCAttributes = get("rc_on_npc_attributes")
-	procFileBrowserStart = get("rc_filebrowser_start")
-	procFileBrowserCd = get("rc_filebrowser_cd")
-	procFileBrowserDownload = get("rc_filebrowser_download")
-	procFileBrowserDelete = get("rc_filebrowser_delete")
-	procFileBrowserRename = get("rc_filebrowser_rename")
-	procFileBrowserMove = get("rc_filebrowser_move")
-	procUploadFile = get("rc_upload_file")
-	procGetMaxUploadFileSize = get("rc_get_max_upload_file_size")
-	procCopyFileBrowserFolders = get("rc_copy_filebrowser_folders")
+	procRequestPlayerBan = connection("rc_request_player_ban")
+	procRequestPlayerBanByAccount = connection("rc_request_player_ban_by_account")
+	procRequestBanTypes = connection("rc_request_ban_types")
+	procRequestBanHistory = connection("rc_request_ban_history")
+	procRequestStaffActivity = connection("rc_request_staff_activity")
+	procSetBan = connection("rc_set_ban")
+	procOnPlayerRights = connection("rc_on_player_rights")
+	procOnPlayerAttributes = connection("rc_on_player_attributes")
+	procOnBanData = connection("rc_on_ban_data")
+	procOnBanListData = connection("rc_on_ban_list_data")
+	procRequestPlayerComments = connection("rc_request_player_comments")
+	procSetPlayerComments = connection("rc_set_player_comments")
+	procOnPlayerTextData = connection("rc_on_player_text_data")
+	procGetWeapons = connection("rc_get_weapons")
+	procGetClasses = connection("rc_get_classes")
+	procGetNPCs = connection("rc_get_npcs")
+	procAddWeapon = connection("rc_add_weapon")
+	procDeleteWeapon = connection("rc_delete_weapon")
+	procUpdateWeapon = connection("rc_update_weapon")
+	procAddClass = connection("rc_add_class")
+	procDeleteClass = connection("rc_delete_class")
+	procUpdateClass = connection("rc_update_class")
+	procDeleteNPC = connection("rc_delete_npc")
+	procUpdateNPC = connection("rc_update_npc")
+	procCreateNPCOnServer = connection("rc_create_npc_on_server")
+	procRequestWeaponScript = connection("rc_request_weapon_script")
+	procRequestClassScript = connection("rc_request_class_script")
+	procRequestNPCScript = connection("rc_request_npc_script")
+	procRequestWeaponList = connection("rc_request_weapon_list")
+	procResetNPC = connection("rc_reset_npc")
+	procRequestNPCAttributes = connection("rc_request_npc_attributes")
+	procGetNPCFlags = connection("rc_get_npc_flags")
+	procSetNPCFlags = connection("rc_set_npc_flags")
+	procSendNCPacket = connection("rc_send_nc_packet")
+	procSendRawPacket = connection("rc_send_raw_packet")
+	procWarpNPC = connection("rc_warp_npc")
+	procRequestServerOptions = connection("rc_request_server_options")
+	procRequestFolderConfig = connection("rc_request_folder_config")
+	procRequestServerFlags = connection("rc_request_server_flags")
+	procUploadServerOptions = connection("rc_upload_server_options")
+	procUploadFolderConfig = connection("rc_upload_folder_config")
+	procUploadServerFlags = connection("rc_upload_server_flags")
+	procOnScriptReceived = connection("rc_on_script_received")
+	procOnWeaponAdded = connection("rc_on_weapon_added")
+	procOnWeaponDeleted = connection("rc_on_weapon_deleted")
+	procOnWeaponListReceived = connection("rc_on_weapon_list_received")
+	procOnClassAdded = connection("rc_on_class_added")
+	procOnClassDeleted = connection("rc_on_class_deleted")
+	procOnNPCAdded = connection("rc_on_npc_added")
+	procOnNPCDeleted = connection("rc_on_npc_deleted")
+	procOnNPCFlags = connection("rc_on_npc_flags")
+	procOnNPCAttributes = connection("rc_on_npc_attributes")
+	procFileBrowserStart = connection("rc_filebrowser_start")
+	procFileBrowserCd = connection("rc_filebrowser_cd")
+	procFileBrowserDownload = connection("rc_filebrowser_download")
+	procFileBrowserDelete = connection("rc_filebrowser_delete")
+	procFileBrowserRename = connection("rc_filebrowser_rename")
+	procFileBrowserMove = connection("rc_filebrowser_move")
+	procUploadFile = connection("rc_upload_file")
+	procGetMaxUploadFileSize = connection("rc_get_max_upload_file_size")
+	procCopyFileBrowserFolders = connection("rc_copy_filebrowser_folders")
 	procFreeFileBrowserFolders = get("rc_free_filebrowser_folders")
-	procCopyFileBrowserFiles = get("rc_copy_filebrowser_files")
+	procCopyFileBrowserFiles = connection("rc_copy_filebrowser_files")
 	procFreeFileBrowserFiles = get("rc_free_filebrowser_files")
-	procOnFileBrowserFolders = get("rc_on_filebrowser_folders")
-	procOnFileBrowserFiles = get("rc_on_filebrowser_files")
-	procOnFileBrowserMessage = get("rc_on_filebrowser_message")
-	procOnFileReceived = get("rc_on_file_received")
-	procOnMaxUploadFileSize = get("rc_on_max_upload_file_size")
+	procOnFileBrowserFolders = connection("rc_on_filebrowser_folders")
+	procOnFileBrowserFiles = connection("rc_on_filebrowser_files")
+	procOnFileBrowserMessage = connection("rc_on_filebrowser_message")
+	procOnFileReceived = connection("rc_on_file_received")
+	procOnMaxUploadFileSize = connection("rc_on_max_upload_file_size")
 	return firstErr
 }
 
@@ -801,8 +814,11 @@ var (
 )
 
 type disconnectRoute struct {
-	handle    Handle
-	callbacks *EventCallbacks
+	handle Handle
+	// connection is the native pointer grclib reports as the event's source. It
+	// is only ever compared, never dereferenced or passed back.
+	connection uintptr
+	callbacks  *EventCallbacks
 }
 
 // connectedEntry is the C-callable shim for RC_OnConnected(user_data).
@@ -834,24 +850,20 @@ func disconnectedEntry(reason unsafe.Pointer, userData uintptr) uintptr {
 // that actually emitted the event.
 func disconnectedExEntry(nativeHandle unsafe.Pointer, reason unsafe.Pointer, userData uintptr) uintptr {
 	route := disconnectRouteFor(userData)
-	callbackHandle := Handle(uintptr(nativeHandle))
-	faultHandle := callbackHandle
-	if route != nil {
-		faultHandle = route.handle
-	}
-	defer safeRecoverHandle("on_disconnected_ex", faultHandle)
-
 	if route == nil {
 		return 0
 	}
-	if callbackHandle == 0 || callbackHandle != route.handle {
-		log.Printf("[rclib] ignoring stale disconnect callback handle=%#x route=%#x", uintptr(callbackHandle), uintptr(route.handle))
+	defer safeRecoverHandle("on_disconnected_ex", route.handle)
+
+	source := uintptr(nativeHandle)
+	if source == 0 || source != route.connection {
+		log.Printf("[rclib] ignoring stale disconnect callback connection=%#x route=%#x", source, uintptr(route.handle))
 		return 0
 	}
 
 	msg := bptrToString((*byte)(reason))
 	if route.callbacks.DisconnectedEx != nil {
-		route.callbacks.DisconnectedEx(callbackHandle, msg)
+		route.callbacks.DisconnectedEx(route.handle, msg)
 	} else if route.callbacks.Disconnected != nil {
 		route.callbacks.Disconnected(msg)
 	}
@@ -1259,15 +1271,21 @@ func nextDisconnectRouteTokenLocked() uintptr {
 // events. Most callbacks use the handle as C user_data. The extended
 // disconnect callback gets a unique registration token so a queued callback
 // from a previous session cannot be routed to a new callback set on the same
-// native handle. A failure removes the Go routes again; callers must not start
+// handle. A failure removes the Go routes again; callers must not start
 // an event pump after an error.
-func RegisterCallbacks(h Handle, cbs *EventCallbacks) (err error) {
+func RegisterCallbacks(h Handle, cbs *EventCallbacks) error {
 	if cbs == nil {
 		return errors.New("event callbacks cannot be nil")
 	}
 	if err := load(); err != nil {
 		return err
 	}
+	return withConnection(h, procOnConnected, func(c nativeConnection) error {
+		return registerCallbacks(c, h, cbs)
+	})
+}
+
+func registerCallbacks(c nativeConnection, h Handle, cbs *EventCallbacks) (err error) {
 	var disconnectToken uintptr
 	defer func() {
 		if r := recover(); r != nil {
@@ -1292,48 +1310,48 @@ func RegisterCallbacks(h Handle, cbs *EventCallbacks) (err error) {
 	}
 	if procOnDisconnectedEx != nil {
 		disconnectToken = nextDisconnectRouteTokenLocked()
-		disconnectRoutes[disconnectToken] = &disconnectRoute{handle: h, callbacks: cbs}
+		disconnectRoutes[disconnectToken] = &disconnectRoute{handle: h, connection: c.pointer, callbacks: cbs}
 		disconnectRouteTokens[h] = disconnectToken
 	}
 	routeMu.Unlock()
-	procOnConnected.Call(uintptr(h), cbConnected, uintptr(h))
+	c.call(procOnConnected, cbConnected, uintptr(h))
 	if procOnDisconnectedEx != nil {
 		// Keep the legacy slot clear. The native implementation gives the
 		// extended callback precedence, but clearing both makes the behavior
 		// deterministic across library versions.
-		procOnDisconnected.Call(uintptr(h), 0, 0)
-		procOnDisconnectedEx.Call(uintptr(h), cbDisconnectedEx, disconnectToken)
+		c.call(procOnDisconnected, 0, 0)
+		c.call(procOnDisconnectedEx, cbDisconnectedEx, disconnectToken)
 	} else {
-		procOnDisconnected.Call(uintptr(h), cbDisconnected, uintptr(h))
+		c.call(procOnDisconnected, cbDisconnected, uintptr(h))
 	}
-	procOnPlayerJoined.Call(uintptr(h), cbPlayerJoined, uintptr(h))
-	procOnPlayerLeft.Call(uintptr(h), cbPlayerLeft, uintptr(h))
-	procOnPlayerPropChanged.Call(uintptr(h), cbPlayerPropChanged, uintptr(h))
-	procOnPlayerPropertiesChanged.Call(uintptr(h), cbPlayerPropertiesChanged, uintptr(h))
-	procOnMessage.Call(uintptr(h), cbMessage, uintptr(h))
-	procOnIrcMessage.Call(uintptr(h), cbIrcMessage, uintptr(h))
-	procOnServerData.Call(uintptr(h), cbServerData, uintptr(h))
-	procOnPrivateMessage.Call(uintptr(h), cbPrivateMessage, uintptr(h))
-	procOnScriptReceived.Call(uintptr(h), cbScriptReceived, uintptr(h))
-	procOnWeaponAdded.Call(uintptr(h), cbWeaponAdded, uintptr(h))
-	procOnWeaponDeleted.Call(uintptr(h), cbWeaponDeleted, uintptr(h))
-	procOnWeaponListReceived.Call(uintptr(h), cbWeaponListReceived, uintptr(h))
-	procOnClassAdded.Call(uintptr(h), cbClassAdded, uintptr(h))
-	procOnClassDeleted.Call(uintptr(h), cbClassDeleted, uintptr(h))
-	procOnNPCAdded.Call(uintptr(h), cbNPCAdded, uintptr(h))
-	procOnNPCDeleted.Call(uintptr(h), cbNPCDeleted, uintptr(h))
-	procOnNPCFlags.Call(uintptr(h), cbNPCFlags, uintptr(h))
-	procOnNPCAttributes.Call(uintptr(h), cbNPCAttributes, uintptr(h))
-	procOnFileBrowserFolders.Call(uintptr(h), cbFileBrowserFolders, uintptr(h))
-	procOnFileBrowserFiles.Call(uintptr(h), cbFileBrowserFiles, uintptr(h))
-	procOnFileBrowserMessage.Call(uintptr(h), cbFileBrowserMessage, uintptr(h))
-	procOnFileReceived.Call(uintptr(h), cbFileReceived, uintptr(h))
-	procOnMaxUploadFileSize.Call(uintptr(h), cbMaxUploadSize, uintptr(h))
-	procOnPlayerRights.Call(uintptr(h), cbPlayerRights, uintptr(h))
-	procOnPlayerAttributes.Call(uintptr(h), cbPlayerAttributes, uintptr(h))
-	procOnBanData.Call(uintptr(h), cbBanData, uintptr(h))
-	procOnBanListData.Call(uintptr(h), cbBanListData, uintptr(h))
-	procOnPlayerTextData.Call(uintptr(h), cbPlayerTextData, uintptr(h))
+	c.call(procOnPlayerJoined, cbPlayerJoined, uintptr(h))
+	c.call(procOnPlayerLeft, cbPlayerLeft, uintptr(h))
+	c.call(procOnPlayerPropChanged, cbPlayerPropChanged, uintptr(h))
+	c.call(procOnPlayerPropertiesChanged, cbPlayerPropertiesChanged, uintptr(h))
+	c.call(procOnMessage, cbMessage, uintptr(h))
+	c.call(procOnIrcMessage, cbIrcMessage, uintptr(h))
+	c.call(procOnServerData, cbServerData, uintptr(h))
+	c.call(procOnPrivateMessage, cbPrivateMessage, uintptr(h))
+	c.call(procOnScriptReceived, cbScriptReceived, uintptr(h))
+	c.call(procOnWeaponAdded, cbWeaponAdded, uintptr(h))
+	c.call(procOnWeaponDeleted, cbWeaponDeleted, uintptr(h))
+	c.call(procOnWeaponListReceived, cbWeaponListReceived, uintptr(h))
+	c.call(procOnClassAdded, cbClassAdded, uintptr(h))
+	c.call(procOnClassDeleted, cbClassDeleted, uintptr(h))
+	c.call(procOnNPCAdded, cbNPCAdded, uintptr(h))
+	c.call(procOnNPCDeleted, cbNPCDeleted, uintptr(h))
+	c.call(procOnNPCFlags, cbNPCFlags, uintptr(h))
+	c.call(procOnNPCAttributes, cbNPCAttributes, uintptr(h))
+	c.call(procOnFileBrowserFolders, cbFileBrowserFolders, uintptr(h))
+	c.call(procOnFileBrowserFiles, cbFileBrowserFiles, uintptr(h))
+	c.call(procOnFileBrowserMessage, cbFileBrowserMessage, uintptr(h))
+	c.call(procOnFileReceived, cbFileReceived, uintptr(h))
+	c.call(procOnMaxUploadFileSize, cbMaxUploadSize, uintptr(h))
+	c.call(procOnPlayerRights, cbPlayerRights, uintptr(h))
+	c.call(procOnPlayerAttributes, cbPlayerAttributes, uintptr(h))
+	c.call(procOnBanData, cbBanData, uintptr(h))
+	c.call(procOnBanListData, cbBanListData, uintptr(h))
+	c.call(procOnPlayerTextData, cbPlayerTextData, uintptr(h))
 	return nil
 }
 
@@ -1360,40 +1378,46 @@ func UnregisterCallbacks(h Handle) (err error) {
 			log.Printf("[rclib] %v\n%s", err, debug.Stack())
 		}
 	}()
-	procOnConnected.Call(uintptr(h), 0, 0)
-	procOnDisconnected.Call(uintptr(h), 0, 0)
+	return withConnection(h, procOnConnected, func(c nativeConnection) error {
+		unregisterCallbacks(c)
+		return nil
+	})
+}
+
+func unregisterCallbacks(c nativeConnection) {
+	c.call(procOnConnected, 0, 0)
+	c.call(procOnDisconnected, 0, 0)
 	if procOnDisconnectedEx != nil {
-		procOnDisconnectedEx.Call(uintptr(h), 0, 0)
+		c.call(procOnDisconnectedEx, 0, 0)
 	}
-	procOnPlayerJoined.Call(uintptr(h), 0, 0)
-	procOnPlayerLeft.Call(uintptr(h), 0, 0)
-	procOnPlayerPropChanged.Call(uintptr(h), 0, 0)
-	procOnPlayerPropertiesChanged.Call(uintptr(h), 0, 0)
-	procOnMessage.Call(uintptr(h), 0, 0)
-	procOnIrcMessage.Call(uintptr(h), 0, 0)
-	procOnServerData.Call(uintptr(h), 0, 0)
-	procOnPrivateMessage.Call(uintptr(h), 0, 0)
-	procOnScriptReceived.Call(uintptr(h), 0, 0)
-	procOnWeaponAdded.Call(uintptr(h), 0, 0)
-	procOnWeaponDeleted.Call(uintptr(h), 0, 0)
-	procOnWeaponListReceived.Call(uintptr(h), 0, 0)
-	procOnClassAdded.Call(uintptr(h), 0, 0)
-	procOnClassDeleted.Call(uintptr(h), 0, 0)
-	procOnNPCAdded.Call(uintptr(h), 0, 0)
-	procOnNPCDeleted.Call(uintptr(h), 0, 0)
-	procOnNPCFlags.Call(uintptr(h), 0, 0)
-	procOnNPCAttributes.Call(uintptr(h), 0, 0)
-	procOnFileBrowserFolders.Call(uintptr(h), 0, 0)
-	procOnFileBrowserFiles.Call(uintptr(h), 0, 0)
-	procOnFileBrowserMessage.Call(uintptr(h), 0, 0)
-	procOnFileReceived.Call(uintptr(h), 0, 0)
-	procOnMaxUploadFileSize.Call(uintptr(h), 0, 0)
-	procOnPlayerRights.Call(uintptr(h), 0, 0)
-	procOnPlayerAttributes.Call(uintptr(h), 0, 0)
-	procOnBanData.Call(uintptr(h), 0, 0)
-	procOnBanListData.Call(uintptr(h), 0, 0)
-	procOnPlayerTextData.Call(uintptr(h), 0, 0)
-	return nil
+	c.call(procOnPlayerJoined, 0, 0)
+	c.call(procOnPlayerLeft, 0, 0)
+	c.call(procOnPlayerPropChanged, 0, 0)
+	c.call(procOnPlayerPropertiesChanged, 0, 0)
+	c.call(procOnMessage, 0, 0)
+	c.call(procOnIrcMessage, 0, 0)
+	c.call(procOnServerData, 0, 0)
+	c.call(procOnPrivateMessage, 0, 0)
+	c.call(procOnScriptReceived, 0, 0)
+	c.call(procOnWeaponAdded, 0, 0)
+	c.call(procOnWeaponDeleted, 0, 0)
+	c.call(procOnWeaponListReceived, 0, 0)
+	c.call(procOnClassAdded, 0, 0)
+	c.call(procOnClassDeleted, 0, 0)
+	c.call(procOnNPCAdded, 0, 0)
+	c.call(procOnNPCDeleted, 0, 0)
+	c.call(procOnNPCFlags, 0, 0)
+	c.call(procOnNPCAttributes, 0, 0)
+	c.call(procOnFileBrowserFolders, 0, 0)
+	c.call(procOnFileBrowserFiles, 0, 0)
+	c.call(procOnFileBrowserMessage, 0, 0)
+	c.call(procOnFileReceived, 0, 0)
+	c.call(procOnMaxUploadFileSize, 0, 0)
+	c.call(procOnPlayerRights, 0, 0)
+	c.call(procOnPlayerAttributes, 0, 0)
+	c.call(procOnBanData, 0, 0)
+	c.call(procOnBanListData, 0, 0)
+	c.call(procOnPlayerTextData, 0, 0)
 }
 
 // ProcessEvents pumps queued connection callbacks once. Call regularly from a
@@ -1411,36 +1435,35 @@ func ProcessEvents(h Handle) (err error) {
 			log.Printf("[rclib] %v\n%s", err, debug.Stack())
 		}
 	}()
-	procProcessEvents.Call(uintptr(h))
+	// Callbacks run inside this lease, so Disconnect cannot delete the
+	// connection while they are being dispatched.
+	if err := withConnection(h, procProcessEvents, func(c nativeConnection) error {
+		c.call(procProcessEvents)
+		return nil
+	}); err != nil {
+		return err
+	}
 	if callbackErr := takeCallbackFault(h); callbackErr != nil {
 		return callbackErr
 	}
 	return nil
 }
 
-// LastError returns the last connection/API error string for a handle.
+// LastError returns the last connection/API error string for a handle, or
+// ErrInvalidHandle's text when the handle is not live. Functions that fail
+// already report this reason, read in the same lock hold as the failed call.
 func LastError(h Handle) string {
 	if err := load(); err != nil {
 		return err.Error()
 	}
-	r1, _, _ := procLastError.Call(uintptr(h))
-	if r1 == 0 {
-		return ""
+	var reason string
+	if err := withConnection(h, procLastError, func(c nativeConnection) error {
+		reason = c.lastError()
+		return nil
+	}); err != nil {
+		return err.Error()
 	}
-	return bptrToString(nativeBytePointer(r1))
-}
-
-// surfaceError returns the DLL's last_error for the handle when one is set,
-// otherwise the supplied default. This is how the reference C++ client reports
-// every failure (it calls rc_last_error right after a 0/null return and pipes
-// the result to chat). Callers that today invent a generic message should use
-// this so the real server/DLL reason reaches the UI (toasts come for free via
-// rcService.ts' try/catch). rc_last_error(NULL) safely returns "Invalid handle".
-func surfaceError(h Handle, defaultMsg string) error {
-	if e := LastError(h); e != "" {
-		return errors.New(e)
-	}
-	return errors.New(defaultMsg)
+	return reason
 }
 
 // Connect connects to the listserver and stores the returned server list on the
@@ -1465,7 +1488,7 @@ func Connect(host string, port int, account, password string) (Handle, error) {
 		return 0, fmt.Errorf("password: %w", err)
 	}
 
-	r1, _, _ := procConnect.Call(
+	h, ok := openConnection(
 		uintptr(unsafe.Pointer(hostPtr)),
 		uintptr(port),
 		uintptr(unsafe.Pointer(acctPtr)),
@@ -1474,50 +1497,24 @@ func Connect(host string, port int, account, password string) (Handle, error) {
 	runtime.KeepAlive(hostPtr)
 	runtime.KeepAlive(acctPtr)
 	runtime.KeepAlive(passPtr)
-	if r1 == 0 {
-		// Handle is null. rc_last_error safely returns "Invalid handle" for a
-		// null arg (grclib.cpp ~4249), and a real reason if grclib set a global
-		// last_error during the failed connect — surface either before falling
-		// back to the generic hint.
-		return 0, surfaceError(0, "rc_connect returned null (check host/port/account/password)")
+	if !ok {
+		// grclib returns null without creating a connection, so there is no
+		// last_error to read.
+		return 0, errors.New("rc_connect returned null")
 	}
-	return Handle(r1), nil
+	return h, nil
 }
 
-// GetServers copies the cached server list from a connected handle into Go.
-// Returns the parsed error string when the list is empty.
+// GetServers copies the cached server list from a connected handle into Go. An
+// empty list is not an error at this layer (the listserver authenticated fine);
+// callers decide what it means (e.g. the account is not staff anywhere).
 func GetServers(h Handle) ([]Server, error) {
 	if err := load(); err != nil {
 		return nil, err
 	}
-	var serversPtr uintptr
-	r1, _, _ := procGetServers.Call(uintptr(h), uintptr(unsafe.Pointer(&serversPtr)))
-	runtime.KeepAlive(&serversPtr)
-	count, err := nativeCount(r1)
-	if err != nil {
-		return nil, fmt.Errorf("get_servers: %w", err)
-	}
-	if count <= 0 || serversPtr == 0 {
-		// Empty list is surfaced at a higher layer (Login maps it to "not staff
-		// anywhere" or the DLL last_error). Log the DLL reason here in case the
-		// emptiness is actually a silent failure (auth rejected, network).
-		if e := LastError(h); e != "" {
-			log.Printf("[rclib] get_servers empty list; last_error=%q", e)
-		}
-		// No servers cached for this handle. This is not an error at this
-		// layer (the listserver authenticated fine); callers decide what an
-		// empty list means (e.g. the account is not staff anywhere).
-		return nil, nil
-	}
-	arr, err := nativeSlice[RCServer](serversPtr, count)
-	if err != nil {
-		return nil, fmt.Errorf("get_servers: %w", err)
-	}
-
-	out := make([]Server, count)
-	for i := 0; i < count; i++ {
-		s := arr[i]
-		out[i] = Server{
+	query := listQuery{label: "get_servers", get: procGetServers, logEmpty: true}
+	return copyList(h, query, func(s RCServer) Server {
+		return Server{
 			Name:        bptrToString(s.Name),
 			IP:          bptrToString(s.IP),
 			Port:        int(s.Port),
@@ -1527,8 +1524,7 @@ func GetServers(h Handle) ([]Server, error) {
 			Version:     bptrToString(s.Version),
 			Homepage:    bptrToString(s.Homepage),
 		}
-	}
-	return out, nil
+	})
 }
 
 // ConnectToServer authenticates to the server at the given list index.
@@ -1540,11 +1536,7 @@ func ConnectToServer(h Handle, index int) error {
 	if err != nil {
 		return fmt.Errorf("server index: %w", err)
 	}
-	r1, _, _ := procConnectToServer.Call(uintptr(h), serverIndex)
-	if r1 == 0 {
-		return surfaceError(h, "rc_connect_to_server failed")
-	}
-	return nil
+	return invokeStatus(h, procConnectToServer, "rc_connect_to_server failed", serverIndex)
 }
 
 // IsConnected reports whether the game socket is connected.
@@ -1552,8 +1544,7 @@ func IsConnected(h Handle) bool {
 	if err := load(); err != nil {
 		return false
 	}
-	r1, _, _ := procIsConnected.Call(uintptr(h))
-	return r1 != 0
+	return invokeValue(h, procIsConnected) != 0
 }
 
 // IsAuthenticated reports whether the game socket finished login.
@@ -1561,8 +1552,7 @@ func IsAuthenticated(h Handle) bool {
 	if err := load(); err != nil {
 		return false
 	}
-	r1, _, _ := procIsAuthenticated.Call(uintptr(h))
-	return r1 != 0
+	return invokeValue(h, procIsAuthenticated) != 0
 }
 
 // SetNewProtocol toggles newer-protocol compatibility. Must be called after
@@ -1575,8 +1565,10 @@ func SetNewProtocol(h Handle, enable bool) error {
 	if enable {
 		val = 1
 	}
-	procSetNewProtocol.Call(uintptr(h), val)
-	return nil
+	return withConnection(h, procSetNewProtocol, func(c nativeConnection) error {
+		c.call(procSetNewProtocol, val)
+		return nil
+	})
 }
 
 // IsNewProtocol reads the current newer-protocol compatibility flag.
@@ -1584,8 +1576,7 @@ func IsNewProtocol(h Handle) bool {
 	if err := load(); err != nil {
 		return true
 	}
-	r1, _, _ := procIsNewProtocol.Call(uintptr(h))
-	return r1 != 0
+	return invokeValue(h, procIsNewProtocol) != 0
 }
 
 // HasNCServer reports whether the connected server exposes an NC (script) socket.
@@ -1593,8 +1584,7 @@ func HasNCServer(h Handle) bool {
 	if err := load(); err != nil {
 		return false
 	}
-	r1, _, _ := procHasNcServer.Call(uintptr(h))
-	return r1 != 0
+	return invokeValue(h, procHasNcServer) != 0
 }
 
 // IsNCConnected reports whether the NC socket is connected.
@@ -1602,8 +1592,7 @@ func IsNCConnected(h Handle) bool {
 	if err := load(); err != nil {
 		return false
 	}
-	r1, _, _ := procIsNcConnected.Call(uintptr(h))
-	return r1 != 0
+	return invokeValue(h, procIsNcConnected) != 0
 }
 
 // IsNCAuthenticated reports whether the NC socket finished login.
@@ -1611,8 +1600,7 @@ func IsNCAuthenticated(h Handle) bool {
 	if err := load(); err != nil {
 		return false
 	}
-	r1, _, _ := procIsNcAuthenticated.Call(uintptr(h))
-	return r1 != 0
+	return invokeValue(h, procIsNcAuthenticated) != 0
 }
 
 // ConnectToNCServer opens the NC (script) socket for the connected server.
@@ -1620,11 +1608,7 @@ func ConnectToNCServer(h Handle) error {
 	if err := load(); err != nil {
 		return err
 	}
-	r1, _, _ := procConnectToNcServer.Call(uintptr(h))
-	if r1 == 0 {
-		return surfaceError(h, "rc_connect_to_nc_server failed")
-	}
-	return nil
+	return invokeStatus(h, procConnectToNcServer, "rc_connect_to_nc_server failed")
 }
 
 // DisconnectNC closes the NC socket.
@@ -1632,11 +1616,7 @@ func DisconnectNC(h Handle) error {
 	if err := load(); err != nil {
 		return err
 	}
-	r1, _, _ := procDisconnectNc.Call(uintptr(h))
-	if r1 == 0 {
-		return surfaceError(h, "rc_disconnect_nc failed")
-	}
-	return nil
+	return invokeStatus(h, procDisconnectNc, "rc_disconnect_nc failed")
 }
 
 // IrcLogin starts the IRC session for the handle (host is derived inside grclib).
@@ -1644,11 +1624,7 @@ func IrcLogin(h Handle) error {
 	if err := load(); err != nil {
 		return err
 	}
-	r1, _, _ := procIrcLogin.Call(uintptr(h))
-	if r1 == 0 {
-		return surfaceError(h, "rc_irc_login failed")
-	}
-	return nil
+	return invokeStatus(h, procIrcLogin, "rc_irc_login failed")
 }
 
 // SendIrcText sends a raw IRC command (command + up to 3 params) on the IRC socket.
@@ -1672,8 +1648,7 @@ func SendIrcText(h Handle, command, p1, p2, p3 string) error {
 	if err != nil {
 		return fmt.Errorf("param 3: %w", err)
 	}
-	r1, _, _ := procSendIrcText.Call(
-		uintptr(h),
+	err = invokeStatus(h, procSendIrcText, "rc_send_irc_text failed",
 		uintptr(unsafe.Pointer(cmd)),
 		uintptr(unsafe.Pointer(a1)),
 		uintptr(unsafe.Pointer(a2)),
@@ -1683,10 +1658,7 @@ func SendIrcText(h Handle, command, p1, p2, p3 string) error {
 	runtime.KeepAlive(a1)
 	runtime.KeepAlive(a2)
 	runtime.KeepAlive(a3)
-	if r1 == 0 {
-		return surfaceError(h, "rc_send_irc_text failed")
-	}
-	return nil
+	return err
 }
 
 // Execute sends a chat line or slash command to the game server.
@@ -1698,12 +1670,9 @@ func Execute(h Handle, message string) error {
 	if err != nil {
 		return fmt.Errorf("message: %w", err)
 	}
-	r1, _, _ := procExecute.Call(uintptr(h), uintptr(unsafe.Pointer(msg)))
+	err = invokeStatus(h, procExecute, "rc_execute failed: server is not authenticated or the socket rejected the packet", uintptr(unsafe.Pointer(msg)))
 	runtime.KeepAlive(msg)
-	if r1 == 0 {
-		return surfaceError(h, "rc_execute failed: server is not authenticated or the socket rejected the packet")
-	}
-	return nil
+	return err
 }
 
 // SetNickname changes the RC nickname shown on the server.
@@ -1715,12 +1684,9 @@ func SetNickname(h Handle, nickname string) error {
 	if err != nil {
 		return fmt.Errorf("nickname: %w", err)
 	}
-	r1, _, _ := procSetNickname.Call(uintptr(h), uintptr(unsafe.Pointer(nick)))
+	err = invokeStatus(h, procSetNickname, "rc_set_nickname failed", uintptr(unsafe.Pointer(nick)))
 	runtime.KeepAlive(nick)
-	if r1 == 0 {
-		return surfaceError(h, "rc_set_nickname failed")
-	}
-	return nil
+	return err
 }
 
 // GetPlayers copies the cached player list for the connected server into Go.
@@ -1728,35 +1694,15 @@ func GetPlayers(h Handle) ([]Player, error) {
 	if err := load(); err != nil {
 		return nil, err
 	}
-	var playersPtr uintptr
-	r1, _, _ := procGetPlayers.Call(uintptr(h), uintptr(unsafe.Pointer(&playersPtr)))
-	runtime.KeepAlive(&playersPtr)
-	count, err := nativeCount(r1)
-	if err != nil {
-		return nil, fmt.Errorf("get_players: %w", err)
-	}
-	if count <= 0 || playersPtr == 0 {
-		if e := LastError(h); e != "" {
-			log.Printf("[rclib] get_players empty list; last_error=%q", e)
-		}
-		return nil, nil
-	}
-	arr, err := nativeSlice[RCPlayer](playersPtr, count)
-	if err != nil {
-		return nil, fmt.Errorf("get_players: %w", err)
-	}
-
-	out := make([]Player, count)
-	for i := 0; i < count; i++ {
-		p := arr[i]
-		out[i] = Player{
+	query := listQuery{label: "get_players", get: procGetPlayers, logEmpty: true}
+	return copyList(h, query, func(p RCPlayer) Player {
+		return Player{
 			Account: bptrToString(p.Account),
 			ID:      int(p.ID),
 			Nick:    bptrToString(p.Nick),
 			Level:   bptrToString(p.Level),
 		}
-	}
-	return out, nil
+	})
 }
 
 // SendPrivateMessage sends a private message to a single player id.
@@ -1793,18 +1739,14 @@ func SendMassPM(h Handle, playerIDs []int, message string) error {
 	if err != nil {
 		return fmt.Errorf("player ID count: %w", err)
 	}
-	r1, _, _ := procSendMassPM.Call(
-		uintptr(h),
+	err = invokeStatus(h, procSendMassPM, "",
 		uintptr(idsPtr),
 		idCount,
 		uintptr(unsafe.Pointer(msg)),
 	)
 	runtime.KeepAlive(buf)
 	runtime.KeepAlive(msg)
-	if r1 == 0 {
-		return errors.New(LastError(h))
-	}
-	return nil
+	return err
 }
 
 // SendAdminMessage sends an admin message to a single player id.
@@ -1840,8 +1782,7 @@ func SetPlayerRights(h Handle, account string, rights int, ipRange, folderAccess
 	if err != nil {
 		return fmt.Errorf("folder access: %w", err)
 	}
-	r1, _, _ := procSetPlayerRights.Call(
-		uintptr(h),
+	err = invokeStatus(h, procSetPlayerRights, "",
 		uintptr(unsafe.Pointer(acct)),
 		uintptr(rights),
 		uintptr(unsafe.Pointer(ip)),
@@ -1850,10 +1791,7 @@ func SetPlayerRights(h Handle, account string, rights int, ipRange, folderAccess
 	runtime.KeepAlive(acct)
 	runtime.KeepAlive(ip)
 	runtime.KeepAlive(fa)
-	if r1 == 0 {
-		return errors.New(LastError(h))
-	}
-	return nil
+	return err
 }
 
 // RequestPlayerAttrs asks the server for the attributes of an account.
@@ -1875,17 +1813,13 @@ func SetPlayerAttributes(h Handle, account, propertiesJSON string) error {
 	if err != nil {
 		return fmt.Errorf("properties: %w", err)
 	}
-	r1, _, _ := procSetPlayerAttributes.Call(
-		uintptr(h),
+	err = invokeStatus(h, procSetPlayerAttributes, "",
 		uintptr(unsafe.Pointer(acct)),
 		uintptr(unsafe.Pointer(prop)),
 	)
 	runtime.KeepAlive(acct)
 	runtime.KeepAlive(prop)
-	if r1 == 0 {
-		return errors.New(LastError(h))
-	}
-	return nil
+	return err
 }
 
 // ParsePlayerAttributesText converts an INI-style attribute editor document
@@ -1922,12 +1856,9 @@ func RequestPlayerBan(h Handle, account string, playerID int) error {
 	if err != nil {
 		return fmt.Errorf("account: %w", err)
 	}
-	r1, _, _ := procRequestPlayerBan.Call(uintptr(h), uintptr(unsafe.Pointer(acct)), nativePlayerID)
+	err = invokeStatus(h, procRequestPlayerBan, "", uintptr(unsafe.Pointer(acct)), nativePlayerID)
 	runtime.KeepAlive(acct)
-	if r1 == 0 {
-		return errors.New(LastError(h))
-	}
-	return nil
+	return err
 }
 
 // RequestPlayerBanByAccount asks for ban data of an (possibly offline) account.
@@ -1981,8 +1912,7 @@ func SetBan(h Handle, target, world string, banned bool, banType, releaseTime, r
 	if banned {
 		bannedInt = 1
 	}
-	r1, _, _ := procSetBan.Call(
-		uintptr(h),
+	err = invokeStatus(h, procSetBan, "",
 		uintptr(unsafe.Pointer(tgt)),
 		uintptr(unsafe.Pointer(wld)),
 		uintptr(bannedInt),
@@ -1995,10 +1925,7 @@ func SetBan(h Handle, target, world string, banned bool, banType, releaseTime, r
 	runtime.KeepAlive(bt)
 	runtime.KeepAlive(rt)
 	runtime.KeepAlive(rsn)
-	if r1 == 0 {
-		return errors.New(LastError(h))
-	}
-	return nil
+	return err
 }
 
 // RequestPlayerComments asks the server for an account's comments text.
@@ -2020,23 +1947,22 @@ func SetPlayerComments(h Handle, account, comments string) error {
 	if err != nil {
 		return fmt.Errorf("comments: %w", err)
 	}
-	r1, _, _ := procSetPlayerComments.Call(
-		uintptr(h),
+	err = invokeStatus(h, procSetPlayerComments, "",
 		uintptr(unsafe.Pointer(acct)),
 		uintptr(unsafe.Pointer(cmt)),
 	)
 	runtime.KeepAlive(acct)
 	runtime.KeepAlive(cmt)
-	if r1 == 0 {
-		return errors.New(LastError(h))
-	}
-	return nil
+	return err
 }
+
+// Disconnect destroys the connection. Later calls with h, including another
+// Disconnect, do not reach the library.
 func Disconnect(h Handle) {
 	if err := load(); err != nil {
 		return
 	}
-	procDisconnect.Call(uintptr(h))
+	destroyConnection(h)
 }
 
 // Free releases memory returned by grclib.
@@ -2052,31 +1978,20 @@ func GetWeapons(h Handle) ([]Weapon, error) {
 	if err := load(); err != nil {
 		return nil, err
 	}
-	var ptr uintptr
-	r1, _, _ := procGetWeapons.Call(uintptr(h), uintptr(unsafe.Pointer(&ptr)))
-	runtime.KeepAlive(&ptr)
-	count, err := nativeCount(r1)
-	if err != nil {
-		return nil, fmt.Errorf("get_weapons: %w", err)
+	query := listQuery{label: "get_weapons", get: procGetWeapons, logEmpty: true}
+	copied, err := copyList(h, query, func(w RCWeapon) Weapon {
+		return Weapon{Name: strings.TrimSpace(bptrToString(w.Name))}
+	})
+	if err != nil || copied == nil {
+		return nil, err
 	}
-	if count <= 0 || ptr == 0 {
-		if e := LastError(h); e != "" {
-			log.Printf("[rclib] get_weapons empty list; last_error=%q", e)
-		}
-		return nil, nil
-	}
-	arr, err := nativeSlice[RCWeapon](ptr, count)
-	if err != nil {
-		return nil, fmt.Errorf("get_weapons: %w", err)
-	}
-	out := make([]Weapon, 0, count)
-	for i := 0; i < count; i++ {
-		name := strings.TrimSpace(bptrToString(arr[i].Name))
-		if !IsUsableScriptName(name) {
+	out := make([]Weapon, 0, len(copied))
+	for i, weapon := range copied {
+		if !IsUsableScriptName(weapon.Name) {
 			log.Printf("[rclib] ignoring weapon with invalid name at index=%d", i)
 			continue
 		}
-		out = append(out, Weapon{Name: name})
+		out = append(out, weapon)
 	}
 	return out, nil
 }
@@ -2086,31 +2001,20 @@ func GetClasses(h Handle) ([]Class, error) {
 	if err := load(); err != nil {
 		return nil, err
 	}
-	var ptr uintptr
-	r1, _, _ := procGetClasses.Call(uintptr(h), uintptr(unsafe.Pointer(&ptr)))
-	runtime.KeepAlive(&ptr)
-	count, err := nativeCount(r1)
-	if err != nil {
-		return nil, fmt.Errorf("get_classes: %w", err)
+	query := listQuery{label: "get_classes", get: procGetClasses, logEmpty: true}
+	copied, err := copyList(h, query, func(c RCClass) Class {
+		return Class{Name: strings.TrimSpace(bptrToString(c.Name))}
+	})
+	if err != nil || copied == nil {
+		return nil, err
 	}
-	if count <= 0 || ptr == 0 {
-		if e := LastError(h); e != "" {
-			log.Printf("[rclib] get_classes empty list; last_error=%q", e)
-		}
-		return nil, nil
-	}
-	arr, err := nativeSlice[RCClass](ptr, count)
-	if err != nil {
-		return nil, fmt.Errorf("get_classes: %w", err)
-	}
-	out := make([]Class, 0, count)
-	for i := 0; i < count; i++ {
-		name := strings.TrimSpace(bptrToString(arr[i].Name))
-		if !IsUsableScriptName(name) {
+	out := make([]Class, 0, len(copied))
+	for i, class := range copied {
+		if !IsUsableScriptName(class.Name) {
 			log.Printf("[rclib] ignoring class with invalid name at index=%d", i)
 			continue
 		}
-		out = append(out, Class{Name: name})
+		out = append(out, class)
 	}
 	return out, nil
 }
@@ -2120,32 +2024,20 @@ func GetNPCs(h Handle) ([]NPC, error) {
 	if err := load(); err != nil {
 		return nil, err
 	}
-	var ptr uintptr
-	r1, _, _ := procGetNPCs.Call(uintptr(h), uintptr(unsafe.Pointer(&ptr)))
-	runtime.KeepAlive(&ptr)
-	count, err := nativeCount(r1)
-	if err != nil {
-		return nil, fmt.Errorf("get_npcs: %w", err)
+	query := listQuery{label: "get_npcs", get: procGetNPCs, logEmpty: true}
+	copied, err := copyList(h, query, func(n RCNPC) NPC {
+		return NPC{ID: int(n.ID), Name: strings.TrimSpace(bptrToString(n.Name)), Type: bptrToString(n.Type), Level: bptrToString(n.Level)}
+	})
+	if err != nil || copied == nil {
+		return nil, err
 	}
-	if count <= 0 || ptr == 0 {
-		if e := LastError(h); e != "" {
-			log.Printf("[rclib] get_npcs empty list; last_error=%q", e)
-		}
-		return nil, nil
-	}
-	arr, err := nativeSlice[RCNPC](ptr, count)
-	if err != nil {
-		return nil, fmt.Errorf("get_npcs: %w", err)
-	}
-	out := make([]NPC, 0, count)
-	for i := 0; i < count; i++ {
-		n := arr[i]
-		name := strings.TrimSpace(bptrToString(n.Name))
-		if !IsUsableScriptName(name) {
-			log.Printf("[rclib] ignoring NPC id=%d with invalid name", n.ID)
+	out := make([]NPC, 0, len(copied))
+	for _, npc := range copied {
+		if !IsUsableScriptName(npc.Name) {
+			log.Printf("[rclib] ignoring NPC id=%d with invalid name", npc.ID)
 			continue
 		}
-		out = append(out, NPC{ID: int(n.ID), Name: name, Type: bptrToString(n.Type), Level: bptrToString(n.Level)})
+		out = append(out, npc)
 	}
 	return out, nil
 }
@@ -2190,11 +2082,7 @@ func DeleteNPC(h Handle, id int) error {
 	if err != nil {
 		return fmt.Errorf("NPC ID: %w", err)
 	}
-	r1, _, _ := procDeleteNPC.Call(uintptr(h), npcID)
-	if r1 == 0 {
-		return errors.New(LastError(h))
-	}
-	return nil
+	return invokeStatus(h, procDeleteNPC, "", npcID)
 }
 
 // UpdateNPC writes an NPC's script back.
@@ -2210,12 +2098,9 @@ func UpdateNPC(h Handle, id int, script string) error {
 	if err != nil {
 		return fmt.Errorf("script: %w", err)
 	}
-	r1, _, _ := procUpdateNPC.Call(uintptr(h), npcID, uintptr(unsafe.Pointer(s)))
+	err = invokeStatus(h, procUpdateNPC, "", npcID, uintptr(unsafe.Pointer(s)))
 	runtime.KeepAlive(s)
-	if r1 == 0 {
-		return errors.New(LastError(h))
-	}
-	return nil
+	return err
 }
 
 // CreateNPC creates a new DB NPC on the server (7 fields, mirrors
@@ -2252,8 +2137,7 @@ func CreateNPC(h Handle, name string, id int, npcType, scripter, level, x, y str
 	if err != nil {
 		return fmt.Errorf("y: %w", err)
 	}
-	r1 := createNPCCall(
-		uintptr(h),
+	err = invokeStatus(h, procCreateNPCOnServer, "",
 		uintptr(unsafe.Pointer(n)),
 		npcID,
 		uintptr(unsafe.Pointer(t)),
@@ -2268,10 +2152,7 @@ func CreateNPC(h Handle, name string, id int, npcType, scripter, level, x, y str
 	runtime.KeepAlive(lv)
 	runtime.KeepAlive(xp)
 	runtime.KeepAlive(yp)
-	if r1 == 0 {
-		return errors.New(LastError(h))
-	}
-	return nil
+	return err
 }
 
 // RequestWeaponScript asks the server for a weapon's script; the reply arrives
@@ -2294,11 +2175,7 @@ func RequestNPCScript(h Handle, id int) error {
 	if err != nil {
 		return fmt.Errorf("NPC ID: %w", err)
 	}
-	r1, _, _ := procRequestNPCScript.Call(uintptr(h), npcID)
-	if r1 == 0 {
-		return errors.New(LastError(h))
-	}
-	return nil
+	return invokeStatus(h, procRequestNPCScript, "", npcID)
 }
 
 // ResetNPC resets an NPC by id.
@@ -2310,11 +2187,7 @@ func ResetNPC(h Handle, id int) error {
 	if err != nil {
 		return fmt.Errorf("NPC ID: %w", err)
 	}
-	r1, _, _ := procResetNPC.Call(uintptr(h), npcID)
-	if r1 == 0 {
-		return errors.New(LastError(h))
-	}
-	return nil
+	return invokeStatus(h, procResetNPC, "", npcID)
 }
 
 // RequestNPCAttributes asks the server for an NPC's attributes; the reply arrives
@@ -2327,11 +2200,7 @@ func RequestNPCAttributes(h Handle, id int) error {
 	if err != nil {
 		return fmt.Errorf("NPC ID: %w", err)
 	}
-	r1, _, _ := procRequestNPCAttributes.Call(uintptr(h), npcID)
-	if r1 == 0 {
-		return errors.New(LastError(h))
-	}
-	return nil
+	return invokeStatus(h, procRequestNPCAttributes, "", npcID)
 }
 
 // GetNPCFlags asks the server for an NPC's flags; the reply arrives via the
@@ -2345,11 +2214,7 @@ func GetNPCFlags(h Handle, id int) error {
 	if err != nil {
 		return fmt.Errorf("NPC ID: %w", err)
 	}
-	r1, _, _ := procGetNPCFlags.Call(uintptr(h), npcID)
-	if r1 == 0 {
-		return errors.New(LastError(h))
-	}
-	return nil
+	return invokeStatus(h, procGetNPCFlags, "", npcID)
 }
 
 // SetNPCFlags writes an NPC's flags.
@@ -2365,12 +2230,9 @@ func SetNPCFlags(h Handle, id int, flags string) error {
 	if err != nil {
 		return fmt.Errorf("flags: %w", err)
 	}
-	r1, _, _ := procSetNPCFlags.Call(uintptr(h), npcID, uintptr(unsafe.Pointer(f)))
+	err = invokeStatus(h, procSetNPCFlags, "", npcID, uintptr(unsafe.Pointer(f)))
 	runtime.KeepAlive(f)
-	if r1 == 0 {
-		return errors.New(LastError(h))
-	}
-	return nil
+	return err
 }
 
 // WarpNPC warps an NPC to (x, y) on the given level. x/y are server tile coords
@@ -2387,18 +2249,14 @@ func WarpNPC(h Handle, id int, x, y float64, level string) error {
 	if err != nil {
 		return fmt.Errorf("level: %w", err)
 	}
-	r1, _, _ := procWarpNPC.Call(
-		uintptr(h),
+	err = invokeStatus(h, procWarpNPC, "",
 		npcID,
 		uintptr(math.Float32bits(float32(x))),
 		uintptr(math.Float32bits(float32(y))),
 		uintptr(unsafe.Pointer(lvl)),
 	)
 	runtime.KeepAlive(lvl)
-	if r1 == 0 {
-		return errors.New(LastError(h))
-	}
-	return nil
+	return err
 }
 
 // RequestServerOptions asks the server for its options text; the reply arrives
@@ -2442,12 +2300,9 @@ func SendNCPacket(h Handle, packetID int) error {
 	// zero-length payload — so pass a valid (unused) pointer. length stays 0,
 	// so the byte is never read.
 	var dummy [1]byte
-	r1, _, _ := procSendNCPacket.Call(uintptr(h), nativePacketID, uintptr(unsafe.Pointer(&dummy[0])), 0)
+	err = invokeStatus(h, procSendNCPacket, "", nativePacketID, uintptr(unsafe.Pointer(&dummy[0])), 0)
 	runtime.KeepAlive(&dummy[0])
-	if r1 == 0 {
-		return errors.New(LastError(h))
-	}
-	return nil
+	return err
 }
 
 // SendRawPacket sends a packet on the main RC socket. Unlike SendNCPacket,
@@ -2478,18 +2333,14 @@ func SendRawPacket(h Handle, packetID int, data []byte) error {
 	if len(data) > 0 {
 		dataPtr = unsafe.Pointer(&data[0])
 	}
-	r1, _, _ := procSendRawPacket.Call(
-		uintptr(h),
+	err = invokeStatus(h, procSendRawPacket, "",
 		nativePacketID,
 		uintptr(dataPtr),
 		nativeLength,
 	)
 	runtime.KeepAlive(data)
 	runtime.KeepAlive(&dummy[0])
-	if r1 == 0 {
-		return errors.New(LastError(h))
-	}
-	return nil
+	return err
 }
 
 // RequestWeaponList re-requests the full weapon list from the server (the
@@ -2500,11 +2351,7 @@ func RequestWeaponList(h Handle) error {
 	if err := load(); err != nil {
 		return err
 	}
-	r1, _, _ := procRequestWeaponList.Call(uintptr(h))
-	if r1 == 0 {
-		return errors.New(LastError(h))
-	}
-	return nil
+	return invokeStatus(h, procRequestWeaponList, "")
 }
 
 // FileBrowserStart begins a file-browser session (requests the root folder list
@@ -2557,18 +2404,14 @@ func UploadFile(h Handle, path string, content []byte) error {
 	if len(content) > 0 {
 		contentPtr = unsafe.Pointer(&content[0])
 	}
-	r1, _, _ := procUploadFile.Call(
-		uintptr(h),
+	err = invokeStatus(h, procUploadFile, "",
 		uintptr(unsafe.Pointer(pathPtr)),
 		uintptr(contentPtr),
 		uintptr(len(content)),
 	)
 	runtime.KeepAlive(pathPtr)
 	runtime.KeepAlive(content)
-	if r1 == 0 {
-		return errors.New(LastError(h))
-	}
-	return nil
+	return err
 }
 
 // GetMaxUploadFileSize returns the server's max upload size in bytes (0 if
@@ -2577,8 +2420,7 @@ func GetMaxUploadFileSize(h Handle) int64 {
 	if err := load(); err != nil {
 		return 0
 	}
-	r1, _, _ := procGetMaxUploadFileSize.Call(uintptr(h))
-	return int64(r1)
+	return int64(invokeValue(h, procGetMaxUploadFileSize))
 }
 
 // CopyFileBrowserFolders snapshots the current browser folders into Go-owned
@@ -2587,30 +2429,13 @@ func CopyFileBrowserFolders(h Handle) ([]FileBrowserFolder, error) {
 	if err := load(); err != nil {
 		return nil, err
 	}
-	var ptr uintptr
-	r1, _, _ := procCopyFileBrowserFolders.Call(uintptr(h), uintptr(unsafe.Pointer(&ptr)))
-	runtime.KeepAlive(&ptr)
-	count, err := nativeCount(r1)
-	if err != nil {
-		return nil, fmt.Errorf("copy_file_browser_folders: %w", err)
-	}
-	if count <= 0 || ptr == 0 {
-		return nil, nil
-	}
-	arr, err := nativeSlice[RCFileBrowserFolder](ptr, count)
-	if err != nil {
-		return nil, fmt.Errorf("copy_file_browser_folders: %w", err)
-	}
-	out := make([]FileBrowserFolder, count)
-	for i := 0; i < count; i++ {
-		f := arr[i]
-		out[i] = FileBrowserFolder{
+	query := listQuery{label: "copy_file_browser_folders", get: procCopyFileBrowserFolders, free: procFreeFileBrowserFolders}
+	return copyList(h, query, func(f RCFileBrowserFolder) FileBrowserFolder {
+		return FileBrowserFolder{
 			Pattern: bptrToString(f.Pattern),
 			Rights:  bptrToString(f.Rights),
 		}
-	}
-	procFreeFileBrowserFolders.Call(ptr, uintptr(count))
-	return out, nil
+	})
 }
 
 // CopyFileBrowserFiles snapshots the current browser files into Go-owned copies.
@@ -2619,45 +2444,20 @@ func CopyFileBrowserFiles(h Handle) ([]FileBrowserEntry, error) {
 	if err := load(); err != nil {
 		return nil, err
 	}
-	var ptr uintptr
-	r1, _, _ := procCopyFileBrowserFiles.Call(uintptr(h), uintptr(unsafe.Pointer(&ptr)))
-	runtime.KeepAlive(&ptr)
-	count, err := nativeCount(r1)
-	if err != nil {
-		return nil, fmt.Errorf("copy_file_browser_files: %w", err)
-	}
-	if count <= 0 || ptr == 0 {
-		return nil, nil
-	}
-	arr, err := nativeSlice[RCFileBrowserEntry](ptr, count)
-	if err != nil {
-		return nil, fmt.Errorf("copy_file_browser_files: %w", err)
-	}
-	out := make([]FileBrowserEntry, count)
-	for i := 0; i < count; i++ {
-		e := arr[i]
-		out[i] = FileBrowserEntry{
+	query := listQuery{label: "copy_file_browser_files", get: procCopyFileBrowserFiles, free: procFreeFileBrowserFiles}
+	return copyList(h, query, func(e RCFileBrowserEntry) FileBrowserEntry {
+		return FileBrowserEntry{
 			Path:        bptrToString(e.Path),
 			Rights:      bptrToString(e.Rights),
 			Size:        int(e.Size),
 			Modified:    int(e.Modified),
 			IsDirectory: e.IsDirectory != 0,
 		}
-	}
-	procFreeFileBrowserFiles.Call(ptr, uintptr(count))
-	return out, nil
+	})
 }
 
 // callStr1 calls a (handle, const char*) DLL function returning int (0 = error).
-func nativeCallError(h Handle, p *proc) error {
-	defaultMessage := "native operation failed"
-	if p != nil && p.name != "" {
-		defaultMessage = p.name + " failed"
-	}
-	return surfaceError(h, defaultMessage)
-}
-
-func callStr1(h Handle, p *proc, a string) error {
+func callStr1(h Handle, p *connectionProc, a string) error {
 	if err := load(); err != nil {
 		return err
 	}
@@ -2665,16 +2465,13 @@ func callStr1(h Handle, p *proc, a string) error {
 	if err != nil {
 		return fmt.Errorf("argument: %w", err)
 	}
-	r1, _, _ := p.Call(uintptr(h), uintptr(unsafe.Pointer(ptr)))
+	err = invokeStatus(h, p, "", uintptr(unsafe.Pointer(ptr)))
 	runtime.KeepAlive(ptr)
-	if r1 == 0 {
-		return nativeCallError(h, p)
-	}
-	return nil
+	return err
 }
 
 // callStr2 calls a (handle, const char*, const char*) DLL function returning int.
-func callStr2(h Handle, p *proc, a, b string) error {
+func callStr2(h Handle, p *connectionProc, a, b string) error {
 	if err := load(); err != nil {
 		return err
 	}
@@ -2686,17 +2483,14 @@ func callStr2(h Handle, p *proc, a, b string) error {
 	if err != nil {
 		return fmt.Errorf("argument 2: %w", err)
 	}
-	r1, _, _ := p.Call(uintptr(h), uintptr(unsafe.Pointer(pa)), uintptr(unsafe.Pointer(pb)))
+	err = invokeStatus(h, p, "", uintptr(unsafe.Pointer(pa)), uintptr(unsafe.Pointer(pb)))
 	runtime.KeepAlive(pa)
 	runtime.KeepAlive(pb)
-	if r1 == 0 {
-		return nativeCallError(h, p)
-	}
-	return nil
+	return err
 }
 
 // callStr3 calls a (handle, const char*, const char*, const char*) DLL function returning int.
-func callStr3(h Handle, p *proc, a, b, c string) error {
+func callStr3(h Handle, p *connectionProc, a, b, c string) error {
 	if err := load(); err != nil {
 		return err
 	}
@@ -2712,32 +2506,25 @@ func callStr3(h Handle, p *proc, a, b, c string) error {
 	if err != nil {
 		return fmt.Errorf("argument 3: %w", err)
 	}
-	r1, _, _ := p.Call(uintptr(h), uintptr(unsafe.Pointer(pa)), uintptr(unsafe.Pointer(pb)), uintptr(unsafe.Pointer(pc)))
+	err = invokeStatus(h, p, "", uintptr(unsafe.Pointer(pa)), uintptr(unsafe.Pointer(pb)), uintptr(unsafe.Pointer(pc)))
 	runtime.KeepAlive(pa)
 	runtime.KeepAlive(pb)
 	runtime.KeepAlive(pc)
-	if r1 == 0 {
-		return nativeCallError(h, p)
-	}
-	return nil
+	return err
 }
 
 // callHandle calls a (handle)-only DLL function returning int (e.g. the server
 // text-config requestors).
-func callHandle(h Handle, p *proc) error {
+func callHandle(h Handle, p *connectionProc) error {
 	if err := load(); err != nil {
 		return err
 	}
-	r1, _, _ := p.Call(uintptr(h))
-	if r1 == 0 {
-		return nativeCallError(h, p)
-	}
-	return nil
+	return invokeStatus(h, p, "")
 }
 
 // callHandleIDStr calls a (handle, int player_id, const char*) DLL function
 // returning int (e.g. rc_send_private_message / rc_send_admin_message).
-func callHandleIDStr(h Handle, p *proc, playerID int, a string) error {
+func callHandleIDStr(h Handle, p *connectionProc, playerID int, a string) error {
 	if err := load(); err != nil {
 		return err
 	}
@@ -2749,17 +2536,14 @@ func callHandleIDStr(h Handle, p *proc, playerID int, a string) error {
 	if err != nil {
 		return fmt.Errorf("argument: %w", err)
 	}
-	r1, _, _ := p.Call(uintptr(h), nativePlayerID, uintptr(unsafe.Pointer(ptr)))
+	err = invokeStatus(h, p, "", nativePlayerID, uintptr(unsafe.Pointer(ptr)))
 	runtime.KeepAlive(ptr)
-	if r1 == 0 {
-		return nativeCallError(h, p)
-	}
-	return nil
+	return err
 }
 
 // callHandleStr calls a (handle, const char*) DLL function returning int (e.g.
 // the server text-config uploaders).
-func callHandleStr(h Handle, p *proc, content string) error {
+func callHandleStr(h Handle, p *connectionProc, content string) error {
 	if err := load(); err != nil {
 		return err
 	}
@@ -2767,10 +2551,7 @@ func callHandleStr(h Handle, p *proc, content string) error {
 	if err != nil {
 		return fmt.Errorf("content: %w", err)
 	}
-	r1, _, _ := p.Call(uintptr(h), uintptr(unsafe.Pointer(c)))
+	err = invokeStatus(h, p, "", uintptr(unsafe.Pointer(c)))
 	runtime.KeepAlive(c)
-	if r1 == 0 {
-		return nativeCallError(h, p)
-	}
-	return nil
+	return err
 }

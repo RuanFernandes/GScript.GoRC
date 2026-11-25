@@ -4,40 +4,10 @@ package rclib
 
 import (
 	"fmt"
+	"runtime"
 
 	"github.com/ebitengine/purego"
 )
-
-// proc wraps a dlsym'd symbol address (Linux/macOS). Call routes through
-// purego.SyscallN, which invokes the symbol with the platform's native C ABI
-// (SysV AMD64 on Linux, etc.) — NOT the stdlib syscall.Syscall family, which on
-// non-Windows hosts executes the kernel `syscall` CPU instruction and treats the
-// function address as a syscall number (wrong ABI, returns garbage like -1 and
-// crashes when the caller dereferences it).
-type proc struct {
-	name string
-	addr uintptr
-}
-
-// Call invokes the native symbol via purego.SyscallN under dllMu so no two
-// goroutines re-enter grclib concurrently (mirrors the single-threaded reference
-// client; see dllMu in rclib.go). Unlike stdlib syscall.Syscall it handles any
-// arg count with the correct C calling convention, so the 8-arg
-// rc_create_npc_on_server no longer needs special casing. The third return is
-// forwarded for parity with the Windows sibling; call sites ignore it.
-func (p *proc) Call(a ...uintptr) (uintptr, uintptr, error) {
-	started := beginNativeCall(p.name)
-	defer endNativeCall(started)
-	r1, r2, _ := purego.SyscallN(p.addr, a...)
-	return r1, r2, nil
-}
-
-// createNPCCall is the unix entry for CreateNPC (see rclib.go). purego.SyscallN
-// handles the 8 args with the correct C ABI, so it goes through the normal proc.
-func createNPCCall(h, name, id, npcType, scripter, level, x, y uintptr) uintptr {
-	r1, _, _ := procCreateNPCOnServer.Call(h, name, id, npcType, scripter, level, x, y)
-	return r1
-}
 
 // newCallback wraps a Go function as a C-callable callback via purego (pure-Go
 // trampoline, no cgo) on Linux/macOS. Mirrors syscall.NewCallback on Windows.
@@ -56,6 +26,19 @@ func loadProcs(path string) error {
 		if e != nil {
 			return nil, fmt.Errorf("Dlsym(%s): %w", name, e)
 		}
-		return &proc{name: name, addr: addr}, nil
+		// 386 passes every argument on the stack by position, so only the
+		// register conventions need the typed binding.
+		if runtime.GOARCH != "386" {
+			if native, ok := floatABINative(name, func(fptr any) { purego.RegisterFunc(fptr, addr) }); ok {
+				return &proc{name: name, native: native}, nil
+			}
+		}
+		// purego.SyscallN invokes the symbol with the platform's native C ABI
+		// (SysV AMD64 on Linux, etc.) — NOT the stdlib syscall.Syscall family,
+		// which on non-Windows hosts executes the kernel `syscall` instruction.
+		return &proc{name: name, native: func(a []uintptr) uintptr {
+			r1, _, _ := purego.SyscallN(addr, a...)
+			return r1
+		}}, nil
 	})
 }

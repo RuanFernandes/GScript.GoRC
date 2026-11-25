@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -53,15 +54,19 @@ func externalFileLocalPath(downloadDir, remotePath string) (string, error) {
 	if normalized == "" || strings.HasSuffix(normalized, "/") {
 		return "", fmt.Errorf("invalid remote file path: %q", remotePath)
 	}
-	name := path.Base(normalized)
-	if name == "" || name == "." || name == ".." || name == "/" {
-		return "", fmt.Errorf("invalid remote file path: %q", remotePath)
+	// The remote folders are mirrored: files that only share a name must not
+	// share a local copy.
+	segments := strings.Split(strings.TrimLeft(normalized, "/"), "/")
+	for _, segment := range segments {
+		if segment == "" || segment == "." || segment == ".." || strings.Contains(segment, ":") {
+			return "", fmt.Errorf("invalid remote file path: %q", remotePath)
+		}
 	}
 	absDir, err := filepath.Abs(downloadDir)
 	if err != nil {
 		return "", fmt.Errorf("resolve downloads folder: %w", err)
 	}
-	return filepath.Join(absDir, name), nil
+	return filepath.Join(append([]string{absDir}, segments...)...), nil
 }
 
 func externalFileSignatureFor(localPath string) (externalFileSignature, error) {
@@ -144,6 +149,12 @@ func (a *App) openExternalRemoteFile(remotePath string, content []byte) (string,
 	if a.externalFiles == nil {
 		a.externalFiles = make(map[string]externalFileSession)
 	}
+	// Windows ignores case, so another remote path may still own this file.
+	for otherKey, other := range a.externalFiles {
+		if strings.EqualFold(other.localPath, localPath) {
+			delete(a.externalFiles, otherKey)
+		}
+	}
 	a.externalFileSequence++
 	session := externalFileSession{
 		id:            a.externalFileSequence,
@@ -214,15 +225,36 @@ func (a *App) ensureExternalFileWatcher() {
 }
 
 func (a *App) pollExternalFiles() {
+	// The lock is not held while transferring: the disconnect callback needs it
+	// while it holds the native library lock that every transfer needs.
 	a.externalFilesMu.Lock()
-	defer a.externalFilesMu.Unlock()
+	sessions := make(map[string]externalFileSession, len(a.externalFiles))
 	for key, session := range a.externalFiles {
-		a.pollExternalFileLocked(&session)
-		a.externalFiles[key] = session
+		sessions[key] = session
+	}
+	a.externalFilesMu.Unlock()
+
+	for key, session := range sessions {
+		if !a.isExternalFileSessionActive(key, session.id) {
+			continue
+		}
+		a.pollExternalFileSession(&session)
+		a.externalFilesMu.Lock()
+		if current, ok := a.externalFiles[key]; ok && current.id == session.id {
+			a.externalFiles[key] = session
+		}
+		a.externalFilesMu.Unlock()
 	}
 }
 
-func (a *App) pollExternalFileLocked(session *externalFileSession) {
+func (a *App) isExternalFileSessionActive(key string, id uint64) bool {
+	a.externalFilesMu.Lock()
+	defer a.externalFilesMu.Unlock()
+	current, ok := a.externalFiles[key]
+	return ok && current.id == id
+}
+
+func (a *App) pollExternalFileSession(session *externalFileSession) {
 	current, err := externalFileSignatureFor(session.localPath)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -247,7 +279,25 @@ func (a *App) pollExternalFileLocked(session *externalFileSession) {
 		log.Printf("[external-file] could not read changed file %q: %v", session.localPath, err)
 		return
 	}
-	if err := a.sessions.UploadFile(session.remotePath, content); err != nil {
+	err = a.withRemoteFile(session.remotePath, func(file remoteFile) error {
+		if err := file.requireExisting(); err != nil {
+			return err
+		}
+		previous, err := file.Read()
+		if err != nil {
+			return err
+		}
+		if _, err := a.backupBeforeWrite("file", file, previous); err != nil {
+			return fmt.Errorf("safety backup failed: %w", err)
+		}
+		// Waiting and the backup take a while; a logout or server switch may
+		// have happened.
+		if session.id != 0 && !a.isExternalFileSessionActive(normalizeFileBrowserPath(session.remotePath), session.id) {
+			return errors.New("the editing session ended")
+		}
+		return file.Write(content)
+	})
+	if err != nil {
 		log.Printf("[external-file] upload failed remote=%q: %v", session.remotePath, err)
 		return
 	}

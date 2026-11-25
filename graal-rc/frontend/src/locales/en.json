@@ -744,6 +744,7 @@
   "sqlite.saveBeforeClosingDescription": "This database has unsaved staged changes. Save them before the window closes, or discard them.",
   "sqlite.unsaved": "• unsaved",
   "sqlite.discard": "Discard",
+  "sqlite.saveOrDiscardBeforeSwitching": "Save or discard your staged changes before switching tables.",
   "sqlite.row": "Row",
   "sqlite.data": "Data",
   "sqlite.diagram": "Diagram",

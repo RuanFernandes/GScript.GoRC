@@ -28,5 +28,8 @@ Ao iniciar, o cliente expõe um servidor MCP HTTP somente no loopback em
 
 O endereço pode ser alterado com `RC_MCP_ADDR`. A integração é deliberadamente
 local; não use `0.0.0.0` sem colocar autenticação e uma camada de rede segura na
-frente dela. `get_rc_chat` retorna no máximo 50 mensagens com timestamp UTC e `filebrowser_read`
+frente dela. Para barrar páginas web, o endpoint recusa requisições com `Origin`, com `Host`
+que não seja de loopback (ou o de `RC_MCP_ADDR`) e sem `Content-Type: application/json`. Isso não
+autentica programas locais. `filebrowser_cd`, `filebrowser_list` e `filebrowser_search` só respondem depois que o
+servidor entrega a listagem (limite de 20 segundos). `get_rc_chat` retorna no máximo 50 mensagens com timestamp UTC e `filebrowser_read`
 recusa caminhos com traversal e conteúdo que não seja UTF-8.

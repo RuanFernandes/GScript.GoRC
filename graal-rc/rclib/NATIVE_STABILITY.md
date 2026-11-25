@@ -1,7 +1,9 @@
 # Native call diagnostics
 
-All calls made through `proc.Call` remain serialized by `dllMu`. Instrumentation
-records the export name, time spent waiting for that mutex, call duration, queue
+All native calls are serialized by `dllMu`, taken either by `proc.Call`
+(handle-free exports) or by `withConnection` (see `handle.go`). One hold can cover
+several exports, such as a query plus `rc_last_error`; it is reported under the
+first export's name. Instrumentation records that name, time spent waiting for that mutex, call duration, queue
 depth, and cumulative timing counters. It does not record native arguments,
 handles, account names, credentials, file contents, or server addresses.
 
@@ -35,7 +37,18 @@ responses. The desktop process could then terminate the helper, preserve editor
 drafts, and offer a new session. That change requires an explicit session and
 request ownership design; it is not provided by this diagnostics layer.
 
-The existing getters read native cache pointers after `proc.Call` returns. Their
-ownership contract must be confirmed against the matching grclib source before
-changing locks or assuming those pointers remain valid. This instrumentation
-does not alter memory ownership or the native ABI.
+## Connection ownership
+
+`Handle` is a never-reused id, not the native pointer. Exports that take the
+connection are `connectionProc` values, which can only be invoked inside
+`withConnection`: liveness is checked under the same `dllMu` hold as the call,
+and `Disconnect` retires the id in the hold that runs `rc_disconnect`.
+
+`rc_get_*` free their previous result on the next call, so results are copied
+into Go memory inside the same hold.
+
+`dllMu` cannot serialize grclib's own receive threads. In the grclib source,
+`rc_last_error` returns `last_error.c_str()` without taking `error_mutex`, and
+the receive thread rebuilds `server_cache` (the array `rc_get_servers` returns)
+when a server list reply arrives. Closing those two races needs a grclib change
+that returns caller-owned copies.

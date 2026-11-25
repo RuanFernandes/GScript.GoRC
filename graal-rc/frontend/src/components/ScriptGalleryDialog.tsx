@@ -10,6 +10,7 @@ import {Input} from "@/components/ui/input"
 import {Label} from "@/components/ui/label"
 import {useLanguage} from "@/hooks/useLanguage"
 import {rcService} from "@/services/rcService"
+import {createSelectionTracker, loadSelectedScript, scriptForSelection} from "@/lib/scriptGallerySelection"
 import type {ScriptGalleryAuthState, ScriptGalleryProject, ScriptGalleryScript} from "@/types"
 
 export type ScriptGalleryType = "weapon" | "class" | "npc"
@@ -40,7 +41,10 @@ export function ScriptGalleryDialog({
   const [authLoading, setAuthLoading] = useState(false)
   const [selectedProjectID, setSelectedProjectID] = useState<string | null>(null)
   const [selectedScriptID, setSelectedScriptID] = useState<string | null>(null)
-  const [selectedScript, setSelectedScript] = useState<ScriptGalleryScript | null>(null)
+  const [loadedScript, setSelectedScript] = useState<ScriptGalleryScript | null>(null)
+  // What actions and the detail panel use: never a script that is not highlighted.
+  const selectedScript = scriptForSelection(selectedScriptID, loadedScript)
+  const [selection] = useState(createSelectionTracker)
   const [selectedScriptContent, setSelectedScriptContent] = useState<string | null>(null)
   const [query, setQuery] = useState("")
   const [loading, setLoading] = useState(false)
@@ -67,6 +71,16 @@ export function ScriptGalleryDialog({
     () => scriptsForType(selectedProject, scriptType),
     [selectedProject, scriptType],
   )
+
+  // Also discards a detail request that is still pending.
+  const clearScriptSelection = useCallback(() => {
+    selection.change()
+    setSelectedScriptID(null)
+    setSelectedScript(null)
+    setSelectedScriptContent(null)
+    setLoadingScript(false)
+    setEditingScript(false)
+  }, [selection])
 
   const loadAuthState = useCallback(async () => {
     setAuthLoading(true)
@@ -125,32 +139,21 @@ export function ScriptGalleryDialog({
 
   useEffect(() => {
     if (!selectedProject) {
-      setSelectedScriptID(null)
-      setSelectedScript(null)
-      setSelectedScriptContent(null)
+      clearScriptSelection()
       setEditingProject(false)
-      setEditingScript(false)
       return
     }
     setProjectName(selectedProject.name)
     setProjectDescription(selectedProject.description)
     setProjectVisibility(selectedProject.visibility || "public")
-    if (!selectedScripts.some((script) => script.id === selectedScriptID)) {
-      setSelectedScriptID(null)
-      setSelectedScript(null)
-      setSelectedScriptContent(null)
-      setEditingScript(false)
-    }
-  }, [selectedProject, selectedScriptID, selectedScripts])
+    if (!selectedScripts.some((script) => script.id === selectedScriptID)) clearScriptSelection()
+  }, [clearScriptSelection, selectedProject, selectedScriptID, selectedScripts])
 
   const selectProject = useCallback((project: ScriptGalleryProject) => {
     setSelectedProjectID(project.id)
-    setSelectedScriptID(null)
-    setSelectedScript(null)
-    setSelectedScriptContent(null)
+    clearScriptSelection()
     setEditingProject(false)
-    setEditingScript(false)
-  }, [])
+  }, [clearScriptSelection])
 
   const selectScript = useCallback(async (script: ScriptGalleryScript) => {
     setSelectedScriptID(script.id)
@@ -159,19 +162,23 @@ export function ScriptGalleryDialog({
     setScriptName(script.name)
     setEditingScript(false)
     setLoadingScript(true)
-    try {
-      const detail = await rcService.getScriptGalleryScript(script.id)
-      setSelectedScript(detail)
-      setSelectedScriptContent(detail.content ?? "")
-      setScriptName(detail.name)
-    } catch {
-      setSelectedScript(null)
-      setSelectedScriptContent(null)
-      toast.error(t("gallery.loadFailed"))
-    } finally {
-      setLoadingScript(false)
-    }
-  }, [t])
+    await loadSelectedScript<ScriptGalleryScript>({
+      id: script.id,
+      tracker: selection,
+      fetch: () => rcService.getScriptGalleryScript(script.id),
+      onLoaded: (detail) => {
+        setSelectedScript(detail)
+        setSelectedScriptContent(detail.content ?? "")
+        setScriptName(detail.name)
+      },
+      onError: () => {
+        setSelectedScript(null)
+        setSelectedScriptContent(null)
+        toast.error(t("gallery.loadFailed"))
+      },
+      onSettled: () => setLoadingScript(false),
+    })
+  }, [selection, t])
 
   const createProject = useCallback(async () => {
     if (!authState?.authenticated) {
@@ -187,9 +194,7 @@ export function ScriptGalleryDialog({
       const project = await rcService.createScriptGalleryProject(newProjectName.trim(), newProjectDescription.trim(), newProjectVisibility)
       setProjects((previous) => [project, ...previous.filter((candidate) => candidate.id !== project.id)])
       setSelectedProjectID(project.id)
-      setSelectedScriptID(null)
-      setSelectedScript(null)
-      setSelectedScriptContent(null)
+      clearScriptSelection()
       setNewProjectName("")
       setNewProjectDescription("")
       setNewProjectVisibility("public")
@@ -200,7 +205,7 @@ export function ScriptGalleryDialog({
     } finally {
       setBusyAction(null)
     }
-  }, [authState?.authenticated, newProjectDescription, newProjectName, newProjectVisibility, t])
+  }, [authState?.authenticated, clearScriptSelection, newProjectDescription, newProjectName, newProjectVisibility, t])
 
   const saveProject = useCallback(async () => {
     if (!selectedProject || !projectName.trim()) {
@@ -227,9 +232,7 @@ export function ScriptGalleryDialog({
       await rcService.deleteScriptGalleryProject(selectedProject.id)
       setProjects((previous) => previous.filter((project) => project.id !== selectedProject.id))
       setSelectedProjectID(null)
-      setSelectedScriptID(null)
-      setSelectedScript(null)
-      setSelectedScriptContent(null)
+      clearScriptSelection()
       setConfirmAction(null)
       toast.success(t("gallery.deleted"))
     } catch {
@@ -237,18 +240,23 @@ export function ScriptGalleryDialog({
     } finally {
       setBusyAction(null)
     }
-  }, [selectedProject, t])
+  }, [clearScriptSelection, selectedProject, t])
 
   const uploadCurrentScript = useCallback(async () => {
     if (!selectedProject) return
     setBusyAction("upload")
+    const sameSelection = selection.watch()
     try {
       const script = await rcService.uploadScriptGalleryScript(selectedProject.id, scriptType, currentName.trim(), currentContent)
       setProjects((previous) => previous.map((project) => project.id === selectedProject.id ? addScriptToProject(project, script) : project))
-      setSelectedScriptID(script.id)
-      setSelectedScript(script)
-      setSelectedScriptContent(script.content ?? currentContent)
-      setScriptName(script.name)
+      if (sameSelection()) {
+        selection.change()
+        setSelectedScriptID(script.id)
+        setSelectedScript(script)
+        setSelectedScriptContent(script.content ?? currentContent)
+        setScriptName(script.name)
+        setLoadingScript(false)
+      }
       setConfirmAction(null)
       toast.success(t("gallery.added"))
     } catch {
@@ -256,17 +264,20 @@ export function ScriptGalleryDialog({
     } finally {
       setBusyAction(null)
     }
-  }, [currentContent, currentName, scriptType, selectedProject, t])
+  }, [currentContent, currentName, scriptType, selectedProject, selection, t])
 
   const updateCurrentScript = useCallback(async () => {
     if (!selectedScript) return
     setBusyAction("updateCurrent")
+    const sameSelection = selection.watch()
     try {
       const updated = await rcService.updateScriptGalleryScript(selectedScript.id, currentName.trim() || selectedScript.name, currentContent)
       setProjects((previous) => previous.map((project) => replaceScriptInProject(project, updated)))
-      setSelectedScript(updated)
-      setSelectedScriptContent(updated.content ?? currentContent)
-      setScriptName(updated.name)
+      if (sameSelection()) {
+        setSelectedScript(updated)
+        setSelectedScriptContent(updated.content ?? currentContent)
+        setScriptName(updated.name)
+      }
       setConfirmAction(null)
       toast.success(t("gallery.updated"))
     } catch {
@@ -274,7 +285,7 @@ export function ScriptGalleryDialog({
     } finally {
       setBusyAction(null)
     }
-  }, [currentContent, currentName, selectedScript, t])
+  }, [currentContent, currentName, selectedScript, selection, t])
 
   const saveScript = useCallback(async () => {
     if (!selectedScript || selectedScriptContent === null || !scriptName.trim()) {
@@ -282,29 +293,31 @@ export function ScriptGalleryDialog({
       return
     }
     setBusyAction("saveScript")
+    const sameSelection = selection.watch()
     try {
       const updated = await rcService.updateScriptGalleryScript(selectedScript.id, scriptName.trim(), selectedScriptContent)
       setProjects((previous) => previous.map((project) => replaceScriptInProject(project, updated)))
-      setSelectedScript(updated)
-      setSelectedScriptContent(updated.content ?? "")
-      setEditingScript(false)
+      if (sameSelection()) {
+        setSelectedScript(updated)
+        setSelectedScriptContent(updated.content ?? "")
+        setEditingScript(false)
+      }
       toast.success(t("gallery.saved"))
     } catch {
       toast.error(t("gallery.saveFailed"))
     } finally {
       setBusyAction(null)
     }
-  }, [scriptName, selectedScript, selectedScriptContent, t])
+  }, [scriptName, selectedScript, selectedScriptContent, selection, t])
 
   const deleteScript = useCallback(async () => {
     if (!selectedScript) return
     setBusyAction("deleteScript")
+    const sameSelection = selection.watch()
     try {
       await rcService.deleteScriptGalleryScript(selectedScript.id)
       setProjects((previous) => previous.map((project) => removeScriptFromProject(project, selectedScript.id)))
-      setSelectedScriptID(null)
-      setSelectedScript(null)
-      setSelectedScriptContent(null)
+      if (sameSelection()) clearScriptSelection()
       setConfirmAction(null)
       toast.success(t("gallery.deleted"))
     } catch {
@@ -312,7 +325,7 @@ export function ScriptGalleryDialog({
     } finally {
       setBusyAction(null)
     }
-  }, [selectedScript, t])
+  }, [clearScriptSelection, selectedScript, selection, t])
 
   const requestUploadCurrent = useCallback(() => {
     if (!authState?.authenticated) {

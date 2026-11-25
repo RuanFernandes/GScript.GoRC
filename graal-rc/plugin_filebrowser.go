@@ -101,7 +101,7 @@ func (a *App) pluginReadRemoteText(id, remotePath string) (pluginRemoteFile, err
 	if err := a.plugins.RequireFileAccess(id, path, false); err != nil {
 		return pluginRemoteFile{}, err
 	}
-	content, err := a.sessions.DownloadFile(path)
+	content, err := a.readRemoteFile(path)
 	if err != nil {
 		return pluginRemoteFile{}, err
 	}
@@ -135,22 +135,39 @@ func (a *App) pluginWriteRemoteText(id string, request pluginFileWriteRequest) (
 	if !utf8.Valid(content) {
 		return pluginRemoteFile{}, errors.New("remote file content is not valid UTF-8")
 	}
-	if request.ExpectedRevision != "" {
-		current, downloadErr := a.sessions.DownloadFile(path)
-		if downloadErr != nil {
-			return pluginRemoteFile{}, downloadErr
-		}
-		if currentRevision := pluginFileRevision(current); currentRevision != request.ExpectedRevision {
-			return pluginRemoteFile{}, fmt.Errorf("remote file changed since it was read (expected %s, current %s)", request.ExpectedRevision, currentRevision)
-		}
-	}
-	if err := a.sessions.UploadFile(path, content); err != nil {
+	if err := a.writeRemotePluginFile(path, content, request.ExpectedRevision); err != nil {
 		return pluginRemoteFile{}, err
 	}
 	revision := pluginFileRevision(content)
 	result := pluginRemoteFileMetadata(path, content, revision)
 	a.emitPluginEvent("filebrowser.file.saved", pluginFileEvent{Path: path, Name: result.Name, Extension: result.Extension, Size: result.Size, Revision: revision})
 	return result, nil
+}
+
+func (a *App) writeRemotePluginFile(path string, content []byte, expectedRevision string) error {
+	return a.withRemoteFile(path, func(file remoteFile) error {
+		var previous []byte
+		if file.Exists {
+			var err error
+			if previous, err = file.Read(); err != nil {
+				return err
+			}
+		}
+		if expectedRevision != "" {
+			if !file.Exists {
+				return errors.New("remote file changed since it was read: it no longer exists")
+			}
+			if currentRevision := pluginFileRevision(previous); currentRevision != expectedRevision {
+				return fmt.Errorf("remote file changed since it was read (expected %s, current %s)", expectedRevision, currentRevision)
+			}
+		}
+		if file.Exists {
+			if _, err := a.backupBeforeWrite("file", file, previous); err != nil {
+				return err
+			}
+		}
+		return file.Write(content)
+	})
 }
 
 func (a *App) requestPluginFileOpen(remotePath string) (bool, error) {

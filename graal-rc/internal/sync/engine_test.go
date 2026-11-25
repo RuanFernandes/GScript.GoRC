@@ -366,6 +366,7 @@ func TestPushLocalCreatesClassAndInitializesEmptyBody(t *testing.T) {
 	dir := t.TempDir()
 	engine.ApplyConfig(SyncConfig{Enabled: true, OutputDir: dir, AutoPushLocal: true})
 	engine.SetClassScriptHeader(func() string { return "// Scripted by Zodiac" })
+	engine.markSnapshotLoaded(dir)
 	path := filepath.Join(dir, "classes", "personal_test.gs2")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
@@ -407,6 +408,7 @@ func TestPushLocalEmitsUploadedContent(t *testing.T) {
 	engine.ApplyConfig(SyncConfig{Enabled: true, OutputDir: dir, AutoPushLocal: true})
 	engine.rememberRef(ref, path)
 	engine.setHash(path, HashScript("old"))
+	engine.markSnapshotLoaded(dir)
 	if err := os.WriteFile(path, []byte("local weapon"), 0o644); err != nil {
 		t.Fatal(err)
 	}

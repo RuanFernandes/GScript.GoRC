@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -29,15 +30,22 @@ func TestIsExternalRemoteFile(t *testing.T) {
 	}
 }
 
-func TestExternalFileLocalPathUsesRemoteBasename(t *testing.T) {
+// Two remote files with one name must not share a local copy, or saving one
+// uploads it over the other.
+func TestExternalFileLocalPathMirrorsRemoteFolders(t *testing.T) {
 	dir := t.TempDir()
 	got, err := externalFileLocalPath(dir, `levels\users\main.NW`)
 	if err != nil {
 		t.Fatalf("externalFileLocalPath returned error: %v", err)
 	}
-	want := filepath.Join(dir, "main.NW")
+	want := filepath.Join(dir, "levels", "users", "main.NW")
 	if got != want {
 		t.Fatalf("externalFileLocalPath = %q, want %q", got, want)
+	}
+	for _, unsafe := range []string{"../main.nw", "levels/../../main.nw", "C:/main.nw", "levels/./../main.nw"} {
+		if _, err := externalFileLocalPath(dir, unsafe); err == nil {
+			t.Errorf("externalFileLocalPath accepted %q", unsafe)
+		}
 	}
 
 	if _, err := externalFileLocalPath("", "main.nw"); err == nil {
@@ -97,5 +105,21 @@ func TestExternalFileHasWriteAccess(t *testing.T) {
 	})
 	if externalFileHasWriteAccess(entries, "levels/users/") {
 		t.Fatal("directory rights were reported as file write access")
+	}
+}
+
+// A failed safety backup must keep the upload from replacing the remote file.
+func TestExternalFileUploadWaitsForBackup(t *testing.T) {
+	local := filepath.Join(t.TempDir(), "main.nw")
+	if err := os.WriteFile(local, []byte("edited"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a, remote := remoteApp(t, map[string]string{"levels/main.nw": "original"})
+	remote.downloadErr = errors.New("timed out")
+	session := externalFileSession{remotePath: "levels/main.nw", localPath: local, writable: true}
+	a.pollExternalFileSession(&session)
+	wantCalls(t, remote, "download levels/main.nw")
+	if session.lastSignature != (externalFileSignature{}) {
+		t.Fatal("the local change was marked as uploaded")
 	}
 }

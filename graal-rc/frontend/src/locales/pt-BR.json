@@ -744,6 +744,7 @@
   "sqlite.saveBeforeClosingDescription": "Este banco possui alterações pendentes não salvas. Salve antes de fechar a janela ou descarte-as.",
   "sqlite.unsaved": "• não salvo",
   "sqlite.discard": "Descartar",
+  "sqlite.saveOrDiscardBeforeSwitching": "Salve ou descarte as alterações pendentes antes de trocar de tabela.",
   "sqlite.row": "Linha",
   "sqlite.data": "Dados",
   "sqlite.diagram": "Diagrama",

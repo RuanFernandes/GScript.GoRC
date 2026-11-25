@@ -155,14 +155,17 @@ func (b appMCPBackend) WriteScript(ref mcp.ScriptRef, script string) (mcp.Script
 	if err != nil {
 		return mcp.Script{}, err
 	}
-	switch target.kind {
-	case "weapon":
-		err = b.app.SaveWeapon(target.name, script)
-	case "class":
-		err = b.app.SaveClass(target.name, script)
-	case "npc":
-		err = b.app.SaveNPC(*target.id, script)
-	}
+	err = b.app.saveScriptWithSyncExpectation(target.kind, target.key, script, false, func() error {
+		switch target.kind {
+		case "weapon":
+			return b.app.sessions.SaveWeapon(target.name, script)
+		case "class":
+			return b.app.sessions.SaveClass(target.name, script)
+		case "npc":
+			return b.app.sessions.SaveNPC(*target.id, script)
+		}
+		return fmt.Errorf("unknown script type %q", target.kind)
+	})
 	if err != nil {
 		return mcp.Script{}, err
 	}

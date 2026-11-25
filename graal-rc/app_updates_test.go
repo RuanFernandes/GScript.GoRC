@@ -242,6 +242,7 @@ func TestWindowsUpdateScriptRelaunchesTheApplication(t *testing.T) {
 		"C:\\Users\\RuanF\\AppData\\Local\\Temp\\installer.exe",
 		"C:\\Program Files\\Ruan's\\Graal Remote Control\\graal-rc.exe",
 		"C:\\Users\\RuanF\\AppData\\Local\\Temp\\nullbornes-rc-update.log",
+		strings.Repeat("0", 64),
 	)
 
 	for _, fragment := range []string{

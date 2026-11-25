@@ -159,7 +159,6 @@ func TestActionsWithoutPayloadReportSuccess(t *testing.T) {
 	backend := &fakeBackend{}
 	for tool, args := range map[string]map[string]any{
 		"send_rc_chat":    {"message": "hello"},
-		"filebrowser_cd":  {"path": "weapons/"},
 		"npc_reset":       {"id": 7},
 		"npc_warp":        {"name": "Guard", "level": "town.nw", "x": 1, "y": 2},
 		"npc_flags_write": {"id": 7, "flags": "a=1"},

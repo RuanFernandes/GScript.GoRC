@@ -7,6 +7,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"graal-rc/rclib"
 )
@@ -33,6 +34,21 @@ func fileBrowserUploadRemotePath(remoteFolder, localPath string) (string, error)
 		return name, nil
 	}
 	return path.Join(folder, name), nil
+}
+
+// uploadQueueTimeout bounds how long an upload waits for running transfers.
+const uploadQueueTimeout = 10 * time.Minute
+
+// fileBrowserUploadFolder is the open remote folder an upload goes into.
+type fileBrowserUploadFolder interface {
+	Download(name string) ([]byte, error)
+	Upload(path string, content []byte) error
+}
+
+// fileBrowserUploadParent returns the folder of remotePath; "" is the root.
+func fileBrowserUploadParent(remotePath string) string {
+	normalized := strings.ReplaceAll(remotePath, "\\", "/")
+	return strings.Trim(normalized[:strings.LastIndex(normalized, "/")+1], "/")
 }
 
 func fileBrowserUploadRemoteFileExists(entries []rclib.FileBrowserEntry, remotePath string) bool {
@@ -113,9 +129,5 @@ func (a *App) UploadDroppedFile(localPath, remoteFolder string) error {
 	if err != nil {
 		return err
 	}
-	entries, err := a.sessions.GetFileBrowserFiles()
-	if err != nil {
-		return fmt.Errorf("inspect current remote folder: %w", err)
-	}
-	return a.uploadFileContent(remotePath, content, fileBrowserUploadRemoteFileExists(entries, remotePath))
+	return a.uploadFileContent(remotePath, content)
 }

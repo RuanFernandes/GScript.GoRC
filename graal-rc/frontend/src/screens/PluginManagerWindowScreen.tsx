@@ -1,3 +1,4 @@
+import {pluginPreviewPolicy, sandboxPolicyTag} from "@/plugins/sandboxPolicy"
 import {useCallback, useEffect, useMemo, useRef, useState} from "react"
 import {Events} from "@wailsio/runtime"
 import Editor, {type BeforeMount} from "@monaco-editor/react"
@@ -481,7 +482,7 @@ interface PluginPreviewCopy {
 
 function createPluginPreviewDocument(name: string, bundle: string, copy: PluginPreviewCopy): string {
   const previewCopy = JSON.stringify(copy)
-  return `<!doctype html><html><body style="font-family:system-ui;padding:24px;background:#111;color:#eee"><h2>${escapeHtml(name)}</h2><p style="color:#aaa">${escapeHtml(copy.runtime)}</p><div id="plugin-root" style="border:1px solid #333;border-radius:8px;padding:16px;margin-top:20px">${escapeHtml(copy.loading)}</div><script>
+  return `<!doctype html><html><head>${sandboxPolicyTag(pluginPreviewPolicy)}</head><body style="font-family:system-ui;padding:24px;background:#111;color:#eee"><h2>${escapeHtml(name)}</h2><p style="color:#aaa">${escapeHtml(copy.runtime)}</p><div id="plugin-root" style="border:1px solid #333;border-radius:8px;padding:16px;margin-top:20px">${escapeHtml(copy.loading)}</div><script>
     const previewCopy = ${previewCopy};
     const root = document.getElementById('plugin-root');
     let pluginDefinition;

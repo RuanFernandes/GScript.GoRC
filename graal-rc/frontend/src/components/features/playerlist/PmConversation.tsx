@@ -12,6 +12,7 @@ import {
   copyTextToClipboard,
   normalizePrivateMessageText,
 } from "@/lib/privateMessage"
+import {createSendGuard, draftAfterSend} from "@/lib/sendGuard"
 
 export interface PmLine {
   dir: "in" | "out"
@@ -50,6 +51,7 @@ export function PmConversation({target, lines, onSend, playerMatcher, onPlayerCo
   const [sending, setSending] = useState(false)
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const viewportRef = useRef<HTMLDivElement | null>(null)
+  const [guard] = useState(() => createSendGuard((_key, busy) => setSending(busy)))
 
   useEffect(() => {
     setText("")
@@ -62,19 +64,18 @@ export function PmConversation({target, lines, onSend, playerMatcher, onPlayerCo
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
-    const trimmed = text.trim()
-    if (!trimmed || sending) return
+    const submitted = text
+    const trimmed = submitted.trim()
+    if (!trimmed) return
     if (containsUnsafePrivateMessageMarkup(trimmed)) {
       toast.error(t("player.pmUnsafeContent"))
       return
     }
-    setSending(true)
-    try {
+    const outcome = await guard.run(String(target.id), async () => {
       await onSend(trimmed)
-      setText("")
-    } finally {
-      setSending(false)
-    }
+      return true
+    })
+    if (outcome === "sent") setText((current) => draftAfterSend(current, submitted))
   }
 
   const copyMessage = async (key: string, message: string) => {

@@ -744,6 +744,7 @@
   "sqlite.saveBeforeClosingDescription": "Esta base de datos tiene cambios pendientes sin guardar. Guárdalos antes de cerrar la ventana o descártalos.",
   "sqlite.unsaved": "• sin guardar",
   "sqlite.discard": "Descartar",
+  "sqlite.saveOrDiscardBeforeSwitching": "Guarda o descarta los cambios pendientes antes de cambiar de tabla.",
   "sqlite.row": "Fila",
   "sqlite.data": "Datos",
   "sqlite.diagram": "Diagrama",

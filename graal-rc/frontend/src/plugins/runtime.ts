@@ -1,3 +1,4 @@
+import {pluginSandboxPolicy, sandboxPolicyTag} from "./sandboxPolicy"
 import {Events} from "@wailsio/runtime"
 import {rcService} from "@/services/rcService"
 import type {PluginCommand, PluginEvent, PluginFileEditor, PluginHttpRequestEvent, PluginNotification, PluginPanel, PluginUITabInfo, PluginUITabOptions, PluginUIWindowOptions, PluginUIView, PluginUIPrimitive} from "./types"
@@ -892,7 +893,7 @@ function normalizePluginRequest(value: unknown): Parameters<typeof rcService.plu
 }
 
 function createRuntimeDocument(): string {
-  return `<!doctype html><html><body><script>
+  return `<!doctype html><html><head>${sandboxPolicyTag(pluginSandboxPolicy)}</head><body><script>
     let api;
     let pluginDefinition;
     let pluginInstance;

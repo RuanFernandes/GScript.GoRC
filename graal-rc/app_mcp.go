@@ -119,9 +119,13 @@ script; use script_write for that. Before a large rewrite, read the script
 first and keep the parts you are not changing.
 
 File Browser
-- filebrowser_list: refresh and list the current remote File Browser folder.
-- filebrowser_cd: change the current remote File Browser folder with {"path"}.
-- filebrowser_search: search the current File Browser snapshot with {"query"}.
+- filebrowser_list: list a remote folder with {"path"}, or the current folder.
+  Before any folder is opened it returns the accessible folder patterns; drop
+  the trailing "*" to get a path.
+- filebrowser_cd: open a remote folder with {"path"}; returns its listing.
+- filebrowser_search: match file names with {"query"} in {"path"} or in the
+  current folder, without entering subfolders. Before any folder is opened it
+  matches the accessible folder patterns.
 - filebrowser_read: download and read a remote UTF-8 text file with {"path"}.
 
 The server is local-only and may be unavailable when Graal RC is closed. Do not
@@ -291,18 +295,50 @@ func (b appMCPBackend) GetRCChat(limit int) []mcp.ChatLine {
 	return result
 }
 func (b appMCPBackend) SendRCChat(message string) error { return b.app.sessions.Execute(message) }
-func (b appMCPBackend) FileBrowserStart() error         { return b.app.sessions.StartFileBrowser() }
-func (b appMCPBackend) FileBrowserCd(path string) error { return b.app.sessions.FileBrowserCd(path) }
-func (b appMCPBackend) FileBrowserFiles() ([]mcp.File, error) {
-	entries, err := b.app.sessions.GetFileBrowserFiles()
+
+// mcpFileBrowserTimeout stays below the MCP server's WriteTimeout, so a server
+// that never answers yields a tool error instead of a dropped connection.
+const mcpFileBrowserTimeout = 20 * time.Second
+
+func (b appMCPBackend) FileBrowserFolders(ctx context.Context) ([]mcp.Folder, error) {
+	ctx, cancel := context.WithTimeout(ctx, mcpFileBrowserTimeout)
+	defer cancel()
+	entries, err := b.app.sessions.WaitFileBrowserFolders(ctx)
 	if err != nil {
 		return nil, err
 	}
+	folders := make([]mcp.Folder, 0, len(entries))
+	for _, entry := range entries {
+		folders = append(folders, mcp.Folder{Pattern: entry.Pattern, Rights: entry.Rights})
+	}
+	return folders, nil
+}
+
+func (b appMCPBackend) FileBrowserCurrentFolder() (string, bool) {
+	if folder := b.app.mcpFileBrowserFolder.Load(); folder != nil {
+		return *folder, true
+	}
+	return "", false
+}
+
+func (b appMCPBackend) FileBrowserList(ctx context.Context, folder string) (mcp.Listing, error) {
+	ctx, cancel := context.WithTimeout(ctx, mcpFileBrowserTimeout)
+	defer cancel()
+	opened, entries, err := b.app.sessions.ListFileBrowserFolder(ctx, folder)
+	if err != nil {
+		return mcp.Listing{}, err
+	}
+	b.app.mcpFileBrowserFolder.Store(&opened)
 	files := make([]mcp.File, 0, len(entries))
 	for _, entry := range entries {
-		files = append(files, mcp.File{Path: entry.Path, Size: entry.Size, IsDirectory: entry.IsDirectory})
+		// Full paths can be passed straight to filebrowser_read.
+		path := entry.Path
+		if opened != "" && !strings.HasPrefix(path, opened+"/") {
+			path = opened + "/" + path
+		}
+		files = append(files, mcp.File{Path: path, Size: entry.Size, IsDirectory: entry.IsDirectory})
 	}
-	return files, nil
+	return mcp.Listing{Folder: opened, Files: files}, nil
 }
 func (b appMCPBackend) ReadFile(path string) ([]byte, error) {
 	normalized, err := normalizePluginRemotePath(path)
@@ -339,7 +375,12 @@ func (a *App) mcpHandler(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	mcp.NewServer(appMCPBackend{app: a}).ServeHTTP(w, r)
+	var allowedHosts []string
+	if a.mcpServer != nil {
+		// RC_MCP_ADDR may name something other than loopback.
+		allowedHosts = append(allowedHosts, a.mcpServer.Addr)
+	}
+	mcp.NewServer(appMCPBackend{app: a}, allowedHosts...).ServeHTTP(w, r)
 }
 
 func (a *App) stopMCPServer() {
