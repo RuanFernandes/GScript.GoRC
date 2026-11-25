@@ -93,6 +93,7 @@ func (l *appLifecycle) stopBackground() {
 // records completion and performs no Wails calls.
 func (a *App) postShutdown() {
 	a.stopMCPServer()
+	a.stopFileDragServer()
 	lifecycle := lifecycleFor(a)
 	lifecycle.mu.Lock()
 	lifecycle.completed = true

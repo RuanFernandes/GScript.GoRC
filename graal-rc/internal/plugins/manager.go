@@ -85,7 +85,11 @@ type persistedState struct {
 	ApprovedFileRead  []string `json:"approvedFileRead,omitempty"`
 	ApprovedFileWrite []string `json:"approvedFileWrite,omitempty"`
 	FailureCount      int      `json:"failureCount,omitempty"`
+	// Directory is where the plugin was when the user trusted it.
+	Directory string `json:"directory,omitempty"`
 }
+
+const maxPluginRedirects = 5
 
 type persistedFile struct {
 	Plugins map[string]persistedState `json:"plugins"`
@@ -105,11 +109,12 @@ type HTTPResponse struct {
 }
 
 type Manager struct {
-	mu       sync.RWMutex
-	root     string
-	state    string
-	plugins  map[string]PluginInfo
-	settings map[string]persistedState
+	mu            sync.RWMutex
+	root          string
+	httpTransport http.RoundTripper
+	state         string
+	plugins       map[string]PluginInfo
+	settings      map[string]persistedState
 
 	runtimeMu      sync.RWMutex
 	runtimeEmitter func(name string, data any)
@@ -645,7 +650,12 @@ func (m *Manager) Discover() error {
 	if err != nil {
 		return err
 	}
+	// Held until the result is published: settings must not change, or be read
+	// while another call writes them.
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	found := map[string]PluginInfo{}
+	duplicates := map[string][]string{}
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -674,7 +684,16 @@ func (m *Manager) Discover() error {
 			found[id] = info
 			continue
 		}
+		if previous, ok := found[manifest.ID]; ok && previous.Manifest.ID == manifest.ID {
+			if len(duplicates[manifest.ID]) == 0 {
+				duplicates[manifest.ID] = []string{filepath.Base(previous.Directory)}
+			}
+			duplicates[manifest.ID] = append(duplicates[manifest.ID], entry.Name())
+		}
 		state := m.settings[manifest.ID]
+		if state.Directory != "" && !strings.EqualFold(state.Directory, info.Directory) {
+			state = persistedState{}
+		}
 		info.Enabled = state.Enabled
 		info.FailureCount = state.FailureCount
 		info.ApprovedEvents = intersect(state.ApprovedEvents, manifest.Permissions.Events)
@@ -689,9 +708,16 @@ func (m *Manager) Discover() error {
 		}
 		found[manifest.ID] = info
 	}
-	m.mu.Lock()
+	// Nothing says which folder the user trusted, so none of them runs.
+	for id, folders := range duplicates {
+		found[id] = PluginInfo{
+			Manifest:  found[id].Manifest,
+			Directory: found[id].Directory,
+			Status:    "invalid",
+			Error:     fmt.Sprintf("plugin id %q is used by more than one folder: %s", id, strings.Join(folders, ", ")),
+		}
+	}
 	m.plugins = found
-	m.mu.Unlock()
 	return nil
 }
 
@@ -765,7 +791,11 @@ func (m *Manager) SetEnabled(id string, enabled bool) error {
 	if !ok {
 		return ErrPluginNotFound
 	}
+	if enabled && p.Status == "invalid" {
+		return fmt.Errorf("plugin cannot be enabled: %s", p.Error)
+	}
 	state := m.settings[id]
+	state.Directory = p.Directory
 	state.Enabled = enabled
 	if enabled {
 		state.FailureCount = 0
@@ -843,6 +873,10 @@ func (m *Manager) Approve(id string, permissions Permissions) error {
 		return ErrPluginNotFound
 	}
 	state := m.settings[id]
+	if state.Directory != "" && !strings.EqualFold(state.Directory, p.Directory) {
+		state = persistedState{}
+	}
+	state.Directory = p.Directory
 	state.ApprovedEvents = intersect(permissions.Events, p.Manifest.Permissions.Events)
 	state.ApprovedAPIs = intersect(permissions.APIs, p.Manifest.Permissions.APIs)
 	state.ApprovedHosts = intersect(permissions.Network, p.Manifest.Permissions.Network)
@@ -922,7 +956,7 @@ func (m *Manager) Request(id string, req HTTPRequest) (HTTPResponse, error) {
 	if !contains(p.ApprovedHosts, origin(u)) {
 		return HTTPResponse{}, ErrPermissionDenied
 	}
-	if !contains(p.ApprovedAPIs, "network.http") {
+	if !p.Enabled || !contains(p.ApprovedAPIs, "network.http") {
 		return HTTPResponse{}, ErrPermissionDenied
 	}
 	if len(req.Body) > maxRequestBodyBytes {
@@ -945,7 +979,20 @@ func (m *Manager) Request(id string, req HTTPRequest) (HTTPResponse, error) {
 		}
 		request.Header.Set(key, value)
 	}
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := &http.Client{
+		Timeout:   15 * time.Second,
+		Transport: m.httpTransport,
+		// A redirect is a new request: it needs the same approval as the first.
+		CheckRedirect: func(next *http.Request, via []*http.Request) error {
+			if len(via) >= maxPluginRedirects {
+				return errors.New("too many plugin request redirects")
+			}
+			if next.URL.Scheme != "https" || !contains(p.ApprovedHosts, origin(next.URL)) {
+				return fmt.Errorf("redirect to %s: %w", origin(next.URL), ErrPermissionDenied)
+			}
+			return nil
+		},
+	}
 	resp, err := client.Do(request)
 	if err != nil {
 		return HTTPResponse{}, err

@@ -25,7 +25,10 @@ type Backup struct {
 	Account   string `json:"account,omitempty"`
 	Resource  string `json:"resource"`
 	Target    string `json:"target"`
-	Size      int64  `json:"size"`
+	// FullPath marks a file target that includes its remote folder. Older
+	// backups can name the file alone.
+	FullPath bool   `json:"fullPath,omitempty"`
+	Size     int64  `json:"size"`
 	SHA256    string `json:"sha256"`
 }
 

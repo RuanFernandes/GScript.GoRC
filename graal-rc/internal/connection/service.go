@@ -155,6 +155,7 @@ type Service struct {
 	fileBrowserListingWaitMu sync.Mutex
 	fileBrowserListingWait   *fileBrowserListingWait
 	fileBrowserBackupActive  atomic.Bool
+	fileBrowserView          fileBrowserView
 	fileDownloadSlot         chan struct{} // cancellation-aware single-transfer gate, guarded by mu
 	pendingFilesMu           sync.Mutex
 	pendingFiles             map[string]*fileWait
@@ -184,10 +185,19 @@ type Service struct {
 	// instead of racing one value across two waiters.
 	editorMu sync.Mutex
 	editor   map[string]*editorWait
+	// unansweredEditors holds the keys of timed-out requests whose reply may
+	// still arrive, with when to stop expecting it. Guarded by editorMu.
+	unansweredEditors map[string]time.Time
+
+	// One request at a time where grclib labels replies with the latest
+	// request (see replyGate).
+	npcAttrGate replyGate
+	banGate     replyGate
 
 	// banTypes is the latest server-reported ban-types list (name,seconds pairs),
 	// pushed via the BanListData callback with data_type=="bantypes". Guarded by
-	// editorMu. Empty until requested via GetBanTypes.
+	// editorMu. Empty until requested via GetBanTypes, and cleared with the
+	// session because each server has its own list.
 	banTypes string
 
 	// serverText contains the latest server options/flags snapshot. These are
@@ -265,6 +275,10 @@ type ServerScriptContext struct {
 
 // scriptTimeout is how long OpenScript/OpenNPC* waits for the NC server reply.
 const scriptTimeout = 15 * time.Second
+
+// sharedReplyTimeout bounds a caller that joined another caller's request. It
+// outlasts the owner's queue and reply waits.
+const sharedReplyTimeout = 2*scriptTimeout + replyQuarantine + time.Second
 
 var errNCUnavailable = errors.New("NC is not connected")
 
@@ -451,57 +465,6 @@ func completeEditorWait(waiter *editorWait, reply any) bool {
 	return true
 }
 
-// resolveEditorForAccount mirrors the reference client's callback handling:
-// the callback is authoritative and is accepted even when the returned
-// account differs from the requested spelling. Exact normalized matches are
-// preferred; a self request has a dedicated key because /open* commands let
-// the server resolve the current account. If the server still returns an
-// unexpected account, a single in-flight request of that editor kind is an
-// unambiguous fallback. Multiple unrelated requests remain fail-closed.
-func (s *Service) resolveEditorForAccount(kind, account string, reply any) bool {
-	exactKey := editorKey(kind, account)
-	selfKey := editorSelfKey(kind)
-	prefix := kind + ":"
-
-	s.editorMu.Lock()
-	defer s.editorMu.Unlock()
-
-	for _, key := range []string{exactKey, selfKey} {
-		if waiter, ok := s.editor[key]; ok {
-			if completeEditorWait(waiter, reply) {
-				delete(s.editor, key)
-				return true
-			}
-			delete(s.editor, key)
-		}
-	}
-
-	var fallbackKey string
-	for key, waiter := range s.editor {
-		if !strings.HasPrefix(key, prefix) || key == exactKey || key == selfKey {
-			continue
-		}
-		if waiter.closed {
-			delete(s.editor, key)
-			continue
-		}
-		if fallbackKey != "" {
-			return false
-		}
-		fallbackKey = key
-	}
-	if fallbackKey == "" {
-		return false
-	}
-	waiter := s.editor[fallbackKey]
-	if !completeEditorWait(waiter, reply) {
-		delete(s.editor, fallbackKey)
-		return false
-	}
-	delete(s.editor, fallbackKey)
-	return true
-}
-
 // cancelEditor removes a waiter only if it is still the request that registered
 // it. This identity check prevents a late timeout from deleting a newer request
 // reusing the same key.
@@ -512,6 +475,7 @@ func (s *Service) cancelEditor(key string, waiter *editorWait, err error) {
 			waiter.err = err
 			waiter.closed = true
 			close(waiter.done)
+			s.rememberUnansweredLocked(key)
 		}
 		delete(s.editor, key)
 	}
@@ -537,13 +501,18 @@ func (s *Service) dropEditor(key string) {
 // awaitEditor blocks on the wait's reply or the timeout, returning the typed
 // reply. Only the owner (isNew) drops the key on timeout.
 func (s *Service) awaitEditor(w *editorWait, key string, isNew bool, kind string) (any, error) {
+	limit := scriptTimeout
+	if !isNew {
+		// The owner may be queued behind another request before it sends.
+		limit = sharedReplyTimeout
+	}
 	select {
 	case <-w.done:
 		if w.err != nil {
 			return nil, w.err
 		}
 		return w.reply, nil
-	case <-time.After(scriptTimeout):
+	case <-time.After(limit):
 		if isNew {
 			s.cancelEditor(key, w, fmt.Errorf("%s request timed out", kind))
 		}
@@ -553,7 +522,7 @@ func (s *Service) awaitEditor(w *editorWait, key string, isNew bool, kind string
 
 // resolvePending delivers a reply to the waiter for key (if any) and drops it.
 // Called from pump-goroutine callbacks; closing the waiter is non-blocking.
-func (s *Service) resolvePending(key string, reply rclib.ScriptReply) {
+func (s *Service) resolvePending(key string, reply rclib.ScriptReply) bool {
 	s.pendingMu.Lock()
 	w, ok := s.pending[key]
 	if ok {
@@ -561,6 +530,7 @@ func (s *Service) resolvePending(key string, reply rclib.ScriptReply) {
 		w.finish(reply, nil)
 	}
 	s.pendingMu.Unlock()
+	return ok
 }
 
 // cancelPending removes a waiter only if it is still the request that
@@ -651,6 +621,7 @@ func (s *Service) cancelFile(path string, waiter *fileWait, err error) {
 // minutes on a dead callback route.
 func (s *Service) cancelWaiters(err error) {
 	s.cancelCurrentFileBrowserListing(err)
+	s.fileBrowserView.reset()
 
 	s.pendingMu.Lock()
 	for key, waiter := range s.pending {
@@ -660,6 +631,8 @@ func (s *Service) cancelWaiters(err error) {
 	s.pendingMu.Unlock()
 
 	s.editorMu.Lock()
+	s.unansweredEditors = nil
+	s.banTypes = ""
 	for key, waiter := range s.editor {
 		delete(s.editor, key)
 		if !waiter.closed {
@@ -1864,14 +1837,20 @@ func (s *Service) connectToServer(ctx context.Context, index int) (resultErr err
 			s.emitEvent("rc:npcFlags", id, flags)
 		},
 		NPCAttributes: func(id int, attrs string) {
+			s.npcAttrGate.delivered(strconv.Itoa(id))
 			s.resolvePending(pendingKey("npcattr", strconv.Itoa(id)), rclib.ScriptReply{Type: "npcattr", ID: id, Script: attrs})
 			s.emitEvent("rc:npcAttributes", id, attrs)
 		},
 		FileBrowserFolders: func(count int) { s.emitEvent("rc:fbFolders", count) },
 		FileBrowserFiles: func(folder string, count int) {
-			s.resolveFileBrowserListing(folder)
-			if !s.fileBrowserBackupActive.Load() {
-				s.emitEvent("rc:fbFiles", folder, count)
+			// Decided before the listing waiter wakes and changes the view.
+			label, hidden := folder, s.fileBrowserBackupActive.Load()
+			if !hidden {
+				label, hidden = s.fileBrowserView.delivered(folder, count)
+			}
+			s.resolveFileBrowserListing(folder, count)
+			if !hidden {
+				s.emitEvent("rc:fbFiles", label, count)
 			}
 		},
 		FileBrowserMessage: func(message string) { s.emitEvent("rc:fbMessage", message) },
@@ -1907,6 +1886,7 @@ func (s *Service) connectToServer(ctx context.Context, index int) (resultErr err
 		},
 		BanData: func(account, computerID, details string) {
 			log.Printf("[editor-cb] ban_data account=%q", account)
+			s.banGate.delivered(account)
 			resolved := s.resolveEditorForAccount("ban", account, BanData{
 				Account: account, ComputerID: computerID, Details: details,
 			})
@@ -1920,9 +1900,7 @@ func (s *Service) connectToServer(ctx context.Context, index int) (resultErr err
 			switch dataType {
 			case "bantypes":
 				// Global list (no account correlation): cache for GetBanTypes.
-				s.editorMu.Lock()
-				s.banTypes = content
-				s.editorMu.Unlock()
+				s.cacheBanTypes(epoch, content)
 				s.resolveEditor(editorKey("bantypes", ""), content)
 			case "banhistory":
 				if !s.resolveEditorForAccount("banhistory", account, content) {
@@ -2913,18 +2891,29 @@ func (s *Service) OpenBan(account string) (BanData, error) {
 	if selfRequest {
 		key = editorSelfKey("ban")
 	}
+	scope, err := s.captureSession()
+	if err != nil {
+		return BanData{}, err
+	}
 	w, isNew := s.registerEditor(key)
 	if isNew {
-		log.Printf("[editor] request ban account=%q self=%v (self creds.Account=%q nickname=%q)", target, selfRequest, s.creds.Account, s.creds.Nickname)
-		var requestErr error
-		if selfRequest {
-			requestErr = rclib.Execute(h, "/openaccess")
-		} else {
-			requestErr = rclib.RequestPlayerBanByAccount(h, target)
+		// grclib can label a ban reply with the last account requested, so
+		// only one ban request is in flight at a time.
+		err := s.banGate.exchange(scope.done, target, func() error {
+			log.Printf("[editor] request ban account=%q self=%v (self creds.Account=%q nickname=%q)", target, selfRequest, s.creds.Account, s.creds.Nickname)
+			if selfRequest {
+				return rclib.Execute(h, "/openaccess")
+			}
+			return rclib.RequestPlayerBanByAccount(h, target)
+		}, w.done, scriptTimeout, replyQuarantine)
+		if errors.Is(err, errReplyTimeout) {
+			err = errors.New("player ban request timed out")
+			s.cancelEditor(key, w, err)
+			return BanData{}, err
 		}
-		if requestErr != nil {
+		if err != nil {
 			s.dropEditor(key)
-			return BanData{}, requestErr
+			return BanData{}, err
 		}
 	} else {
 		log.Printf("[editor] dedup ban account=%q self=%v (awaiting in-flight request)", target, selfRequest)
@@ -3106,7 +3095,13 @@ func (s *Service) handleScriptReceived(scriptType, name string, id int, script s
 	if key == "" {
 		return
 	}
-	s.resolvePending(pendingKey(scriptType, key), rclib.ScriptReply{Type: scriptType, Name: name, ID: id, Script: script})
+	if !s.resolvePending(pendingKey(scriptType, key), rclib.ScriptReply{Type: scriptType, Name: name, ID: id, Script: script}) {
+		// Replies are matched to requests by exact name. A reply nobody waits for
+		// is either late (its request already timed out) or carries a name that
+		// differs from the one requested, which shows up as a request timeout.
+		// The quoted name makes stray whitespace and case differences visible.
+		log.Printf("[script reply] no waiter for %s name=%q id=%d bytes=%d", scriptType, name, id, len(script))
+	}
 }
 
 // requireHandle returns the active handle or an error.
@@ -3383,8 +3378,12 @@ func (s *Service) IsNCAuthenticated() bool {
 // waits on its own pending reply channel, so many requests are in flight at
 // once rather than strictly sequential — a large server that took a minute
 // serially now takes seconds. A single hung script times out (scriptTimeout,
-// 15s) does not abort other reads, but marks the snapshot incomplete. progress (optional)
-// reports done/total so the UI can show a background bar.
+// 15s) without aborting the other reads. Up to maxUnreadableScripts failed
+// reads are then repeated one at a time; scripts that fail again are returned
+// in an *UnreadableScriptsError together with every reply that did arrive.
+// More failures than that, or a lost connection, leave the snapshot simply
+// incomplete. progress (optional) reports done/total so the UI can show a
+// background bar.
 func (s *Service) FetchAllScripts(ctx context.Context, allowed func(scriptType, name string) bool, progress func(done, total int)) ([]rclib.ScriptReply, error) {
 	scope, err := s.captureSession()
 	if err != nil {
@@ -3454,44 +3453,140 @@ func (s *Service) FetchAllScripts(ctx context.Context, allowed func(scriptType, 
 	total := len(jobs)
 	log.Printf("[sync fetch] permission filter kept=%d skipped=%d", total, skipped)
 
-	replies, fetchErr := s.fetchScriptJobs(ctx, jobs, progress)
-	if err := s.checkSession(scope); err != nil {
-		return nil, err
+	fetch := func(ctx context.Context, job scriptFetchJob) (rclib.ScriptReply, error) {
+		return s.openScriptContext(ctx, job.stype, job.key, job.name)
 	}
 	// A dropped NC can leave a valid-looking partial reply slice while the
 	// workers are unwinding. Never let that slice become a reconciliation
 	// snapshot: the caller must retry after the socket is restored.
-	if errors.Is(fetchErr, errNCUnavailable) {
-		return nil, errNCUnavailable
+	usable := func(fetchErr error) error {
+		if err := s.checkSession(scope); err != nil {
+			return err
+		}
+		if errors.Is(fetchErr, errNCUnavailable) || !s.IsNCConnected() || !s.IsNCAuthenticated() {
+			return errNCUnavailable
+		}
+		return nil
 	}
-	if !s.IsNCConnected() || !s.IsNCAuthenticated() {
-		return nil, errNCUnavailable
+
+	// Keeping the job queue bounded is important here: a server can
+	// legitimately expose thousands of scripts, and creating one goroutine per
+	// script would retain a large amount of stack and scheduler state while the
+	// workers wait on the NC request limit.
+	result := collectScriptFetchJobs(ctx, jobs, ncFetchConcurrency, fetch, progress)
+	fetchErr := result.err(ctx, total)
+	if err := usable(fetchErr); err != nil {
+		return nil, err
 	}
-	return replies, fetchErr
+	if len(result.failures) == 0 || result.terminal != nil || ctx.Err() != nil {
+		return result.replies, fetchErr
+	}
+	if len(result.failures) > maxUnreadableScripts {
+		// This many failures is a connection problem, not a few scripts the
+		// server cannot deliver.
+		return result.replies, fetchErr
+	}
+
+	// The connection is usable and only a few reads failed. Ask for each of
+	// them again with nothing else in flight: a reply the server drops can take
+	// the reply batched next to it along, and that neighbour reads fine alone.
+	log.Printf("[sync fetch] %d script read(s) failed; reading them again one at a time", len(result.failures))
+	recovered, unreadable, retryErr := retryScriptFailures(ctx, result.failures, fetch)
+	if err := usable(retryErr); err != nil {
+		return nil, err
+	}
+	replies := append(result.replies, recovered...)
+	if retryErr != nil {
+		return replies, errors.Join(fetchErr, retryErr)
+	}
+	if len(unreadable) == 0 {
+		return replies, nil
+	}
+	return replies, newUnreadableScriptsError(unreadable, total)
 }
 
-// fetchScriptJobs processes a bulk script fetch with a fixed number of
-// workers. Keeping the job queue bounded is important here: a server can
-// legitimately expose thousands of scripts, and creating one goroutine per
-// script would retain a large amount of stack and scheduler state while the
-// workers wait on the NC request limit.
-func (s *Service) fetchScriptJobs(ctx context.Context, jobs []scriptFetchJob, progress func(done, total int)) ([]rclib.ScriptReply, error) {
-	return runScriptFetchJobs(ctx, jobs, ncFetchConcurrency, func(ctx context.Context, job scriptFetchJob) (rclib.ScriptReply, error) {
-		return s.openScriptContext(ctx, job.stype, job.key, job.name)
-	}, progress)
+// maxUnreadableScripts bounds how many failed reads FetchAllScripts will
+// repeat one at a time (each waits up to scriptTimeout) and report as
+// unreadable instead of failing the snapshot.
+const maxUnreadableScripts = 16
+
+// scriptFetchFailure is one script read that did not produce a reply.
+type scriptFetchFailure struct {
+	job scriptFetchJob
+	err error
+}
+
+// scriptFetchResult is the outcome of one pass over a list of script reads.
+type scriptFetchResult struct {
+	replies  []rclib.ScriptReply
+	failures []scriptFetchFailure // in the order they failed
+	// terminal is set when the pass stopped because the NC connection or the
+	// session went away; the remaining reads were not attempted.
+	terminal error
+}
+
+// err folds the result into the error FetchAllScripts has always reported.
+func (r scriptFetchResult) err(ctx context.Context, total int) error {
+	if r.terminal != nil {
+		return r.terminal
+	}
+	if len(r.failures) > 0 {
+		first := r.failures[0]
+		firstErr := fmt.Errorf("%s:%s: %w", first.job.stype, first.job.key, first.err)
+		return errors.Join(fmt.Errorf("%w: %d of %d script reads failed: %w", ErrIncompleteScriptSnapshot, len(r.failures), total, firstErr), ctx.Err())
+	}
+	return ctx.Err()
+}
+
+// retryScriptFailures reads each failed script again, one at a time. It
+// returns the replies that arrived this time and the scripts that failed
+// again. err is set, and the pass abandoned, when the connection, the session
+// or the context ended.
+func retryScriptFailures(ctx context.Context, failures []scriptFetchFailure, fetch func(context.Context, scriptFetchJob) (rclib.ScriptReply, error)) (recovered []rclib.ScriptReply, unreadable []scriptFetchFailure, err error) {
+	for _, failure := range failures {
+		if err := ctx.Err(); err != nil {
+			return recovered, unreadable, err
+		}
+		reply, fetchErr := fetch(ctx, failure.job)
+		if fetchErr == nil {
+			if reply.Type == "npc" && reply.Name == "" {
+				reply.Name = failure.job.name
+			}
+			recovered = append(recovered, reply)
+			log.Printf("[sync fetch] %s:%s was read on its own", failure.job.stype, failure.job.key)
+			continue
+		}
+		if errors.Is(fetchErr, errNCUnavailable) || errors.Is(fetchErr, errConnectionSessionChanged) {
+			return recovered, unreadable, fetchErr
+		}
+		if err := ctx.Err(); err != nil {
+			return recovered, unreadable, err
+		}
+		log.Printf("[sync fetch] %s:%s failed again on its own: %v", failure.job.stype, failure.job.key, fetchErr)
+		unreadable = append(unreadable, scriptFetchFailure{job: failure.job, err: fetchErr})
+	}
+	return recovered, unreadable, nil
 }
 
 func runScriptFetchJobs(ctx context.Context, jobs []scriptFetchJob, workerCount int, fetch func(context.Context, scriptFetchJob) (rclib.ScriptReply, error), progress func(done, total int)) ([]rclib.ScriptReply, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	result := collectScriptFetchJobs(ctx, jobs, workerCount, fetch, progress)
+	return result.replies, result.err(ctx, len(jobs))
+}
+
+// collectScriptFetchJobs processes a bulk script fetch with a fixed number of
+// workers and keeps every failure, so the caller can tell a few scripts the
+// server did not deliver from a connection that stopped answering.
+func collectScriptFetchJobs(ctx context.Context, jobs []scriptFetchJob, workerCount int, fetch func(context.Context, scriptFetchJob) (rclib.ScriptReply, error), progress func(done, total int)) scriptFetchResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	total := len(jobs)
 	out := make([]rclib.ScriptReply, 0, total)
-	if total == 0 {
-		return out, ctx.Err()
-	}
-	if err := ctx.Err(); err != nil {
-		return out, err
+	if total == 0 || ctx.Err() != nil {
+		return scriptFetchResult{replies: out}
 	}
 	workCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -3506,8 +3601,7 @@ func runScriptFetchJobs(ctx context.Context, jobs []scriptFetchJob, workerCount 
 	var outMu sync.Mutex
 	var fetchErrMu sync.Mutex
 	var terminalFetchErr error
-	var firstFetchErr error
-	failed := 0
+	var failures []scriptFetchFailure
 	var wg sync.WaitGroup
 	var done int32
 	wg.Add(workerCount)
@@ -3535,10 +3629,7 @@ func runScriptFetchJobs(ctx context.Context, jobs []scriptFetchJob, workerCount 
 						outMu.Unlock()
 					} else {
 						fetchErrMu.Lock()
-						failed++
-						if firstFetchErr == nil {
-							firstFetchErr = fmt.Errorf("%s:%s: %w", j.stype, j.key, err)
-						}
+						failures = append(failures, scriptFetchFailure{job: j, err: err})
 						if errors.Is(err, errNCUnavailable) || errors.Is(err, errConnectionSessionChanged) {
 							if terminalFetchErr == nil {
 								terminalFetchErr = err
@@ -3569,16 +3660,8 @@ sendJobs:
 	}
 	close(jobCh)
 	wg.Wait()
-	fetchErrMu.Lock()
-	deferredErr := terminalFetchErr
-	fetchErrMu.Unlock()
-	if deferredErr != nil {
-		return out, deferredErr
-	}
-	if failed > 0 {
-		return out, errors.Join(fmt.Errorf("%w: %d of %d script reads failed: %w", ErrIncompleteScriptSnapshot, failed, total, firstFetchErr), ctx.Err())
-	}
-	return out, ctx.Err()
+	// Every worker has returned, so the shared slices are no longer written.
+	return scriptFetchResult{replies: out, failures: failures, terminal: terminalFetchErr}
 }
 
 // AddWeapon creates a weapon by name.
@@ -3987,9 +4070,15 @@ func (s *Service) OpenNPCFlags(id int) (rclib.ScriptReply, error) {
 	}
 }
 
-// OpenNPCAttributes requests an NPC's attributes and waits for the reply.
+// OpenNPCAttributes requests an NPC's attributes and waits for the reply. The
+// reply carries no NPC id: grclib labels it with the last id requested, so these
+// requests are sent one at a time.
 func (s *Service) OpenNPCAttributes(id int) (rclib.ScriptReply, error) {
 	h, err := s.requireHandle()
+	if err != nil {
+		return rclib.ScriptReply{}, err
+	}
+	scope, err := s.captureSession()
 	if err != nil {
 		return rclib.ScriptReply{}, err
 	}
@@ -3997,7 +4086,13 @@ func (s *Service) OpenNPCAttributes(id int) (rclib.ScriptReply, error) {
 	pending := pendingKey("npcattr", key)
 	waiter, isNew := s.registerPending(pending)
 	if isNew {
-		if err := rclib.RequestNPCAttributes(h, id); err != nil {
+		err := s.npcAttrGate.exchange(scope.done, key, func() error {
+			return rclib.RequestNPCAttributes(h, id)
+		}, waiter.done, scriptTimeout, replyQuarantine)
+		if err != nil {
+			if errors.Is(err, errReplyTimeout) {
+				err = errors.New("npc attributes request timed out")
+			}
 			s.cancelPending(pending, waiter, err)
 			return rclib.ScriptReply{}, err
 		}
@@ -4005,10 +4100,7 @@ func (s *Service) OpenNPCAttributes(id int) (rclib.ScriptReply, error) {
 	select {
 	case <-waiter.done:
 		return waiter.reply, waiter.err
-	case <-time.After(scriptTimeout):
-		if isNew {
-			s.cancelPending(pending, waiter, errors.New("npc attributes request timed out"))
-		}
+	case <-time.After(sharedReplyTimeout):
 		return rclib.ScriptReply{}, errors.New("npc attributes request timed out")
 	}
 }
@@ -4180,6 +4272,7 @@ func (s *Service) StartFileBrowser() error {
 	if err != nil {
 		return err
 	}
+	s.fileBrowserView.reset()
 	return rclib.FileBrowserStart(h)
 }
 
@@ -4191,6 +4284,7 @@ func (s *Service) FileBrowserCd(folder string) error {
 	if err != nil {
 		return err
 	}
+	s.fileBrowserView.requested(folder)
 	return rclib.FileBrowserCd(h, folder)
 }
 
@@ -4363,11 +4457,8 @@ func (s *Service) finishFileTransfer(scope sessionScope, path string, waiter *fi
 	}
 }
 
-// UploadFile uploads raw bytes to a remote path. When the max upload size is
-// known, oversize uploads are rejected up front with a clear error.
-func (s *Service) UploadFile(path string, content []byte) error {
-	s.fileBrowserOperationMu.RLock()
-	defer s.fileBrowserOperationMu.RUnlock()
+// uploadFileLocked requires fileBrowserOperationMu, shared or exclusive.
+func (s *Service) uploadFileLocked(path string, content []byte) error {
 	h, err := s.requireHandle()
 	if err != nil {
 		return err

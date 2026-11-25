@@ -24,6 +24,7 @@ const EMPTY_STATUS: SyncStatus = {
   syncGeneration: 0,
   reviewCount: 0,
   items: [],
+  unreadable: [],
   progress: {active: false, phase: "", current: "", completed: 0, total: 0},
   nextSyncAt: 0,
   permissionsReady: false,
@@ -100,6 +101,8 @@ export function useSync(): UseSyncResult {
       }
       if (item) {
         toast.info(t("sync.conflictTitle", {name: item.name}), {
+          // The event repeats while a conflict is open; keep a single toast.
+          id: `sync-conflict:${item.kind}:${item.key}`,
           description: item.actor
             ? t("sync.conflictActorDescription", {actor: item.actor})
             : t("sync.conflictServerDescription"),

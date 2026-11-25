@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -45,12 +46,28 @@ type SyncStatus struct {
 	LastError        string       `json:"lastError,omitempty"`
 	// NextSyncAt is retained for frontend/API compatibility; automatic server
 	// polling is disabled, so it remains zero.
-	NextSyncAt        int64  `json:"nextSyncAt"`
-	PermissionsReady  bool   `json:"permissionsReady"`
-	PermissionsError  string `json:"permissionsError,omitempty"`
-	ScriptRightsReady bool   `json:"scriptRightsReady"`
-	ScriptWriteAccess bool   `json:"scriptWriteAccess"`
-	SyncRequired      bool   `json:"syncRequired"`
+	NextSyncAt int64 `json:"nextSyncAt"`
+	// Unreadable lists scripts the server did not deliver during the last
+	// snapshot. The sync completed without them; see UnreadableScript.
+	Unreadable        []UnreadableScript `json:"unreadable"`
+	PermissionsReady  bool               `json:"permissionsReady"`
+	PermissionsError  string             `json:"permissionsError,omitempty"`
+	ScriptRightsReady bool               `json:"scriptRightsReady"`
+	ScriptWriteAccess bool               `json:"scriptWriteAccess"`
+	SyncRequired      bool               `json:"syncRequired"`
+}
+
+// UnreadableScript is a script the server lists but did not deliver, so the
+// engine has no server version of it. Its local file, if there is one, is
+// left exactly as it is: never removed as "missing on the server", never
+// overwritten, and never uploaded, because an upload would replace a server
+// version nobody has seen. The entry clears when the script is read
+// successfully, by a later snapshot or after a server-side change.
+type UnreadableScript struct {
+	Kind   string `json:"kind"`
+	Key    string `json:"key"`
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
 }
 
 type SyncProgress struct {
@@ -76,9 +93,8 @@ type LocalScriptUploaded struct {
 }
 
 const (
-	watcherDebounce   = 500 * time.Millisecond
-	recentDownloadTTL = 3 * time.Second
-	ncWaitTimeout     = 30 * time.Second
+	watcherDebounce = 500 * time.Millisecond
+	ncWaitTimeout   = 30 * time.Second
 )
 
 type scriptRef struct{ kind, key, name, path string }
@@ -109,9 +125,11 @@ type PullBackupFunc func(kind, key string, previous []byte) (string, error)
 // PullAuditFunc records a completed or failed server-to-local pull.
 type PullAuditFunc func(kind, key, outcome, detail string)
 
-// Engine implements the intentionally small two-way sync protocol. hashes is
-// the only baseline: a path is changed only when its current MD5 differs from
-// the last successful server/local operation.
+// Engine implements the intentionally small two-way sync protocol. hashes
+// drives change detection: a path is uploaded only when its current MD5 differs
+// from the last successful server/local operation. baselines additionally
+// remember, across restarts, the content both sides last agreed on, so that a
+// pull never replaces a local edit that did not reach the server.
 type Engine struct {
 	mu                sync.RWMutex
 	cfg               SyncConfig
@@ -119,8 +137,14 @@ type Engine struct {
 	server            string
 	hashes            map[string]string
 	refs              map[string]scriptRef
-	recentDownloads   map[string]time.Time
 	review            map[string]ReviewItem
+	reviewPaths       map[string]string      // review key -> local path
+	collisions        map[string][]scriptRef // by folded local path
+	snapshotDir       string                 // output dir the server has been read for
+	lastErrorPath     string                 // set when lastError is a failed upload
+	baselineMu        sync.Mutex
+	baselines         map[string]*baselineSet     // by sync root
+	unreadable        map[string]UnreadableScript // by local path
 	lastSyncAt        int64
 	progress          SyncProgress
 	lastError         string
@@ -163,7 +187,9 @@ type Engine struct {
 func NewEngine(backend ScriptBackend, server string, emit func(string, ...any)) *Engine {
 	return &Engine{backend: backend, server: server, emit: emit, now: time.Now,
 		hashes: map[string]string{}, refs: map[string]scriptRef{},
-		recentDownloads: map[string]time.Time{}, review: map[string]ReviewItem{}, expectedUpdates: map[string]expectedServerUpdate{}}
+		review: map[string]ReviewItem{}, reviewPaths: map[string]string{}, unreadable: map[string]UnreadableScript{},
+		collisions: map[string][]scriptRef{}, baselines: map[string]*baselineSet{},
+		expectedUpdates: map[string]expectedServerUpdate{}}
 }
 
 func (e *Engine) SetEditorChecker(fn func(kind, key string) bool) {
@@ -283,6 +309,16 @@ func (e *Engine) CancelExpectedServerUpdate(kind, key string) {
 
 func (e *Engine) ApplyConfig(cfg SyncConfig) {
 	e.mu.Lock()
+	if e.cfg.OutputDir != cfg.OutputDir {
+		// Everything tracked by path belongs to the previous directory.
+		e.hashes = map[string]string{}
+		e.refs = map[string]scriptRef{}
+		e.review = map[string]ReviewItem{}
+		e.reviewPaths = map[string]string{}
+		e.unreadable = map[string]UnreadableScript{}
+		e.collisions = map[string][]scriptRef{}
+		e.snapshotDir = ""
+	}
 	e.cfg = cfg
 	running := e.running
 	e.mu.Unlock()
@@ -510,6 +546,7 @@ func (e *Engine) Stop() {
 func (e *Engine) bootstrap(ctx context.Context, dir string) error {
 	e.workMu.Lock()
 	defer e.workMu.Unlock()
+	defer e.flushBaselines()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -526,15 +563,17 @@ func (e *Engine) bootstrap(ctx context.Context, dir string) error {
 	} else {
 		log.Printf("[sync bootstrap] reusing already-loaded script permissions")
 	}
+	// Files created or edited while the snapshot downloads are not stale.
+	localBaseline := snapshotLocalScripts(dir)
 	e.setProgress("Downloading", 0, 0, "")
 	// The NC authentication path already populated the native script lists, just
 	// like the reference C++ TSyncManager::requestPull path. FetchScripts waits
 	// for that initial cache response; it must not request the weapon list again.
 	log.Printf("[sync bootstrap] fetching readable scripts from cached NC lists")
-	replies, err := e.fetchScripts(ctx, func(done, total int) {
+	replies, unreadable, err := e.fetchScripts(ctx, func(done, total int) {
 		e.setProgress("Downloading", done, total, "")
 	})
-	log.Printf("[sync bootstrap] readable script fetch finished replies=%d err=%v", len(replies), err)
+	log.Printf("[sync bootstrap] readable script fetch finished replies=%d unreadable=%d err=%v", len(replies), len(unreadable), err)
 	if err != nil {
 		e.failSnapshot(err)
 		if !e.backend.IsNCConnected() || !e.backend.IsNCAuthenticated() {
@@ -542,11 +581,14 @@ func (e *Engine) bootstrap(ctx context.Context, dir string) error {
 		}
 		return err
 	}
+	e.setUnreadable(dir, unreadable)
+	e.setCollisions(dir, listedRefs(replies, unreadable))
 	if len(replies) == 0 {
 		// An account may legitimately have no readable scripts. Treat an empty
 		// permission-filtered result as a completed bootstrap; the user can use
 		// Re-Sync if the NC lists were still warming up at login.
-		e.removeUnlistedLocalFiles(dir, serverPaths(nil))
+		e.removeUnlistedLocalFiles(dir, listedPaths(nil, unreadable), changedLocalPaths(dir, localBaseline))
+		e.markSnapshotLoaded(dir)
 		e.markReconcileCompleted()
 		e.finishProgress(0)
 		e.emitStatus()
@@ -563,6 +605,9 @@ func (e *Engine) bootstrap(ctx context.Context, dir string) error {
 		}
 		content := normalizeEOL(r.Script)
 		path := fullPath(dir, ref.kind, fileNameFor(ref.kind, ref.key, ref.name))
+		if e.collidesAt(path) {
+			continue
+		}
 		trace := traceCompareItem(i, len(replies))
 		started := time.Now()
 		if trace {
@@ -584,7 +629,10 @@ func (e *Engine) bootstrap(ctx context.Context, dir string) error {
 			log.Printf("[sync bootstrap compare] done %d/%d kind=%s name=%q elapsed=%s", i+1, len(replies), ref.kind, ref.name, time.Since(started))
 		}
 	}
-	e.removeUnlistedLocalFiles(dir, serverPaths(replies))
+	e.removeUnlistedLocalFiles(dir, listedPaths(replies, unreadable), changedLocalPaths(dir, localBaseline))
+	// The server has been read. Paths that could not be written are blocked
+	// individually by pullLocalVersion.
+	e.markSnapshotLoaded(dir)
 	if err == nil && pullErr != nil {
 		err = pullErr
 	}
@@ -752,28 +800,64 @@ func (e *Engine) pushLocal(ctx context.Context, path string) {
 }
 
 func (e *Engine) pushLocalLocked(ctx context.Context, path string) {
-	if e.isRecentDownload(path) {
-		return
-	}
+	defer e.flushBaselines()
 	content, ok := readScriptFile(path)
 	if !ok {
 		return
 	}
+	// The engine's own writes come back through the watcher. They are
+	// recognised by their content hash, never by timing, so that a save made
+	// right after a pull is not mistaken for the pull itself.
 	hash := HashScript(content)
+	if e.collidesAt(path) {
+		log.Printf("sync upload skipped %s: %s", path, collisionReason)
+		return
+	}
+	if item, reviewing := e.reviewAt(path); reviewing {
+		// Uploading would replace the server version before the user chose.
+		log.Printf("sync upload held: %s %q is waiting for conflict review", item.Kind, item.Name)
+		e.enqueueReview(scriptRef{kind: item.Kind, key: item.Key, name: item.Name}, path, content, item.Server, item.Actor)
+		return
+	}
 	e.mu.RLock()
 	old := e.hashes[path]
 	ref := e.refs[path]
 	cfg := e.cfg
 	e.mu.RUnlock()
-	if old == hash || !cfg.Enabled || !cfg.AutoPushLocal || e.paused() {
+	if old == hash {
+		e.clearPushError(path)
 		return
 	}
-	if ctx.Err() != nil || !e.backend.IsNCConnected() {
+	if !cfg.Enabled || !cfg.AutoPushLocal || e.paused() {
+		return
+	}
+	if script, blocked := e.unreadableAt(path); blocked {
+		// The server has a version of this script that was never read. Writing
+		// the local file over it would destroy that version unseen.
+		e.setPushError(path, fmt.Sprintf("the server version of %s %q is unknown (%s)", script.Kind, script.Name, script.Reason))
+		return
+	}
+	if !e.snapshotLoaded() {
+		// Without a snapshot there is no telling whether this file is stale.
+		log.Printf("sync upload skipped %s: no server snapshot has succeeded yet", path)
+		return
+	}
+	if ref.kind == "" {
+		if twin, ok := e.trackedTwin(path); ok {
+			e.setPushError(path, fmt.Sprintf("its name differs only by case from %s %q", twin.kind, twin.name))
+			return
+		}
+	}
+	if ctx.Err() != nil {
+		return
+	}
+	if !e.backend.IsNCConnected() {
+		e.setPushError(path, "NC is not connected")
 		return
 	}
 	releaseUpload, err := e.beginUpload()
 	if err != nil {
-		log.Printf("sync upload blocked: %v", err)
+		e.setPushError(path, err.Error())
 		return
 	}
 	defer releaseUpload()
@@ -795,33 +879,35 @@ func (e *Engine) pushLocalLocked(ctx context.Context, path string) {
 				return
 			}
 			if err := writeFileAtomic(path, []byte(content)); err != nil {
-				log.Printf("sync initialize class %s: %v", name, err)
+				e.setPushError(path, fmt.Sprintf("could not initialize the class file: %v", err))
 				return
 			}
 			hash = HashScript(content)
-			e.markDownload(path)
 		}
 		if !e.backend.CanWriteScript(ref.kind, ref.name) {
+			e.setPushError(path, fmt.Sprintf("no write permission for %s %q", ref.kind, ref.name))
 			return
 		}
 		if ref.kind == "weapon" {
 			if err := e.backend.AddWeapon(ref.name); err != nil {
-				log.Printf("sync create weapon %s: %v", ref.name, err)
+				e.setPushError(path, fmt.Sprintf("could not create weapon %q: %v", ref.name, err))
 				return
 			}
 		} else if err := e.backend.AddClass(ref.name); err != nil {
-			log.Printf("sync create class %s: %v", ref.name, err)
+			e.setPushError(path, fmt.Sprintf("could not create class %q: %v", ref.name, err))
 			return
 		}
 	}
 	if err := e.uploadUnchecked(ref, content); err != nil {
-		log.Printf("sync upload %s: %v", path, err)
+		e.setPushError(path, err.Error())
 		return
 	}
 	e.mu.Lock()
 	e.refs[path] = ref
 	e.hashes[path] = hash
 	e.mu.Unlock()
+	e.setBaseline(path, hash)
+	e.clearPushError(path)
 	e.markSynced()
 	e.emitLocalScriptUploaded(ref, content)
 	e.emitStatus()
@@ -856,6 +942,7 @@ func (e *Engine) uploadUnchecked(ref scriptRef, content string) error {
 }
 
 func (e *Engine) reconcileLocked(ctx context.Context, refreshRights bool) {
+	defer e.flushBaselines()
 	e.mu.RLock()
 	cfg := e.cfg
 	panicMode := e.panicMode
@@ -898,17 +985,20 @@ func (e *Engine) reconcileLocked(ctx context.Context, refreshRights bool) {
 	// PLI_NC_WEAPONLISTGET during a reconcile: some NC servers disconnect when
 	// the full weapon list is requested again after the initial sync.
 	log.Printf("[sync reconcile] fetching readable scripts from cached NC lists")
-	replies, err := e.fetchScripts(ctx, func(done, total int) {
+	replies, unreadable, err := e.fetchScripts(ctx, func(done, total int) {
 		e.setProgress("Downloading", done, total, "")
 	})
-	log.Printf("[sync reconcile] readable script fetch finished replies=%d err=%v", len(replies), err)
+	log.Printf("[sync reconcile] readable script fetch finished replies=%d unreadable=%d err=%v", len(replies), len(unreadable), err)
 	if err != nil {
 		log.Printf("sync reconcile: %v", err)
 		e.failSnapshot(err)
 		return
 	}
+	e.setUnreadable(cfg.OutputDir, unreadable)
+	e.setCollisions(cfg.OutputDir, listedRefs(replies, unreadable))
 	if len(replies) == 0 {
-		e.removeUnlistedLocalFiles(cfg.OutputDir, serverPaths(nil), changedLocalPaths(cfg.OutputDir, localBaseline))
+		e.removeUnlistedLocalFiles(cfg.OutputDir, listedPaths(nil, unreadable), changedLocalPaths(cfg.OutputDir, localBaseline))
+		e.markSnapshotLoaded(cfg.OutputDir)
 		e.markReconcileCompleted()
 		e.finishProgress(0)
 		e.emitStatus()
@@ -924,6 +1014,9 @@ func (e *Engine) reconcileLocked(ctx context.Context, refreshRights bool) {
 		}
 		content := normalizeEOL(r.Script)
 		path := fullPath(cfg.OutputDir, ref.kind, fileNameFor(ref.kind, ref.key, ref.name))
+		if e.collidesAt(path) {
+			continue
+		}
 		trace := traceCompareItem(i, len(replies))
 		started := time.Now()
 		if trace {
@@ -936,6 +1029,14 @@ func (e *Engine) reconcileLocked(ctx context.Context, refreshRights bool) {
 		if localChangedSince(path, localBaseline) {
 			log.Printf("[sync reconcile compare] preserving local change made during sync path=%q", path)
 			e.preserveLocalChange(path, localBaseline)
+			switch {
+			case !exists:
+			case HashScript(local) == serverHash:
+				e.markInSync(path, serverHash)
+			case e.needsReview(path, local, serverHash) && !e.serverUnchanged(path, serverHash):
+				// Both sides moved: the watcher must not push over the server.
+				e.enqueueReview(ref, path, local, content, "")
+			}
 			continue
 		}
 		if !exists {
@@ -948,9 +1049,7 @@ func (e *Engine) reconcileLocked(ctx context.Context, refreshRights bool) {
 			continue
 		}
 		if HashScript(local) == serverHash {
-			e.mu.Lock()
-			e.hashes[path] = serverHash
-			e.mu.Unlock()
+			e.markInSync(path, serverHash)
 			if trace {
 				log.Printf("[sync reconcile compare] done %d/%d kind=%s name=%q action=unchanged elapsed=%s", i+1, len(replies), ref.kind, ref.name, time.Since(started))
 			}
@@ -971,7 +1070,8 @@ func (e *Engine) reconcileLocked(ctx context.Context, refreshRights bool) {
 		}
 	}
 	if err == nil {
-		e.removeUnlistedLocalFiles(cfg.OutputDir, serverPaths(replies), changedLocalPaths(cfg.OutputDir, localBaseline))
+		e.removeUnlistedLocalFiles(cfg.OutputDir, listedPaths(replies, unreadable), changedLocalPaths(cfg.OutputDir, localBaseline))
+		e.markSnapshotLoaded(cfg.OutputDir)
 		e.markReconcileCompleted()
 	} else {
 		e.markSynced()
@@ -987,8 +1087,104 @@ func traceCompareItem(index, total int) bool {
 // fetchScripts reads the NC caches already populated by authentication and by
 // live list-change callbacks. The reference C++ pull path follows the same
 // rule; a full weapon-list request belongs to the explicit list UI, not sync.
-func (e *Engine) fetchScripts(ctx context.Context, progress func(done, total int)) ([]rclib.ScriptReply, error) {
-	return e.backend.FetchAllScripts(ctx, e.backend.CanReadScript, progress)
+//
+// A backend may report that a few listed scripts were not delivered while
+// every other one was read. Those come back as unreadable and the snapshot is
+// used; any other failure is returned as err and the snapshot is not.
+func (e *Engine) fetchScripts(ctx context.Context, progress func(done, total int)) (replies []rclib.ScriptReply, unreadable []UnreadableScript, err error) {
+	replies, err = e.backend.FetchAllScripts(ctx, e.backend.CanReadScript, progress)
+	var partial unreadableScriptsError
+	if !errors.As(err, &partial) {
+		return replies, nil, err
+	}
+	scripts, reasons := partial.UnreadableScripts()
+	for i, script := range scripts {
+		ref := refFromReply(script)
+		if ref.kind == "" {
+			continue
+		}
+		reason := ""
+		if i < len(reasons) {
+			reason = reasons[i]
+		}
+		unreadable = append(unreadable, UnreadableScript{Kind: ref.kind, Key: ref.key, Name: ref.name, Reason: reason})
+	}
+	if len(unreadable) == 0 {
+		return replies, nil, err
+	}
+	return replies, unreadable, nil
+}
+
+// unreadableScriptsError is what a backend returns from FetchAllScripts when
+// the snapshot is complete except for scripts the server did not deliver.
+// *connection.UnreadableScriptsError satisfies it; the interface keeps this
+// package free of an import of the connection package.
+type unreadableScriptsError interface {
+	error
+	UnreadableScripts() (scripts []rclib.ScriptReply, reasons []string)
+}
+
+func unreadablePath(outputDir string, script UnreadableScript) string {
+	return fullPath(outputDir, script.Kind, fileNameFor(script.Kind, script.Key, script.Name))
+}
+
+// listedPaths is serverPaths plus the scripts that are listed but were not
+// read, so their local files are not taken for scripts deleted on the server.
+func listedPaths(replies []rclib.ScriptReply, unreadable []UnreadableScript) map[string]bool {
+	paths := serverPaths(replies)
+	for _, script := range unreadable {
+		relative := filepath.Join(kindSubdir(script.Kind), fileNameFor(script.Kind, script.Key, script.Name)+scriptExt)
+		paths[filepath.ToSlash(relative)] = true
+	}
+	return paths
+}
+
+// listedRefs is every script in a snapshot listing, read or not.
+func listedRefs(replies []rclib.ScriptReply, unreadable []UnreadableScript) []scriptRef {
+	refs := make([]scriptRef, 0, len(replies)+len(unreadable))
+	for _, reply := range replies {
+		refs = append(refs, refFromReply(reply))
+	}
+	for _, script := range unreadable {
+		refs = append(refs, scriptRef{kind: script.Kind, key: script.Key, name: script.Name})
+	}
+	return refs
+}
+
+// setUnreadable replaces the unreadable set with the outcome of a snapshot.
+func (e *Engine) setUnreadable(outputDir string, unreadable []UnreadableScript) {
+	next := make(map[string]UnreadableScript, len(unreadable))
+	for _, script := range unreadable {
+		log.Printf("[sync] %s %q was not delivered by the server (%s); its local file is left untouched and will not be uploaded", script.Kind, script.Name, script.Reason)
+		next[unreadablePath(outputDir, script)] = script
+	}
+	e.mu.Lock()
+	e.unreadable = next
+	e.mu.Unlock()
+}
+
+// unreadableAt reports whether path belongs to a script the server did not
+// deliver.
+func (e *Engine) unreadableAt(path string) (UnreadableScript, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	script, ok := e.unreadable[path]
+	return script, ok
+}
+
+// clearUnreadable forgets an unreadable script once it has been read or has
+// gone from the server. It reports whether there was one.
+func (e *Engine) clearUnreadable(kind, name string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	cleared := false
+	for path, script := range e.unreadable {
+		if script.Kind == kind && script.Name == name {
+			delete(e.unreadable, path)
+			cleared = true
+		}
+	}
+	return cleared
 }
 
 func (e *Engine) setProgress(phase string, completed, total int, current string) {
@@ -1025,37 +1221,41 @@ func (e *Engine) setHash(path, hash string) {
 
 func (e *Engine) pullLocalVersion(ref scriptRef, path, content, hash string, expectedLocal *string) error {
 	current, exists := readScriptFile(path)
-	if expectedLocal != nil && exists && HashScript(current) != HashScript(*expectedLocal) {
-		log.Printf("sync download skipped %s: local file changed during sync", path)
+	if exists && HashScript(current) == hash {
+		e.markInSync(path, hash)
 		return nil
 	}
-	if exists && HashScript(current) == hash {
-		e.setHash(path, hash)
+	if exists && e.needsReview(path, current, hash) {
+		log.Printf("sync download held %s: the local file has changes the server never received", path)
+		e.enqueueReview(ref, path, current, content, "")
+		return nil
+	}
+	if expectedLocal != nil && exists && HashScript(current) != HashScript(*expectedLocal) {
+		log.Printf("sync download skipped %s: local file changed during sync", path)
 		return nil
 	}
 
 	backupID := ""
 	if exists {
-		e.mu.RLock()
-		backup := e.pullBackup
-		e.mu.RUnlock()
-		if backup != nil {
-			var err error
-			backupID, err = backup(ref.kind, ref.key, []byte(current))
-			if err != nil {
-				detail := fmt.Sprintf("could not back up the previous local version before pulling %s: %v", ref.name, err)
-				e.auditPull(ref, "failed", detail)
-				return err
-			}
+		var err error
+		backupID, err = e.backupContent(ref, current)
+		if err != nil {
+			detail := fmt.Sprintf("could not back up the previous local version before pulling %s: %v", ref.name, err)
+			e.auditPull(ref, "failed", detail)
+			e.blockStale(ref, path, err)
+			return err
 		}
 	}
 	if err := writeFileAtomic(path, []byte(content)); err != nil {
 		detail := fmt.Sprintf("could not write the server version locally: %v", err)
 		e.auditPull(ref, "failed", detail)
+		e.blockStale(ref, path, err)
 		return err
 	}
-	e.markDownload(path)
-	e.setHash(path, hash)
+	e.mu.Lock()
+	delete(e.unreadable, path)
+	e.mu.Unlock()
+	e.markInSync(path, hash)
 	action := "created"
 	if exists {
 		action = "updated"
@@ -1068,6 +1268,25 @@ func (e *Engine) pullLocalVersion(ref scriptRef, path, content, hash string, exp
 	}
 	e.auditPull(ref, "success", detail)
 	return nil
+}
+
+// serverUnchanged reports whether the server still holds the content of the
+// last sync.
+func (e *Engine) serverUnchanged(path, serverHash string) bool {
+	base, ok := e.baseline(path)
+	return ok && base == serverHash
+}
+
+// backupContent keeps content that is about to be replaced, when the
+// application installed a backup store.
+func (e *Engine) backupContent(ref scriptRef, content string) (string, error) {
+	e.mu.RLock()
+	backup := e.pullBackup
+	e.mu.RUnlock()
+	if backup == nil {
+		return "", nil
+	}
+	return backup(ref.kind, ref.key, []byte(content))
 }
 
 func (e *Engine) auditPull(ref scriptRef, outcome, detail string) {
@@ -1094,11 +1313,17 @@ func serverPaths(replies []rclib.ScriptReply) map[string]bool {
 
 // removeUnlistedLocalFiles enforces server priority after a complete server
 // snapshot. Files created while the watcher is active are uploaded first, so
-// their paths appear in the next server snapshot.
+// their paths appear in the next server snapshot. Other unlisted files are
+// moved to the recovery folder, never deleted.
 func (e *Engine) removeUnlistedLocalFiles(outputDir string, listed map[string]bool, protected ...map[string]bool) {
 	protectedPaths := map[string]bool{}
 	if len(protected) > 0 && protected[0] != nil {
 		protectedPaths = protected[0]
+	}
+	// A listed script's file may be spelled with a different case on disk.
+	listedFolded := make(map[string]bool, len(listed))
+	for relative := range listed {
+		listedFolded[strings.ToLower(relative)] = true
 	}
 	for _, kind := range []string{"weapon", "class", "npc"} {
 		dir := filepath.Join(outputDir, kindSubdir(kind))
@@ -1112,18 +1337,10 @@ func (e *Engine) removeUnlistedLocalFiles(outputDir string, listed map[string]bo
 			}
 			path := filepath.Join(dir, entry.Name())
 			relative, err := filepath.Rel(outputDir, path)
-			if err != nil || listed[filepath.ToSlash(relative)] || protectedPaths[path] {
+			if err != nil || listedFolded[strings.ToLower(filepath.ToSlash(relative))] || protectedPaths[path] {
 				continue
 			}
-			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-				log.Printf("sync remove server-missing local script %q: %v", path, err)
-				continue
-			}
-			e.mu.Lock()
-			delete(e.hashes, path)
-			delete(e.refs, path)
-			delete(e.review, entryKey(kind, decodeName(strings.TrimSuffix(entry.Name(), scriptExt))))
-			e.mu.Unlock()
+			e.retireLocalFile(path)
 		}
 	}
 }
@@ -1234,21 +1451,6 @@ func (e *Engine) isExpectedServerUpdate(ref scriptRef, serverHash string) bool {
 	}
 	return false
 }
-func (e *Engine) markDownload(path string) {
-	e.mu.Lock()
-	e.recentDownloads[path] = e.now().Add(recentDownloadTTL)
-	e.mu.Unlock()
-}
-func (e *Engine) isRecentDownload(path string) bool {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	until, ok := e.recentDownloads[path]
-	if ok && e.now().Before(until) {
-		return true
-	}
-	delete(e.recentDownloads, path)
-	return false
-}
 func (e *Engine) markSynced() { e.mu.Lock(); e.lastSyncAt = e.now().Unix(); e.mu.Unlock() }
 
 func (e *Engine) emitLocalScriptUploaded(ref scriptRef, content string) {
@@ -1261,6 +1463,7 @@ func (e *Engine) emitLocalScriptUploaded(ref scriptRef, content string) {
 func (e *Engine) markReconcileCompleted() {
 	e.mu.Lock()
 	e.lastError = ""
+	e.lastErrorPath = ""
 	e.lastSyncAt = e.now().Unix()
 	e.syncGeneration++
 	e.initialSyncDone = true
@@ -1294,6 +1497,9 @@ func (e *Engine) HandleChatLine(line string) {
 }
 
 func (e *Engine) handleDeleteActivity(act Activity) {
+	if e.clearUnreadable(act.Kind, act.Name) {
+		defer e.emitStatus()
+	}
 	e.mu.RLock()
 	var paths []string
 	for path, ref := range e.refs {
@@ -1303,22 +1509,16 @@ func (e *Engine) handleDeleteActivity(act Activity) {
 	}
 	e.mu.RUnlock()
 	for _, path := range paths {
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			log.Printf("sync delete server-removed script %q: %v", path, err)
-			continue
-		}
-		e.mu.Lock()
-		delete(e.hashes, path)
-		delete(e.refs, path)
-		delete(e.review, entryKey(act.Kind, act.Key))
-		e.mu.Unlock()
+		e.retireLocalFile(path)
 	}
+	e.flushBaselines()
 	if len(paths) > 0 {
 		e.markSynced()
 		e.emitStatus()
 	}
 }
 func (e *Engine) handleActivity(act Activity) {
+	defer e.flushBaselines()
 	if !e.backend.CanReadScript(act.Kind, act.Name) {
 		return
 	}
@@ -1343,17 +1543,43 @@ func (e *Engine) handleActivity(act Activity) {
 	e.mu.RLock()
 	_, hadBaseline := e.hashes[path]
 	e.mu.RUnlock()
+	if e.runtimeCollision(ref, path) {
+		e.emitStatus()
+		return
+	}
 	e.rememberRef(ref, path)
 	local, ok := readScriptFile(path)
 	serverHash := HashScript(content)
+	// The script was read, so it is no longer unreadable.
+	wasUnreadable := e.clearUnreadable(act.Kind, act.Name)
+	if wasUnreadable {
+		defer e.emitStatus()
+	}
 	if !ok || HashScript(local) == serverHash {
 		if !ok && cfg.AutoPullServer {
 			if err := e.pullLocalVersion(ref, path, content, serverHash, nil); err != nil {
 				log.Printf("sync chat download %s: %v", path, err)
 			}
+		} else if ok {
+			e.markInSync(path, serverHash)
 		} else {
 			e.setHash(path, serverHash)
 		}
+		return
+	}
+	if _, reviewing := e.reviewAt(path); reviewing && e.needsReview(path, local, serverHash) {
+		e.enqueueReview(ref, path, local, content, act.Actor)
+		return
+	}
+	if e.serverUnchanged(path, serverHash) {
+		// Nothing new on the server, typically the chat echo of an earlier
+		// upload. A newer local save stays pending for the watcher.
+		return
+	}
+	if wasUnreadable && !hadBaseline {
+		// Neither side has ever been compared with the other, so there is no
+		// way to tell which one is newer. Leave the choice to the user.
+		e.enqueueReview(ref, path, local, content, act.Actor)
 		return
 	}
 	if !cfg.AutoPullServer && !hadBaseline {
@@ -1364,6 +1590,10 @@ func (e *Engine) handleActivity(act Activity) {
 			if !hadBaseline {
 				e.setHash(path, serverHash)
 			}
+			e.enqueueReview(ref, path, local, content, act.Actor)
+			return
+		}
+		if e.needsReview(path, local, serverHash) {
 			e.enqueueReview(ref, path, local, content, act.Actor)
 			return
 		}
@@ -1424,8 +1654,12 @@ func (e *Engine) PrepareRebuild() error {
 	e.mu.Lock()
 	e.hashes = map[string]string{}
 	e.refs = map[string]scriptRef{}
-	e.recentDownloads = map[string]time.Time{}
 	e.review = map[string]ReviewItem{}
+	e.reviewPaths = map[string]string{}
+	e.unreadable = map[string]UnreadableScript{}
+	e.collisions = map[string][]scriptRef{}
+	e.snapshotDir = ""
+	e.lastErrorPath = ""
 	e.expectedUpdates = map[string]expectedServerUpdate{}
 	e.lastSyncAt = 0
 	e.nextSyncAt = 0
@@ -1435,6 +1669,7 @@ func (e *Engine) PrepareRebuild() error {
 	e.initialSyncDone = false
 	e.initialSyncActive = false
 	e.mu.Unlock()
+	e.forgetBaselines()
 	e.emitStatus()
 	return nil
 }
@@ -1467,8 +1702,6 @@ func (e *Engine) NormalizeLocalState() error {
 	}
 	e.hashes = baseline
 	e.refs = refs
-	e.review = map[string]ReviewItem{}
-	e.recentDownloads = map[string]time.Time{}
 	e.expectedUpdates = map[string]expectedServerUpdate{}
 	e.lastSyncAt = 0
 	e.nextSyncAt = 0
@@ -1496,6 +1729,9 @@ func clearSyncContents(outputDir string) error {
 		return fmt.Errorf("read sync output directory: %w", err)
 	}
 	for _, entry := range entries {
+		if strings.EqualFold(entry.Name(), recoveryDirName) {
+			continue
+		}
 		target := filepath.Join(root, entry.Name())
 		relative, err := filepath.Rel(root, target)
 		if err != nil || relative == "." || relative == ".." || filepath.IsAbs(relative) || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
@@ -1511,17 +1747,22 @@ func clearSyncContents(outputDir string) error {
 	return nil
 }
 
+// enqueueReview adds or refreshes a pending review. The conflict event is sent
+// again whenever either side changes, so open editors never show a stale one.
 func (e *Engine) enqueueReview(ref scriptRef, path, local, server, actor string) {
 	e.mu.Lock()
 	key := entryKey(ref.kind, ref.key)
-	_, exists := e.review[key]
+	previous, exists := e.review[key]
 	item := ReviewItem{Kind: ref.kind, Key: ref.key, Name: ref.name, State: StateConflict, Local: local, Server: server, Actor: actor}
+	if exists && item.Actor == "" {
+		item.Actor = previous.Actor
+	}
 	e.review[key] = item
+	e.reviewPaths[key] = path
 	e.mu.Unlock()
-	if !exists {
+	if e.emit != nil && (!exists || previous.Local != local || previous.Server != server) {
 		e.emit("rc:syncConflict", item)
 	}
-	_ = path
 	e.emitStatus()
 }
 
@@ -1531,7 +1772,28 @@ func (e *Engine) Status() SyncStatus {
 	for _, it := range e.review {
 		items = append(items, it)
 	}
-	status := SyncStatus{Enabled: e.cfg.Enabled, Paused: e.cfg.PauseUntil != 0 && e.now().Unix() < e.cfg.PauseUntil, OutputDirMissing: e.cfg.OutputDir == "", InitialSync: e.initialSyncActive && e.cfg.Enabled && e.cfg.OutputDir != "", PanicMode: e.panicMode, PanicReason: e.panicReason, PanicAt: e.panicAt, Server: e.server, OutputDir: e.cfg.OutputDir, LastSyncAt: e.lastSyncAt, SyncGeneration: e.syncGeneration, ReviewCount: len(items), Items: items, Progress: e.progress, LastError: e.lastError, NextSyncAt: e.nextSyncAt, PermissionsReady: e.permissionsReady, PermissionsError: e.permissionsError}
+	unreadable := make([]UnreadableScript, 0, len(e.unreadable))
+	for path, script := range e.unreadable {
+		if _, collided := e.collisions[foldPath(path)]; !collided {
+			unreadable = append(unreadable, script)
+		}
+	}
+	// Colliding scripts are blocked the same way and listed with them.
+	for _, group := range e.collisions {
+		for _, script := range group {
+			unreadable = append(unreadable, UnreadableScript{Kind: script.kind, Key: script.key, Name: script.name, Reason: collisionReason})
+		}
+	}
+	sort.Slice(unreadable, func(i, j int) bool {
+		if unreadable[i].Kind != unreadable[j].Kind {
+			return unreadable[i].Kind < unreadable[j].Kind
+		}
+		if unreadable[i].Name != unreadable[j].Name {
+			return unreadable[i].Name < unreadable[j].Name
+		}
+		return unreadable[i].Key < unreadable[j].Key
+	})
+	status := SyncStatus{Unreadable: unreadable, Enabled: e.cfg.Enabled, Paused: e.cfg.PauseUntil != 0 && e.now().Unix() < e.cfg.PauseUntil, OutputDirMissing: e.cfg.OutputDir == "", InitialSync: e.initialSyncActive && e.cfg.Enabled && e.cfg.OutputDir != "", PanicMode: e.panicMode, PanicReason: e.panicReason, PanicAt: e.panicAt, Server: e.server, OutputDir: e.cfg.OutputDir, LastSyncAt: e.lastSyncAt, SyncGeneration: e.syncGeneration, ReviewCount: len(items), Items: items, Progress: e.progress, LastError: e.lastError, NextSyncAt: e.nextSyncAt, PermissionsReady: e.permissionsReady, PermissionsError: e.permissionsError}
 	e.mu.RUnlock()
 	// Native callbacks enqueue activity under mu while the DLL lock is held.
 	// Never hold mu across a call back into that library.
@@ -1551,13 +1813,19 @@ func (e *Engine) GetScriptPair(kind, key string) (ScriptPair, error) {
 
 // ResolveConflict is the only manual path for a collision. choice may be
 // local, server, or merge; mergeContent is used only for the latter.
+//
+// The review may be old by the time it is answered, so the server version is
+// read again and a resolution of a version the user has not seen is refused,
+// "local" means the file as it is now, and whatever gets replaced on either
+// side is backed up first.
 func (e *Engine) ResolveConflict(kind, key, choice, mergeContent string) error {
 	e.workMu.Lock()
 	defer e.workMu.Unlock()
+	defer e.flushBaselines()
 	e.mu.RLock()
 	it, ok := e.review[entryKey(kind, key)]
-	cfg := e.cfg
-	ref := e.refs[fullPath(cfg.OutputDir, kind, fileNameFor(kind, key, it.Name))]
+	path := e.reviewPaths[entryKey(kind, key)]
+	ref := e.refs[path]
 	e.mu.RUnlock()
 	if !ok {
 		return fmt.Errorf("no review item for %s:%s", kind, key)
@@ -1565,29 +1833,69 @@ func (e *Engine) ResolveConflict(kind, key, choice, mergeContent string) error {
 	if ref.kind == "" {
 		ref = scriptRef{kind: kind, key: key, name: it.Name}
 	}
+	local, localExists := readScriptFile(path)
 	content := it.Server
-	if choice == "local" {
-		content = it.Local
-	}
-	if choice == "merge" {
+	switch choice {
+	case "local":
+		if !localExists {
+			return fmt.Errorf("the local file of %s %q no longer exists", kind, it.Name)
+		}
+		content = local
+	case "merge":
 		if mergeContent == "" {
 			return fmt.Errorf("merged content is required")
 		}
 		content = mergeContent
 	}
-	if err := e.upload(ref, content); err != nil {
-		return err
+	uploads := choice == "local" || choice == "merge"
+	if uploads && !e.snapshotLoaded() {
+		return fmt.Errorf("no server snapshot has succeeded yet; run Re-Sync first")
 	}
-	path := fullPath(cfg.OutputDir, kind, fileNameFor(kind, key, it.Name))
-	if err := writeFileAtomic(path, []byte(normalizeEOL(content))); err != nil {
-		return err
+
+	reply, err := e.backend.OpenScript(ref.kind, ref.key)
+	if err != nil {
+		return fmt.Errorf("read the current server version of %s %q: %w", kind, it.Name, err)
 	}
+	if server := normalizeEOL(reply.Script); HashScript(server) != HashScript(it.Server) {
+		latest := it.Local
+		if localExists {
+			latest = local
+		}
+		e.enqueueReview(ref, path, latest, server, "")
+		return fmt.Errorf("the server version of %s %q changed since it was reviewed; review it again", kind, it.Name)
+	}
+
 	hash := HashScript(content)
-	e.mu.Lock()
-	e.hashes[path] = hash
-	delete(e.review, entryKey(kind, key))
-	e.mu.Unlock()
-	e.markDownload(path)
+	if uploads && hash != HashScript(it.Server) {
+		if _, err := e.backupContent(ref, it.Server); err != nil {
+			return fmt.Errorf("back up the server version before replacing it: %w", err)
+		}
+	}
+	if uploads {
+		if err := e.upload(ref, content); err != nil {
+			return err
+		}
+	}
+
+	latest, latestExists := readScriptFile(path)
+	switch {
+	case latestExists && (!localExists || HashScript(latest) != HashScript(local)):
+		// Saved while resolving. Keep it: it differs from the hash recorded
+		// below, so the watcher delivers it as an ordinary edit.
+		log.Printf("sync resolve: %s changed during the resolution; keeping the newer file", path)
+	case !latestExists || HashScript(latest) != hash:
+		if latestExists {
+			if _, err := e.backupContent(ref, latest); err != nil {
+				return fmt.Errorf("back up the local version before replacing it: %w", err)
+			}
+		}
+		if err := writeFileAtomic(path, []byte(normalizeEOL(content))); err != nil {
+			return err
+		}
+	}
+	e.rememberRef(ref, path)
+	e.markInSync(path, hash)
+	e.clearPushError(path)
 	e.markSynced()
 	e.emitStatus()
 	return nil

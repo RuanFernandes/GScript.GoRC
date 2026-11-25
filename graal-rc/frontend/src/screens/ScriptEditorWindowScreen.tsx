@@ -15,6 +15,7 @@ import {Button} from "@/components/ui/button"
 import {ScriptGalleryDialog, type ScriptGalleryType} from "@/components/ScriptGalleryDialog"
 import {useCodingSettings} from "@/hooks/useCodingSettings"
 import {useEditorDraft} from "@/hooks/useEditorDraft"
+import {localConflictText, mergeBoxValue, resolveScriptConflict, type ConflictChoice} from "@/lib/scriptConflict"
 import {ensureTheme, toMonacoThemeName} from "@/lib/monacoThemes"
 import {registerGraalScript} from "@/lib/monacoGraalScript"
 import {GraalScriptLspClient, graalScriptDocumentUri, registerGraalScriptLsp, type GraalScriptDiagnostic} from "@/lib/graalScriptLsp"
@@ -117,7 +118,10 @@ export function ScriptEditorWindowScreen() {
   const [remoteDef, setRemoteDef] = useState<unknown>(null)
   const [customDefs, setCustomDefs] = useState<Record<string, unknown>>({})
   const [conflict, setConflict] = useState<SyncReviewItem | null>(null)
-  const [mergeContent, setMergeContent] = useState("")
+  const conflictRef = useRef<SyncReviewItem | null>(null)
+  // null until the user types in the merge box; see mergeBoxValue.
+  const [mergeEdit, setMergeEdit] = useState<string | null>(null)
+  const [resolving, setResolving] = useState(false)
 
   const {kind, key} = parsed.current ?? {kind: "weapon" as EditorKind, key: ""}
   const readOnly = kind === "npcattr"
@@ -246,8 +250,11 @@ export function ScriptEditorWindowScreen() {
       try {
         const item = JSON.parse(e.data) as SyncReviewItem
         if (item.kind !== kind || item.key !== key) return
+        // A repeat event for an open conflict only refreshes the compared
+        // text; a merge being typed is kept.
+        if (!conflictRef.current) setMergeEdit(null)
+        conflictRef.current = item
         setConflict(item)
-        setMergeContent(item.local ?? "")
       } catch {
         // Ignore malformed sync events; the global review window remains available.
       }
@@ -338,37 +345,52 @@ export function ScriptEditorWindowScreen() {
     }
   }, [diagnosticsBeforeSave, kind, key, readOnly, t, draft])
 
-  const resolveInlineConflict = useCallback(async (choice: "local" | "server" | "merge") => {
-    if (!conflict) return
-    const nextContent = choice === "local" ? conflict.local : choice === "server" ? conflict.server : mergeContent
-    if (choice === "merge" && !nextContent) {
-      toast.error(t("editor.conflictMergeRequired"))
-      return
-    }
+  const resolveInlineConflict = useCallback(async (choice: ConflictChoice) => {
+    // savingRef also holds back Ctrl+S so a deploy cannot race the resolution.
+    if (savingRef.current) return
+    savingRef.current = true
+    setResolving(true)
     try {
-      const revision = draft.revision
-      await draft.resolveConflict(choice, choice === "merge" ? nextContent : "")
-      if (draft.revision !== revision) {
-        originalRef.current = nextContent
-        setOriginal(nextContent)
-        draft.rebase(nextContent)
-        setDirty(contentRef.current !== nextContent)
-        setConflict(null)
+      const result = await resolveScriptConflict({
+        choice,
+        mergeEdit,
+        getConflict: () => conflictRef.current,
+        getBuffer: () => contentRef.current,
+        getBaseline: () => originalRef.current,
+        resolve: (sentChoice, mergeContent) => draft.resolveConflict(sentChoice, mergeContent),
+        getPair: () => rcService.getSyncScriptPair(kind, key),
+      })
+      if (result.status === "none") return
+      if (result.status === "empty") {
+        toast.error(t("editor.conflictMergeRequired"))
         return
       }
-      editorRef.current?.setValue(nextContent)
-      contentRef.current = nextContent
-      setContent(nextContent)
-      originalRef.current = nextContent
-      setOriginal(nextContent)
-      setDirty(false)
-      await draft.saved(nextContent, draft.revision).catch(() => {})
-      setConflict(null)
-      toast.success(t("editor.conflictResolved"))
+      const {applied, replaceBuffer, remaining} = result
+      conflictRef.current = remaining
+      setConflict(remaining)
+      if (!remaining) setMergeEdit(null)
+      originalRef.current = applied
+      setOriginal(applied)
+      if (!replaceBuffer) {
+        draft.rebase(applied)
+        setDirty(contentRef.current !== applied)
+      } else {
+        editorRef.current?.setValue(applied)
+        contentRef.current = applied
+        setContent(applied)
+        setDirty(false)
+        setDraftRestored(false)
+        setDraftRemoteChanged(false)
+        await draft.saved(applied, draft.revision).catch(() => {})
+      }
+      if (!remaining) toast.success(t("editor.conflictResolved"))
     } catch (err) {
       toast.error(t("editor.conflictResolveFailed"), {description: String(err)})
+    } finally {
+      savingRef.current = false
+      setResolving(false)
     }
-  }, [conflict, kind, key, mergeContent, t, draft])
+  }, [kind, key, mergeEdit, t, draft])
 
   const handleBeforeMount: BeforeMount = useCallback(
     (monaco) => {
@@ -691,7 +713,7 @@ export function ScriptEditorWindowScreen() {
           <div className="h-56 overflow-hidden rounded-md border border-amber-500/20">
             <DiffEditor
               height="100%"
-              original={conflict.local ?? ""}
+              original={localConflictText(conflict, content, original)}
               modified={conflict.server ?? ""}
               language="graalscript"
               theme={settings.theme === "remoteTheme" && !remoteDef ? "vs-dark" : settings.theme}
@@ -699,15 +721,15 @@ export function ScriptEditorWindowScreen() {
             />
           </div>
           <textarea
-            value={mergeContent}
-            onChange={(event) => setMergeContent(event.target.value)}
+            value={mergeBoxValue(mergeEdit, conflict, content, original)}
+            onChange={(event) => setMergeEdit(event.target.value)}
             aria-label={t("editor.conflictMergeContent")}
             className="mt-2 min-h-24 w-full resize-y rounded-md border bg-background p-2 font-mono text-xs outline-none focus:ring-2 focus:ring-ring"
           />
           <div className="mt-2 flex flex-wrap gap-2">
-            <Button size="sm" variant="outline" onClick={() => void resolveInlineConflict("local")}>{t("editor.conflictKeepLocal")}</Button>
-            <Button size="sm" variant="outline" onClick={() => void resolveInlineConflict("server")}>{t("editor.conflictUseServer")}</Button>
-            <Button size="sm" onClick={() => void resolveInlineConflict("merge")}>{t("editor.conflictApplyMerge")}</Button>
+            <Button size="sm" variant="outline" disabled={resolving || saving} onClick={() => void resolveInlineConflict("local")}>{t("editor.conflictKeepLocal")}</Button>
+            <Button size="sm" variant="outline" disabled={resolving || saving} onClick={() => void resolveInlineConflict("server")}>{t("editor.conflictUseServer")}</Button>
+            <Button size="sm" disabled={resolving || saving} onClick={() => void resolveInlineConflict("merge")}>{t("editor.conflictApplyMerge")}</Button>
           </div>
         </section>
       )}

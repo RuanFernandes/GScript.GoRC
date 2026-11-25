@@ -21,6 +21,8 @@ import (
 )
 
 const (
+	// updateHelperVerb is the shell verb of the Windows updater helper.
+	updateHelperVerb  = "open"
 	releaseAPIBaseURL  = "https://nullborne.com"
 	updateRequestLimit = 512 * 1024
 	maxInstallerBytes  = 512 * 1024 * 1024
@@ -34,7 +36,15 @@ var embeddedRCVersion string
 // RCVersion is a variable so local release builds can override the client
 // version through Go's -ldflags -X option without changing production source
 // metadata. Normal builds use the checked-in VERSION file.
-var RCVersion = strings.TrimSpace(embeddedRCVersion)
+// The linker's -X only works on a variable declared without an initializer, so
+// the VERSION file is applied in init when the build set nothing.
+var RCVersion string
+
+func init() {
+	if RCVersion == "" {
+		RCVersion = strings.TrimSpace(embeddedRCVersion)
+	}
+}
 
 // UpdateInstaller describes the artifact advertised by the release service.
 // The checksum is verified before the executable is handed to the installer
@@ -165,7 +175,11 @@ func (a *App) InstallUpdate() error {
 		}
 		return nil
 	}
-	if err := launchWindowsInstallerAfterExit(installerPath); err != nil {
+	checksum, err := installerChecksum(info.Installer)
+	if err != nil {
+		return err
+	}
+	if err := launchWindowsInstallerAfterExit(installerPath, checksum); err != nil {
 		_ = os.Remove(installerPath)
 		log.Printf("automatic update launch failed: %v", err)
 		return err
@@ -315,16 +329,34 @@ func releaseURL(route string) (*url.URL, error) {
 	return base, nil
 }
 
-func requestJSON(endpoint *url.URL, target any) error {
-	client := &http.Client{
-		Timeout: 20 * time.Second,
-		CheckRedirect: func(request *http.Request, _ []*http.Request) error {
-			if request.URL.Scheme != "https" || strings.ToLower(request.URL.Hostname()) != "nullborne.com" {
-				return errors.New("release service redirect left https://nullborne.com")
-			}
-			return nil
-		},
+func requirePortalRedirect(request *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("release service redirected too many times")
 	}
+	if request.URL.Scheme != "https" || strings.ToLower(request.URL.Hostname()) != "nullborne.com" {
+		return errors.New("release service redirect left https://nullborne.com")
+	}
+	return nil
+}
+
+// installerChecksum returns the published SHA-256, refusing metadata that would
+// leave the download unverified before it runs with elevation.
+func installerChecksum(installer *UpdateInstaller) (string, error) {
+	if installer == nil {
+		return "", errors.New("update metadata does not include an installer")
+	}
+	sum := strings.ToLower(strings.TrimSpace(installer.SHA256))
+	if decoded, err := hex.DecodeString(sum); err != nil || len(decoded) != sha256.Size {
+		return "", errors.New("update metadata has no valid SHA-256 for the installer")
+	}
+	if installer.Size <= 0 {
+		return "", errors.New("update metadata has no installer size")
+	}
+	return sum, nil
+}
+
+func requestJSON(endpoint *url.URL, target any) error {
+	client := &http.Client{Timeout: 20 * time.Second, CheckRedirect: requirePortalRedirect}
 
 	request, err := http.NewRequest(http.MethodGet, endpoint.String(), nil)
 	if err != nil {
@@ -362,7 +394,11 @@ func downloadInstaller(info UpdateInfo) (string, error) {
 		return "", fmt.Errorf("update download URL is not the trusted %s release route", info.Platform)
 	}
 
-	client := &http.Client{Timeout: 20 * time.Minute}
+	expectedHash, err := installerChecksum(info.Installer)
+	if err != nil {
+		return "", err
+	}
+	client := &http.Client{Timeout: 20 * time.Minute, CheckRedirect: requirePortalRedirect}
 	request, err := http.NewRequest(http.MethodGet, endpoint.String(), nil)
 	if err != nil {
 		return "", err
@@ -403,11 +439,11 @@ func downloadInstaller(info UpdateInfo) (string, error) {
 	if written > maxInstallerBytes {
 		return "", fmt.Errorf("installer is larger than the %d MB safety limit", maxInstallerBytes/(1024*1024))
 	}
-	if info.Installer.Size > 0 && written != info.Installer.Size {
+	if written != info.Installer.Size {
 		return "", fmt.Errorf("installer size mismatch: expected %d bytes, received %d", info.Installer.Size, written)
 	}
 	actualHash := hex.EncodeToString(hash.Sum(nil))
-	if expectedHash := strings.ToLower(strings.TrimSpace(info.Installer.SHA256)); expectedHash != "" && actualHash != expectedHash {
+	if actualHash != expectedHash {
 		return "", fmt.Errorf("installer checksum mismatch: expected %s, received %s", expectedHash, actualHash)
 	}
 
@@ -667,14 +703,14 @@ func (a *App) installDebianUpdate(installerPath string) error {
 	return nil
 }
 
-func launchWindowsInstallerAfterExit(installerPath string) error {
+func launchWindowsInstallerAfterExit(installerPath, checksum string) error {
 	parentPID := strconv.Itoa(os.Getpid())
 	applicationPath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("resolve application path for update: %w", err)
 	}
 	logPath := filepath.Join(os.TempDir(), "nullbornes-rc-update.log")
-	script := buildWindowsUpdateScript(parentPID, installerPath, applicationPath, logPath)
+	script := buildWindowsUpdateScript(parentPID, installerPath, applicationPath, logPath, checksum)
 
 	scriptPath := filepath.Join(os.TempDir(), fmt.Sprintf("nullbornes-rc-update-%d.ps1", time.Now().UnixNano()))
 	if err := os.WriteFile(scriptPath, []byte(script), 0600); err != nil {
@@ -688,7 +724,7 @@ func launchWindowsInstallerAfterExit(installerPath string) error {
 	return nil
 }
 
-func buildWindowsUpdateScript(parentPID, installerPath, applicationPath, logPath string) string {
+func buildWindowsUpdateScript(parentPID, installerPath, applicationPath, logPath, checksum string) string {
 	quotePowerShellLiteral := func(value string) string {
 		return "'" + strings.ReplaceAll(value, "'", "''") + "'"
 	}
@@ -699,6 +735,8 @@ func buildWindowsUpdateScript(parentPID, installerPath, applicationPath, logPath
 		fmt.Sprintf("$applicationPath = %s", quotePowerShellLiteral(applicationPath)),
 		fmt.Sprintf("$workingDirectory = %s", quotePowerShellLiteral(filepath.Dir(applicationPath))),
 		fmt.Sprintf("$logPath = %s", quotePowerShellLiteral(logPath)),
+		fmt.Sprintf("$expectedHash = %s", quotePowerShellLiteral(checksum)),
+		"$installerLock = $null",
 		"$parentExited = $false",
 		"$updateSucceeded = $false",
 		"function Write-UpdateLog([string]$message) {",
@@ -718,6 +756,14 @@ func buildWindowsUpdateScript(parentPID, installerPath, applicationPath, logPath
 		"  if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {",
 		"    throw \"The downloaded installer was not found.\"",
 		"  }",
+		// The file sat in %TEMP% while the RC closed. The read lock denies
+		// writing and replacing it from the check until the installer exits.
+		"  $installerLock = [System.IO.File]::Open($installerPath, 'Open', 'Read', 'Read')",
+		"  $hasher = [System.Security.Cryptography.SHA256]::Create()",
+		"  $actualHash = ([System.BitConverter]::ToString($hasher.ComputeHash($installerLock)) -replace '-', '').ToLowerInvariant()",
+		"  if ($actualHash -ne $expectedHash) {",
+		"    throw 'The downloaded installer changed after it was verified.'",
+		"  }",
 		"  Write-UpdateLog ('Starting installer: ' + $installerPath)",
 		// Release installers use the legacy machine-wide Program Files path so
 		// upgrades replace old installations instead of creating a second copy.
@@ -730,6 +776,8 @@ func buildWindowsUpdateScript(parentPID, installerPath, applicationPath, logPath
 		"  $updateSucceeded = $true",
 		"} catch {",
 		"  Write-UpdateLog (\"Update failed: \" + $_.Exception.Message)",
+		"} finally {",
+		"  if ($installerLock) { $installerLock.Dispose() }",
 		"}",
 		"if (-not $parentExited) {",
 		"  Write-UpdateLog 'Updater stopped because the RC process did not exit.'",

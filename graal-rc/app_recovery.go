@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math/rand/v2"
 	"sync"
 	"time"
@@ -26,6 +27,9 @@ type connectionRecovery struct {
 	done    chan struct{}
 	status  ConnectionRecoveryStatus
 	blocked int
+	// dropped is the reason of a disconnect reported since the current attempt
+	// began, or nil. It voids that attempt's success.
+	dropped *string
 }
 
 func (r *connectionRecovery) snapshot() ConnectionRecoveryStatus {
@@ -46,6 +50,22 @@ func (r *connectionRecovery) stop() {
 	}
 }
 
+// noteDisconnect hands a disconnect to the running recovery. It reports false
+// when none is running, so the caller decides whether to start one.
+func (r *connectionRecovery) noteDisconnect(reason string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.noteDisconnectLocked(reason)
+}
+
+func (r *connectionRecovery) noteDisconnectLocked(reason string) bool {
+	if r.cancel == nil {
+		return false
+	}
+	r.dropped = &reason
+	return true
+}
+
 // start coalesces disconnect callbacks from a failing login attempt. The
 // completion channel covers cleanup, so an explicit login/logout cannot race
 // a previous automatic attempt when it reuses the connection service.
@@ -55,13 +75,13 @@ func (r *connectionRecovery) start(reason string, delays []time.Duration, attemp
 		r.mu.Unlock()
 		return false
 	}
-	if r.cancel != nil {
+	if r.noteDisconnectLocked(reason) {
 		r.mu.Unlock()
 		return true
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	r.cancel, r.done = cancel, done
+	r.cancel, r.done, r.dropped = cancel, done, nil
 	r.status = ConnectionRecoveryStatus{Revision: r.status.Revision + 1, Active: true, Phase: "waiting", MaxAttempts: len(delays), Reason: reason}
 	status := r.status
 	r.mu.Unlock()
@@ -69,30 +89,65 @@ func (r *connectionRecovery) start(reason string, delays []time.Duration, attemp
 	go func() {
 		defer close(done)
 		defer cancel()
-		err := runRecoveryAttempts(ctx, delays, attempt, func(n int) {
+		used := 0
+		tracked := func(attemptCtx context.Context) error {
+			// A disconnect from before this attempt belongs to the session it
+			// replaces.
 			r.mu.Lock()
+			r.dropped = nil
+			r.mu.Unlock()
+			return attempt(attemptCtx)
+		}
+		for {
+			first := used
+			err := runRecoveryAttempts(ctx, delays[first:], tracked, func(n int) {
+				used = first + n
+				r.mu.Lock()
+				r.status.Revision++
+				r.status.Phase, r.status.Attempt = "connecting", used
+				status := r.status
+				r.mu.Unlock()
+				publish(status)
+			})
+			fail := func() {
+				if err != nil && ctx.Err() == nil && len(onFailure) > 0 {
+					onFailure[0](ctx)
+				}
+			}
+			fail()
+			r.mu.Lock()
+			// Checked under the same lock that marks the recovery inactive:
+			// after that, a disconnect starts a new recovery.
+			if err == nil && ctx.Err() == nil && r.dropped != nil {
+				reason := *r.dropped
+				r.dropped = nil
+				if connection.IsTransientDisconnect(reason) && used < len(delays) {
+					r.status.Revision++
+					r.status.Phase, r.status.Reason = "waiting", reason
+					status := r.status
+					r.mu.Unlock()
+					publish(status)
+					continue
+				}
+				r.mu.Unlock()
+				err = errors.New(reason)
+				fail()
+				r.mu.Lock()
+			}
 			r.status.Revision++
-			r.status.Phase, r.status.Attempt = "connecting", n
+			r.status.Active = false
+			r.status.Phase = "connected"
+			if ctx.Err() != nil {
+				r.status.Phase = "cancelled"
+			} else if err != nil {
+				r.status.Phase, r.status.Reason = "failed", err.Error()
+			}
 			status := r.status
+			r.cancel, r.dropped = nil, nil
 			r.mu.Unlock()
 			publish(status)
-		})
-		if err != nil && ctx.Err() == nil && len(onFailure) > 0 {
-			onFailure[0](ctx)
+			return
 		}
-		r.mu.Lock()
-		r.status.Revision++
-		r.status.Active = false
-		r.status.Phase = "connected"
-		if ctx.Err() != nil {
-			r.status.Phase = "cancelled"
-		} else if err != nil {
-			r.status.Phase, r.status.Reason = "failed", err.Error()
-		}
-		status := r.status
-		r.cancel = nil
-		r.mu.Unlock()
-		publish(status)
 	}()
 	return true
 }
@@ -122,7 +177,7 @@ func runRecoveryAttempts(ctx context.Context, delays []time.Duration, attempt fu
 }
 
 func (a *App) beginConnectionRecovery(reason string) bool {
-	if a.recovery.snapshot().Active {
+	if a.recovery.noteDisconnect(reason) {
 		return true
 	}
 	if appIsShuttingDown(a) || a.sessions == nil || !a.sessions.CanReconnect() || !connection.IsTransientDisconnect(reason) {

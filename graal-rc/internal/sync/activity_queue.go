@@ -110,6 +110,7 @@ func (e *Engine) activityLoop(ctx context.Context, stop <-chan struct{}, wake <-
 func (e *Engine) failSnapshot(err error) {
 	e.mu.Lock()
 	e.lastError = err.Error()
+	e.lastErrorPath = ""
 	e.progress.Active = false
 	e.mu.Unlock()
 	e.emitStatus()

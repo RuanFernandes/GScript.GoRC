@@ -2,13 +2,13 @@
 // between the account-select, add-account, and server-list screens. Login
 // intents go through useSession; the saved-account list lives in useAccounts.
 // Destructive/login actions are gated by a confirmation dialog.
-import {useCallback, useEffect, useRef, useState} from "react"
+import {type ReactNode, useCallback, useEffect, useRef, useState} from "react"
 import {toast} from "sonner"
 import {Events} from "@wailsio/runtime"
 
 import {ConfirmDialog} from "@/components/ConfirmDialog"
 import {AppWindowFrame} from "@/components/AppWindowFrame"
-import {Button} from "@/components/ui/button"
+import {RecoveryGate} from "@/components/RecoveryGate"
 import {EMPTY_RECOVERY, parseRecoveryStatus} from "@/lib/connectionRecovery"
 import {rcService} from "@/services/rcService"
 import {useAccounts} from "@/hooks/useAccounts"
@@ -303,23 +303,20 @@ function Shell() {
     return <LanguageWelcomeScreen language={language.language} onConfirm={language.setLanguage} />
   }
 
-  if (recovery.active) {
-    return (
-      <div className="flex h-full items-center justify-center p-6">
-        <div className="w-full max-w-md space-y-4 rounded-lg border bg-card p-6">
-          <div role="status" aria-live="polite" className="space-y-2">
-            <h2 className="text-lg font-semibold">{language.t("recovery.title")}</h2>
-            <p className="text-sm text-muted-foreground">{language.t("recovery.progress", {attempt: recovery.attempt, total: recovery.maxAttempts})}</p>
-            <p className="text-sm text-muted-foreground">{language.t("recovery.description")}</p>
-          </div>
-          <Button variant="outline" onClick={() => void returnToLogin().catch((error) => toast.error(String(error)))}>{language.t("common.cancel")}</Button>
-        </div>
-      </div>
-    )
-  }
+  // Every view renders inside the same RecoveryGate: a reconnect must not
+  // unmount it. Chat state is reset only when the view leaves "rc" (logout,
+  // cancel or failed recovery).
+  const gated = (screen: ReactNode) => (
+    <RecoveryGate
+      recovery={recovery}
+      onCancel={() => void returnToLogin().catch((error) => toast.error(String(error)))}
+    >
+      {screen}
+    </RecoveryGate>
+  )
 
   if (view === "add") {
-    return (
+    return gated(
       <AddAccountScreen
         busy={session.busy}
         nickname={sessionNickname}
@@ -330,7 +327,7 @@ function Shell() {
   }
 
   if (view === "serverlist" && session.phase === "ready") {
-    return (
+    return gated(
       <ServerListScreen
         servers={session.servers}
         selectedIndex={session.selectedIndex}
@@ -345,7 +342,7 @@ function Shell() {
   }
 
   if (view === "rc") {
-    return (
+    return gated(
       <RcScreen
         serverName={session.connectedServer}
         accountName={session.activeAccount}
@@ -354,7 +351,7 @@ function Shell() {
     )
   }
 
-  return (
+  return gated(
     <>
       <AccountSelectScreen
         accounts={accounts.accounts}

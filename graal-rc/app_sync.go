@@ -342,6 +342,11 @@ func (a *App) syncEmitter() func(string, ...any) {
 		if appIsShuttingDown(a) {
 			return
 		}
+		if name == "rc:syncLocalUploaded" && len(data) > 0 {
+			if uploaded, ok := data[0].(sync.LocalScriptUploaded); ok {
+				a.adoptLocalUpload(uploaded.Kind, uploaded.Key, uploaded.Content)
+			}
+		}
 		if name == "rc:syncStatus" && len(data) > 0 {
 			if status, ok := data[0].(sync.SyncStatus); ok {
 				status = a.decorateSyncStatus(status)

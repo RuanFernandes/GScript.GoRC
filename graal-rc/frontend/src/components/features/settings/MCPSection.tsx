@@ -21,11 +21,18 @@ MCP endpoint: http://127.0.0.1:8765/mcp
 Transport: HTTP JSON-RPC
 
 This MCP is specifically for Graal development, including GraalScript and GS2.
-When helping with GraalScript or GS2 code, use it to inspect RC Chat runtime
-errors and read relevant remote scripts through the Graal File Browser when
-the user asks for that context.
+Use it to read and change the server's weapons, classes and NPCs, to read
+remote files through the Graal File Browser, and to read the RC Chat for the
+server's confirmations and script errors.
 
 Register this server as "graal-rc" in your MCP configuration. Then remember these instructions for future Graal RC tasks:
+- There is no upload, deploy or "apply on the server" step, so never ask the user to update a script on the server. Graal RC keeps a local folder synchronized with the server (sync_status returns it: weapons/<name>.gs2, classes/<name>.gs2, npcs/<name>.gs2). Saving one of those files with at least one character changed uploads it within about a second and the server applies it immediately.
+- After every script change, call get_rc_chat: the server prints a line such as "Weapon/GUI-script <name> added/updated by <account>", followed by any script error. That line is the proof the change is live; if it is missing, call sync_status.
+- Use script_list and script_read to find and read weapons, classes and NPCs (type is "weapon", "class" or "npc"; an NPC is addressed by id).
+- Use script_write to replace an existing script. It takes effect at once and the local file is refreshed from the server.
+- Use weapon_add, class_add and npc_add to create scripts. They refuse a name that already exists. A new .gs2 file in weapons/ or classes/ also creates that weapon or class; NPCs can only be created with npc_add.
+- Use npc_reset, npc_warp, npc_flags_read, npc_flags_write and npc_attributes_read to operate NPCs, and script_refresh to reload the weapon list.
+- There is no delete tool, and removing a local file does not remove the script from the server.
 - Use get_rc_chat to inspect the latest 50 RC Chat messages with timestamps when debugging.
 - Ask before using send_rc_chat for any consequential or public message.
 - Use filebrowser_list, filebrowser_cd, filebrowser_search, and filebrowser_read to inspect remote UTF-8 text files through the RC File Browser.

@@ -48,7 +48,8 @@ operations a staff member needs:
 - **Player list** — a dedicated window showing who is online, with live updates.
 - **Script management** — browse and edit **weapons**, **classes**, and **NPCs**;
   add, update, delete, warp, and open per-script editors.
-- **File browser** — walk the remote file tree, download, upload (drag-in or picker),
+- **File browser** — walk the remote file tree, download, upload (drop files from
+  Explorer or use the picker), drag a file out to Explorer to download it there,
   rename, move, and delete files. Open files by type: media in the OS handler,
   text in a built-in editor, SQLite databases in a full explorer.
 - **SQLite explorer** — inspect tables, edit cells inline, run SQL with autocomplete,

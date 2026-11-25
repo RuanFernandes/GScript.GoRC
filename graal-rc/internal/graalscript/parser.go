@@ -419,7 +419,8 @@ func parseJSDoc(value string) parsedJSDoc {
 			default:
 				tag.Description = strings.TrimSpace(rest)
 			}
-			if tag.Name != "param" && tag.Name != "arg" && tag.Name != "argument" && tag.Name != "return" && tag.Name != "returns" && tag.Name != "description" && tag.Name != "desc" {
+			// A lone "@" is not a tag.
+			if tag.Name != "" && tag.Name != "param" && tag.Name != "arg" && tag.Name != "argument" && tag.Name != "return" && tag.Name != "returns" && tag.Name != "description" && tag.Name != "desc" {
 				doc.Tags = append(doc.Tags, tag)
 				current = &doc.Tags[len(doc.Tags)-1]
 			}

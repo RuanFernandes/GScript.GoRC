@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -11,10 +12,55 @@ import (
 )
 
 type fakeBackend struct {
-	chat  []ChatLine
-	files []File
-	sent  string
+	chat []ChatLine
+	sent string
+
+	folders  []Folder
+	listings map[string][]File
+	current  *string
+
+	// Script surface. calls counts every script method the server invoked.
+	scripts     []ScriptEntry
+	scriptErr   error
+	calls       int
+	listedKind  string
+	wroteRef    ScriptRef
+	wroteScript string
+	added       NewScript
 }
+
+func (f *fakeBackend) ListScripts(kind string) ([]ScriptEntry, error) {
+	f.calls++
+	f.listedKind = kind
+	return f.scripts, f.scriptErr
+}
+func (f *fakeBackend) ReadScript(ref ScriptRef) (Script, error) {
+	f.calls++
+	return Script{Type: ref.Type, Name: ref.Name}, f.scriptErr
+}
+func (f *fakeBackend) WriteScript(ref ScriptRef, script string) (Script, error) {
+	f.calls++
+	f.wroteRef, f.wroteScript = ref, script
+	return Script{Type: ref.Type, Name: ref.Name, Script: script}, f.scriptErr
+}
+func (f *fakeBackend) AddScript(spec NewScript) (Script, error) {
+	f.calls++
+	f.added = spec
+	return Script{Type: spec.Type, Name: spec.Name, Script: spec.Script}, f.scriptErr
+}
+func (f *fakeBackend) RefreshScripts() error    { f.calls++; return f.scriptErr }
+func (f *fakeBackend) ResetNPC(ScriptRef) error { f.calls++; return f.scriptErr }
+func (f *fakeBackend) WarpNPC(ScriptRef, string, float64, float64) error {
+	f.calls++
+	return f.scriptErr
+}
+func (f *fakeBackend) ReadNPCFlags(ScriptRef) (string, error) { f.calls++; return "", f.scriptErr }
+func (f *fakeBackend) WriteNPCFlags(ScriptRef, string) error  { f.calls++; return f.scriptErr }
+func (f *fakeBackend) ReadNPCAttributes(ScriptRef) (string, error) {
+	f.calls++
+	return "", f.scriptErr
+}
+func (f *fakeBackend) SyncStatus() SyncInfo { f.calls++; return SyncInfo{Layout: SyncLayout} }
 
 func (f *fakeBackend) GetRCChat(limit int) []ChatLine {
 	if limit > len(f.chat) {
@@ -22,10 +68,25 @@ func (f *fakeBackend) GetRCChat(limit int) []ChatLine {
 	}
 	return f.chat[len(f.chat)-limit:]
 }
-func (f *fakeBackend) SendRCChat(message string) error   { f.sent = message; return nil }
-func (f *fakeBackend) FileBrowserStart() error           { return nil }
-func (f *fakeBackend) FileBrowserCd(string) error        { return nil }
-func (f *fakeBackend) FileBrowserFiles() ([]File, error) { return f.files, nil }
+func (f *fakeBackend) SendRCChat(message string) error { f.sent = message; return nil }
+func (f *fakeBackend) FileBrowserFolders(context.Context) ([]Folder, error) {
+	return f.folders, nil
+}
+func (f *fakeBackend) FileBrowserCurrentFolder() (string, bool) {
+	if f.current == nil {
+		return "", false
+	}
+	return *f.current, true
+}
+func (f *fakeBackend) FileBrowserList(_ context.Context, folder string) (Listing, error) {
+	folder = strings.Trim(folder, "/")
+	files, ok := f.listings[folder]
+	if !ok {
+		return Listing{}, errors.New("file-browser folder listing timed out")
+	}
+	f.current = &folder
+	return Listing{Folder: folder, Files: files}, nil
+}
 func (f *fakeBackend) ReadFile(path string) ([]byte, error) {
 	if path != "scripts/main.txt" {
 		return nil, errors.New("not found")
@@ -37,6 +98,8 @@ func callTool(t *testing.T, backend *fakeBackend, name string, args map[string]a
 	t.Helper()
 	body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": name, "arguments": args}})
 	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))
+	req.Host = "127.0.0.1:8765"
+	req.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 	NewServer(backend).ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusOK {

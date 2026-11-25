@@ -12,18 +12,18 @@ import (
 )
 
 // launchDetachedUpdateHelper starts the updater through the Windows shell
-// broker. Elevating the helper before the RC exits prevents a child process
-// inherited from the GUI process from being terminated with it, while the
-// helper itself still waits before replacing the installed executable.
+// broker, so it is not tied to the GUI process and survives its exit. It runs
+// unelevated: only the installer asks for elevation, and the RC it relaunches
+// stays a normal user process.
 func launchDetachedUpdateHelper(scriptPath string) error {
 	powershellPath, err := exec.LookPath("powershell.exe")
 	if err != nil {
 		return fmt.Errorf("resolve Windows PowerShell for updater: %w", err)
 	}
 
-	verb, err := windows.UTF16PtrFromString("runas")
+	verb, err := windows.UTF16PtrFromString(updateHelperVerb)
 	if err != nil {
-		return fmt.Errorf("prepare updater elevation verb: %w", err)
+		return fmt.Errorf("prepare updater verb: %w", err)
 	}
 	file, err := windows.UTF16PtrFromString(powershellPath)
 	if err != nil {
@@ -45,7 +45,7 @@ func launchDetachedUpdateHelper(scriptPath string) error {
 	}
 
 	if err := windows.ShellExecute(0, verb, file, parameters, nil, windows.SW_HIDE); err != nil {
-		return fmt.Errorf("start elevated updater helper: %w", err)
+		return fmt.Errorf("start updater helper: %w", err)
 	}
 	return nil
 }

@@ -82,6 +82,7 @@ func (a *App) saveDeploymentBackup(resource, target string, content []byte, hasP
 		Account:  status.Account,
 		Resource: resource,
 		Target:   target,
+		FullPath: isFileBackupResource(resource),
 	}
 	backupLimit := defaultBackupCount
 	if a.retention != nil {
@@ -168,19 +169,11 @@ func (a *App) backupRemoteContent(resource, target string) (DeploymentBackup, bo
 func (a *App) backupRemoteContentFrom(resource, target, downloadPath string) (DeploymentBackup, bool, error) {
 	content, err := a.sessions.DownloadFile(downloadPath)
 	if err != nil {
-		// A missing remote file is a valid first upload/delete case. The remote
-		// mutation still gets audited with a missing-backup detail.
-		return DeploymentBackup{}, false, nil
+		// Callers only ask for files that exist, so going on would destroy the
+		// only copy.
+		return DeploymentBackup{}, false, fmt.Errorf("download the current version of %q: %w", downloadPath, err)
 	}
 	return a.saveDeploymentBackup(resource, target, content, true)
-}
-
-func (a *App) loadRemoteTextForBackup(target string) ([]byte, bool, error) {
-	content, err := a.sessions.DownloadFile(target)
-	if err != nil {
-		return nil, false, err
-	}
-	return content, true, nil
 }
 
 func (a *App) GetAuditEntries(limit int) ([]AuditEntry, error) {
@@ -270,7 +263,10 @@ func (a *App) readCurrentDeploymentContent(meta deploylib.Backup) ([]byte, error
 		}
 		return []byte(reply.Script), nil
 	case "textfile", "file", "sqlite":
-		return a.sessions.DownloadFile(meta.Target)
+		if err := requireBackupFolder(meta); err != nil {
+			return nil, err
+		}
+		return a.readRemoteFile(meta.Target)
 	default:
 		return nil, fmt.Errorf("unsupported backup resource %q", meta.Resource)
 	}
@@ -420,7 +416,7 @@ func (a *App) RollbackDeployment(backupID string) error {
 			rollbackErr = errors.New("invalid script backup target")
 			break
 		}
-		rollbackErr = a.saveScriptWithSyncExpectation(kind, key, string(content), func() error {
+		rollbackErr = a.saveScriptWithSyncExpectation(kind, key, string(content), false, func() error {
 			switch kind {
 			case "weapon":
 				return a.sessions.SaveWeapon(key, string(content))
@@ -446,7 +442,21 @@ func (a *App) RollbackDeployment(backupID string) error {
 	case "servertext":
 		rollbackErr = a.sessions.UploadServerText(meta.Target, string(content))
 	case "textfile", "file", "sqlite":
-		rollbackErr = a.sessions.UploadFile(meta.Target, content)
+		if rollbackErr = requireBackupFolder(meta); rollbackErr != nil {
+			break
+		}
+		rollbackErr = a.withRemoteFile(meta.Target, func(file remoteFile) error {
+			if file.Exists {
+				previous, err := file.Read()
+				if err != nil {
+					return err
+				}
+				if _, err := a.backupBeforeWrite(meta.Resource, file, previous); err != nil {
+					return err
+				}
+			}
+			return file.Write(content)
+		})
 	default:
 		rollbackErr = fmt.Errorf("unsupported backup resource %q", meta.Resource)
 	}

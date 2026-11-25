@@ -21,6 +21,7 @@ import {NotificationCenterPopover} from "@/components/features/rc/NotificationCe
 import {SyncProgressToast} from "@/components/SyncProgressToast"
 import {useChat} from "@/hooks/useChat"
 import {useChatAutocomplete} from "@/hooks/useChatAutocomplete"
+import {useChatComposers, type ChatComposers} from "@/hooks/useChatComposers"
 import {useChatInputHistory} from "@/hooks/useChatInputHistory"
 import {useChatSettings} from "@/hooks/useChatSettings"
 import {usePlayers} from "@/hooks/usePlayers"
@@ -28,7 +29,7 @@ import {usePlayerActions} from "@/hooks/usePlayerActions"
 import {useScriptLists} from "@/hooks/useScriptLists"
 import {useSync} from "@/hooks/useSync"
 import {serverDisplay} from "@/lib/server"
-import {formatLogLine} from "@/lib/chatLine"
+import {createChatLineLogger} from "@/lib/chatSession"
 import {mergeRepeatedMessages} from "@/lib/chatMessages"
 import {buildPlayerMentionMatcher} from "@/lib/playerMentions"
 import {rcService} from "@/services/rcService"
@@ -114,9 +115,11 @@ function macroSignature(macro: CommandMacro): string {
 // (not the radix ScrollArea) so scrolling stays internal to the chat and we can
 // drive stick-to-bottom ourselves: it only follows new messages while the user
 // is already at the bottom; scrolling up even 1px pins the view so history can
-// be read without being yanked back down. New messages are also appended to the
-// .txt log when logging is enabled.
+// be read without being yanked back down. Inactive panes are unmounted, so the
+// typed input lives in composers.
 function ChatPane({
+  channel,
+  composers,
   messages,
   settings,
   onSend,
@@ -128,6 +131,8 @@ function ChatPane({
   serverName,
   commandMacros,
 }: {
+  channel: string
+  composers: ChatComposers
   messages: ChatMessage[]
   settings: ChatSettings
   onSend: (text: string) => Promise<boolean>
@@ -140,19 +145,23 @@ function ChatPane({
   commandMacros: ReturnType<typeof useCommandMacros>
 }) {
   const {t} = useLanguage()
-  const [text, setText] = useState("")
+  const {text, selectedMacro, macroValues} = composers.composer(channel)
+  const sending = composers.isSending(channel)
+  const updateComposer = composers.update
+  const setText = useCallback((value: string) => updateComposer(channel, () => ({text: value})), [channel, updateComposer])
+  const setSelectedMacro = (macro: CommandMacro | null) => updateComposer(channel, () => ({selectedMacro: macro}))
+  const setMacroValues = (change: (current: Record<string, string>) => Record<string, string>) =>
+    updateComposer(channel, (current) => ({macroValues: change(current.macroValues)}))
+  const clearMacroValues = () => updateComposer(channel, () => ({macroValues: {}}))
   const [ghostOff, setGhostOff] = useState(false)
   const autocomplete = useChatAutocomplete(players)
   const [macrosOpen, setMacrosOpen] = useState(false)
   const [macroName, setMacroName] = useState("")
   const [macroCommand, setMacroCommand] = useState("")
   const [macroParameters, setMacroParameters] = useState<MacroParameterDraft[]>([])
-  const [selectedMacro, setSelectedMacro] = useState<CommandMacro | null>(null)
-  const [macroValues, setMacroValues] = useState<Record<string, string>>({})
   const firstMacroParameterRef = useRef<HTMLElement | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
-  const lastLogged = useRef(0)
   const displayMessages = useMemo(() => mergeRepeatedMessages(messages), [messages])
   const playerMatcher = useMemo(() => buildPlayerMentionMatcher(players), [players])
   const [playerMenu, setPlayerMenu] = useState<{player: Player; anchor: {x: number; y: number}} | null>(null)
@@ -168,19 +177,6 @@ function ChatPane({
     const el = scrollRef.current
     if (el && stick.current) el.scrollTop = el.scrollHeight
   }, [messages])
-
-  useEffect(() => {
-    const latest = messages.length ? messages[messages.length - 1].id : 0
-    if (!settings.logChat || !settings.logDir) {
-      lastLogged.current = latest
-      return
-    }
-    for (const m of messages) {
-      if (m.id <= lastLogged.current) continue
-      rcService.appendChatLog(formatLogLine(m)).catch(() => {})
-    }
-    lastLogged.current = latest
-  }, [messages, settings.logChat, settings.logDir])
 
   const onScroll = () => {
     const el = scrollRef.current
@@ -205,12 +201,7 @@ function ChatPane({
     e.preventDefault()
     if (selectedMacro && missingMacroParameters.length > 0) return
     const command = selectedMacro ? renderMacroCommand(selectedMacro, macroValues, false) : text.trim()
-    if (await onSend(command)) {
-      history.record(command)
-      setText("")
-      setSelectedMacro(null)
-      setMacroValues({})
-    }
+    await composers.submit(channel, () => onSend(command), () => history.record(command))
   }
 
   return (
@@ -364,7 +355,7 @@ function ChatPane({
                         setGhostOff(false)
                         setText(macro.command)
                         setMacroCommand(macro.command)
-                        setMacroValues({})
+                        clearMacroValues()
                         setSelectedMacro(macro.parameters?.length ? macro : null)
                         setMacrosOpen(false)
                       }}
@@ -378,10 +369,7 @@ function ChatPane({
                       className="text-muted-foreground hover:text-destructive shrink-0 rounded p-1 opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100"
                       onClick={async () => {
                         if (!await commandMacros.remove(macro.id)) return
-                        if (selectedMacro?.id === macro.id) {
-                          setSelectedMacro(null)
-                          setMacroValues({})
-                        }
+                        updateComposer(channel, (current) => current.selectedMacro?.id === macro.id ? {selectedMacro: null, macroValues: {}} : {})
                       }}
                       title={t("macros.delete")}
                       aria-label={t("macros.delete")}
@@ -412,7 +400,7 @@ function ChatPane({
                 setText(selectedMacro.command)
                 setMacroCommand(selectedMacro.command)
                 setSelectedMacro(null)
-                setMacroValues({})
+                clearMacroValues()
               }}
               title={t("macros.cancel")}
               aria-label={t("macros.cancel")}
@@ -574,7 +562,7 @@ function ChatPane({
         <Button
           type="submit"
           size="icon"
-          disabled={Boolean(selectedMacro && missingMacroParameters.length > 0)}
+          disabled={sending || Boolean(selectedMacro && missingMacroParameters.length > 0)}
           aria-label={t("common.send")}
           title={t("common.send")}
         >
@@ -597,9 +585,16 @@ function ChatPane({
 
 export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps) {
   const {t} = useLanguage()
-  const {tabs, activeChannel, setActiveChannel, send, reorderTabs} = useChat(rcService)
-  const inputHistory = useChatInputHistory()
   const {settings} = useChatSettings()
+  const logSettings = useRef(settings)
+  logSettings.current = settings
+  const [logChatLine] = useState(() => createChatLineLogger(
+    () => Boolean(logSettings.current.logChat && logSettings.current.logDir),
+    (line) => rcService.appendChatLog(line),
+  ))
+  const {tabs, activeChannel, setActiveChannel, send, reorderTabs} = useChat(rcService, logChatLine)
+  const composers = useChatComposers()
+  const inputHistory = useChatInputHistory()
   const [nc, setNc] = useState<NCStatus>({hasNc: false, connected: false, authenticated: false})
   const [profile, setProfile] = useState<AccountSummary | null>(null)
   const [rightsIdentity, setRightsIdentity] = useState<RightsIdentityStatus>({})
@@ -947,6 +942,8 @@ export function RcScreen({serverName, accountName, onDisconnect}: RcScreenProps)
             {tabs.map((t) => (
               <TabsContent key={t.channel || "server"} value={t.channel} className="mt-2 min-h-0 flex-1">
                 <ChatPane
+                  channel={t.channel}
+                  composers={composers}
                   messages={t.messages}
                   settings={settings}
                   onSend={(text) => send(t.channel, text)}

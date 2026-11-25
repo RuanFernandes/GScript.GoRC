@@ -60,6 +60,7 @@ export function SyncSection() {
   const total = progress.total
   const completed = Math.min(progress.completed, total || progress.completed)
   const percentage = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : progress.active ? 8 : 0
+  const unreadable = status.unreadable ?? []
   const state = status.panicMode ? t("sync.panic") : status.permissionsError ? t("sync.permissionsUnavailable") : status.ncDown ? t("sync.offline") : status.paused ? t("sync.paused") : !status.enabled ? t("sync.disabled") : !status.outputDir ? t("sync.chooseFolder") : progress.active ? translateProgressPhase(progress.phase, t) : t("sync.watching")
   const tone = status.panicMode ? "bg-red-500" : status.permissionsError || status.ncDown || status.paused ? "bg-amber-500" : enabled ? "bg-emerald-500" : "bg-muted-foreground/50"
   const lastSync = status.lastSyncAt ? new Date(status.lastSyncAt * 1000).toLocaleTimeString() : t("common.never")
@@ -104,6 +105,10 @@ export function SyncSection() {
       </div>
 
       {status.reviewCount > 0 && <div className="border-amber-500/30 bg-amber-500/10 text-amber-200 flex items-start gap-2 rounded-md border px-3 py-2 text-xs"><AlertTriangle className="mt-0.5 size-3.5 shrink-0" /><span>{t(status.reviewCount === 1 ? "sync.reviewRequiredOne" : "sync.reviewRequiredMany", {count: status.reviewCount})}</span></div>}
+      {unreadable.length > 0 && <div role="status" className="border-amber-500/30 bg-amber-500/10 text-amber-200 grid gap-1 rounded-md border px-3 py-2 text-xs">
+        <div className="flex items-start gap-2"><AlertTriangle className="mt-0.5 size-3.5 shrink-0" /><span>{t(unreadable.length === 1 ? "sync.unreadableOne" : "sync.unreadableMany", {count: unreadable.length})}</span></div>
+        <ul className="ml-5 list-disc font-mono text-[11px]">{unreadable.slice(0, 8).map((script) => <li key={`${script.kind}:${script.key}`} className="break-all">{script.kind}: {script.name}</li>)}{unreadable.length > 8 && <li>{t("sync.unreadableMore", {count: unreadable.length - 8})}</li>}</ul>
+      </div>}
 
       {status.permissionsError && <div className="border-amber-500/30 bg-amber-500/10 text-amber-200 flex items-start gap-2 rounded-md border px-3 py-2 text-xs"><AlertTriangle className="mt-0.5 size-3.5 shrink-0" /><span>{t("sync.permissionsUnavailable")}</span></div>}
 

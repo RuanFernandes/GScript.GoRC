@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"net/http"
 	"net/url"
 	"strings"
 	"sync"
@@ -96,7 +97,14 @@ func (m *Manager) OpenSocket(id string, request SocketRequest) (SocketInfo, erro
 	m.socketsMu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), socketDialTimeout)
-	conn, _, err := websocket.Dial(ctx, u.String(), &websocket.DialOptions{Subprotocols: request.Protocols})
+	conn, _, err := websocket.Dial(ctx, u.String(), &websocket.DialOptions{
+		Subprotocols: request.Protocols,
+		// Only the requested host was checked against the approval.
+		HTTPClient: &http.Client{
+			Transport:     m.httpTransport,
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
+	})
 	cancel()
 	m.socketsMu.Lock()
 	m.socketOpening[id]--

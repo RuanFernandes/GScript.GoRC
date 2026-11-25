@@ -29,6 +29,7 @@ import (
 	"graal-rc/internal/credentials"
 	deploylib "graal-rc/internal/deploy"
 	"graal-rc/internal/drafts"
+	filedraglib "graal-rc/internal/filedrag"
 	gallerylib "graal-rc/internal/gallery"
 	"graal-rc/internal/graalscript"
 	pluginlib "graal-rc/internal/plugins"
@@ -48,10 +49,16 @@ var (
 // frontend. It delegates session logic to the connection Service and account
 // storage to the credentials Vault (Single Responsibility).
 type App struct {
-	app               *application.App
-	sessions          *connection.Service
-	vault             *credentials.Vault
-	mcpServer         *http.Server
+	app       *application.App
+	sessions  *connection.Service
+	vault     *credentials.Vault
+	mcpServer *http.Server
+
+	// mcpFileBrowserFolder is the MCP tools' current remote folder.
+	mcpFileBrowserFolder atomic.Pointer[string]
+
+	fileDrag          *filedraglib.Server
+	fileDragOnce      sync.Once
 	draftsMu          sync.Mutex
 	draftStore        *drafts.Store
 	recovery          connectionRecovery
@@ -212,6 +219,8 @@ type App struct {
 	openMu            sync.Mutex
 	textCache         map[string][]byte
 	textOriginalCache map[string][]byte
+	// openRemoteFolder replaces the server's folders in tests; nil in the app.
+	openRemoteFolder remoteFolderOpener
 	dbFiles           map[string]string
 	dbHeaders         map[string][]byte
 	textWindows       map[string]*application.WebviewWindow
@@ -1664,7 +1673,12 @@ func (a *App) GetScriptLists(onlyReadable bool) (connection.ScriptLists, error) 
 }
 
 // AddWeapon creates a weapon by name.
-func (a *App) AddWeapon(name string) error { return a.sessions.AddWeapon(name) }
+func (a *App) AddWeapon(name string) error {
+	if err := a.ensureNewScriptName("weapon", name); err != nil {
+		return err
+	}
+	return a.sessions.AddWeapon(name)
+}
 
 // DeleteWeapon deletes a weapon by name.
 func (a *App) DeleteWeapon(name string) error { return a.sessions.DeleteWeapon(name) }
@@ -1672,6 +1686,9 @@ func (a *App) DeleteWeapon(name string) error { return a.sessions.DeleteWeapon(n
 // AddClass creates a class by name and immediately gives it a valid first line.
 // Some servers reject a newly-created class whose script body is empty.
 func (a *App) AddClass(name string) error {
+	if err := a.ensureNewScriptName("class", name); err != nil {
+		return err
+	}
 	if err := a.sessions.AddClass(name); err != nil {
 		return err
 	}
@@ -1720,37 +1737,42 @@ func (a *App) OpenScript(scriptType, key string) (rclib.ScriptReply, error) {
 
 // SaveWeapon writes a weapon's script back.
 func (a *App) SaveWeapon(name, script string) error {
-	return a.saveScriptWithSyncExpectation("weapon", name, script, func() error { return a.sessions.SaveWeapon(name, script) })
+	return a.saveScriptWithSyncExpectation("weapon", name, script, true, func() error { return a.sessions.SaveWeapon(name, script) })
 }
 
 // SaveClass writes a class's script back.
 func (a *App) SaveClass(name, script string) error {
-	return a.saveScriptWithSyncExpectation("class", name, script, func() error { return a.sessions.SaveClass(name, script) })
+	return a.saveScriptWithSyncExpectation("class", name, script, true, func() error { return a.sessions.SaveClass(name, script) })
 }
 
 // SaveNPC writes an NPC's script back.
 func (a *App) SaveNPC(id int, script string) error {
-	return a.saveScriptWithSyncExpectation("npc", strconv.Itoa(id), script, func() error { return a.sessions.SaveNPC(id, script) })
+	return a.saveScriptWithSyncExpectation("npc", strconv.Itoa(id), script, true, func() error { return a.sessions.SaveNPC(id, script) })
 }
 
-func (a *App) saveScriptWithSyncExpectation(kind, key, script string, save func() error) error {
+// saveScriptWithSyncExpectation backs up the server version and saves. With
+// fromEditor it first refuses to replace a version the open editor never showed.
+func (a *App) saveScriptWithSyncExpectation(kind, key, script string, fromEditor bool, save func() error) error {
 	if err := a.requireScriptSyncForEditor(kind); err != nil {
 		return err
 	}
-	previous, hasPrevious := a.editorOriginal(kind, key)
-	if !hasPrevious {
-		reply, err := a.fetchScript(kind, key)
-		if err != nil {
-			a.recordAudit("save", "script", kind+":"+key, "failed", "could not read the current version for a safety backup: "+err.Error())
-			return fmt.Errorf("read current %s before saving: %w", kind, err)
-		}
-		previous = []byte(reply.Script)
-		hasPrevious = true
+	// Always the server's version: the editor's copy may be stale.
+	reply, err := a.fetchScript(kind, key)
+	if err != nil {
+		a.recordAudit("save", "script", kind+":"+key, "failed", "could not read the current version for a safety backup: "+err.Error())
+		return fmt.Errorf("read current %s before saving: %w", kind, err)
 	}
-	backup, hasBackup, err := a.saveDeploymentBackup("script", kind+":"+key, previous, hasPrevious)
+	baseline, hasBaseline := a.editorOriginal(kind, key)
+	backup, hasBackup, err := a.saveDeploymentBackup("script", kind+":"+key, []byte(reply.Script), true)
 	if err != nil {
 		a.recordAudit("save", "script", kind+":"+key, "failed", "safety backup failed: "+err.Error())
 		return fmt.Errorf("create safety backup before saving: %w", err)
+	}
+	if fromEditor && serverChangedSinceOpen(string(baseline), hasBaseline, reply.Script, script) {
+		// The rejected version is the new baseline, so saving again confirms.
+		a.updateEditorContent(kind, key, reply.Script)
+		a.recordAudit("save", "script", kind+":"+key, "failed", errServerChanged.Error())
+		return errServerChanged
 	}
 	eng := a.currentSyncEngine()
 	if eng != nil {
@@ -1763,7 +1785,9 @@ func (a *App) saveScriptWithSyncExpectation(kind, key, script string, save func(
 		a.recordAudit("save", "script", kind+":"+key, "failed", err.Error())
 		return err
 	}
-	a.updateEditorContent(kind, key, script)
+	if fromEditor {
+		a.updateEditorContent(kind, key, script)
+	}
 	detail := "no previous remote content was available"
 	if hasBackup {
 		detail = "backup " + backup.ID
@@ -1787,20 +1811,21 @@ func (a *App) OpenNPCAttributes(id int) (rclib.ScriptReply, error) {
 // SaveNPCFlags writes an NPC's flags back.
 func (a *App) SaveNPCFlags(id int, flags string) error {
 	key := strconv.Itoa(id)
-	previous, hasPrevious := a.editorOriginal("npcflags", key)
-	if !hasPrevious {
-		reply, err := a.sessions.OpenNPCFlags(id)
-		if err != nil {
-			a.recordAudit("save", "npcflags", key, "failed", "could not read the current version for a safety backup: "+err.Error())
-			return fmt.Errorf("read NPC flags before saving: %w", err)
-		}
-		previous = []byte(reply.Script)
-		hasPrevious = true
+	reply, err := a.sessions.OpenNPCFlags(id)
+	if err != nil {
+		a.recordAudit("save", "npcflags", key, "failed", "could not read the current version for a safety backup: "+err.Error())
+		return fmt.Errorf("read NPC flags before saving: %w", err)
 	}
-	backup, hasBackup, err := a.saveDeploymentBackup("npcflags", key, previous, hasPrevious)
+	baseline, hasBaseline := a.editorOriginal("npcflags", key)
+	backup, hasBackup, err := a.saveDeploymentBackup("npcflags", key, []byte(reply.Script), true)
 	if err != nil {
 		a.recordAudit("save", "npcflags", key, "failed", "safety backup failed: "+err.Error())
 		return fmt.Errorf("create safety backup before saving: %w", err)
+	}
+	if serverChangedSinceOpen(string(baseline), hasBaseline, reply.Script, flags) {
+		a.updateEditorContent("npcflags", key, reply.Script)
+		a.recordAudit("save", "npcflags", key, "failed", errServerChanged.Error())
+		return errServerChanged
 	}
 	if err := a.sessions.SaveNPCFlags(id, flags); err != nil {
 		a.recordAudit("save", "npcflags", key, "failed", err.Error())
@@ -1819,20 +1844,21 @@ func (a *App) SaveNPCFlags(id int, flags string) error {
 // SaveServerText uploads a server-side text config (options/folder_config/
 // flags) edited in a ScriptEditor window back to the server.
 func (a *App) SaveServerText(kind, content string) error {
-	previous, cacheKey, hasPrevious := a.editorOriginalForKind(kind)
-	if !hasPrevious {
-		reply, err := a.sessions.OpenServerText(kind)
-		if err != nil {
-			a.recordAudit("save", "servertext", kind, "failed", "could not read the current version for a safety backup: "+err.Error())
-			return fmt.Errorf("read server text before saving: %w", err)
-		}
-		previous = []byte(reply.Script)
-		hasPrevious = true
+	baseline, cacheKey, hasBaseline := a.editorOriginalForKind(kind)
+	reply, err := a.sessions.OpenServerText(kind)
+	if err != nil {
+		a.recordAudit("save", "servertext", kind, "failed", "could not read the current version for a safety backup: "+err.Error())
+		return fmt.Errorf("read server text before saving: %w", err)
 	}
-	backup, hasBackup, err := a.saveDeploymentBackup("servertext", kind, previous, hasPrevious)
+	backup, hasBackup, err := a.saveDeploymentBackup("servertext", kind, []byte(reply.Script), true)
 	if err != nil {
 		a.recordAudit("save", "servertext", kind, "failed", "safety backup failed: "+err.Error())
 		return fmt.Errorf("create safety backup before saving: %w", err)
+	}
+	if serverChangedSinceOpen(string(baseline), hasBaseline, reply.Script, content) {
+		a.updateEditorContent(kind, cacheKey, reply.Script)
+		a.recordAudit("save", "servertext", kind, "failed", errServerChanged.Error())
+		return errServerChanged
 	}
 	if err := a.sessions.UploadServerText(kind, content); err != nil {
 		a.recordAudit("save", "servertext", kind, "failed", err.Error())
@@ -1880,7 +1906,8 @@ func (a *App) FileBrowserCd(folder string) error {
 // FileBrowserDelete deletes a remote file. A best-effort snapshot is kept when
 // the current entry can be downloaded before the destructive operation.
 func (a *App) FileBrowserDelete(path string) error {
-	backup, hasBackup, backupErr := a.backupRemoteContent("file", path)
+	target := qualifyRemotePath(a.sessions.ShownFileBrowserFolder(), path)
+	backup, hasBackup, backupErr := a.backupRemoteContentFrom("file", target, path)
 	if backupErr != nil {
 		a.recordAudit("delete", "file", path, "failed", "safety backup failed: "+backupErr.Error())
 		return fmt.Errorf("create safety backup before deleting: %w", backupErr)
@@ -2069,32 +2096,61 @@ func (a *App) saveDownloadedContent(remotePath string, content []byte, saveAs bo
 }
 
 // UploadFileBytes uploads base64-encoded content from the browser file picker.
-// remoteFileExists comes from the current File Browser listing. New files skip
-// the pre-upload download used to preserve overwritten content.
-func (a *App) UploadFileBytes(remotePath, b64 string, remoteFileExists bool) error {
+// The last argument is the window's guess about whether the file exists. It is
+// ignored: uploadFileContent checks the target folder itself.
+func (a *App) UploadFileBytes(remotePath, b64 string, _ bool) error {
 	content, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil {
 		return fmt.Errorf("invalid file data: %w", err)
 	}
-	return a.uploadFileContent(remotePath, content, remoteFileExists)
+	return a.uploadFileContent(remotePath, content)
 }
 
-func (a *App) uploadFileContent(remotePath string, content []byte, remoteFileExists bool) error {
+// uploadFileContent uploads into the folder named by remotePath. The server
+// writes into the connection's current folder, so that folder is opened first
+// and held until the upload is sent. Its fresh listing decides whether a file
+// is being replaced.
+func (a *App) uploadFileContent(remotePath string, content []byte) error {
+	checked := false
+	err := a.withRemoteFile(remotePath, func(file remoteFile) error {
+		checked = true
+		var entries []rclib.FileBrowserEntry
+		if file.Exists {
+			entries = []rclib.FileBrowserEntry{{Path: fileBrowserUploadBackupDownloadPath(remotePath)}}
+		}
+		return a.uploadIntoFolder(file.folder, entries, remotePath, content)
+	})
+	if err != nil && !checked {
+		a.recordAudit("upload", "file", remotePath, "failed", err.Error())
+	}
+	return err
+}
+
+// uploadIntoFolder uploads into the open folder whose listing is entries. An
+// existing file is backed up first, and a failed backup stops the upload.
+func (a *App) uploadIntoFolder(folder fileBrowserUploadFolder, entries []rclib.FileBrowserEntry, remotePath string, content []byte) error {
 	var backup DeploymentBackup
 	var hasBackup bool
-	if remoteFileExists {
-		var backupErr error
-		backup, hasBackup, backupErr = a.backupRemoteContentFrom("file", remotePath, fileBrowserUploadBackupDownloadPath(remotePath))
-		if backupErr != nil {
-			return fmt.Errorf("create safety backup before uploading: %w", backupErr)
+	replacing := fileBrowserUploadRemoteFileExists(entries, remotePath)
+	if replacing {
+		name := fileBrowserUploadBackupDownloadPath(remotePath)
+		previous, err := folder.Download(name)
+		if err == nil {
+			backup, hasBackup, err = a.saveDeploymentBackup("file", remotePath, previous, true)
+		} else {
+			err = fmt.Errorf("download the current version of %q: %w", name, err)
+		}
+		if err != nil {
+			a.recordAudit("upload", "file", remotePath, "failed", "safety backup failed: "+err.Error())
+			return fmt.Errorf("create safety backup before uploading: %w", err)
 		}
 	}
-	if err := a.sessions.UploadFile(remotePath, content); err != nil {
+	if err := folder.Upload(remotePath, content); err != nil {
 		a.recordAudit("upload", "file", remotePath, "failed", err.Error())
 		return err
 	}
 	detail := "new remote file"
-	if remoteFileExists {
+	if replacing {
 		detail = "replaced existing file without a backup"
 	}
 	if hasBackup {
@@ -2171,7 +2227,9 @@ func osOpenPath(path string) error {
 
 // OpenRemoteFile downloads a file and opens it by type. Returns a short kind
 // label for the toast. Called on a file double-click.
-func (a *App) OpenRemoteFile(remotePath string) (string, error) {
+func (a *App) OpenRemoteFile(listed string) (string, error) {
+	// Everything that may later write uses the full path.
+	remotePath := qualifyRemotePath(a.sessions.ShownFileBrowserFolder(), listed)
 	if handled, err := a.requestPluginFileOpen(remotePath); err != nil {
 		return "", err
 	} else if handled {
@@ -2185,7 +2243,7 @@ func (a *App) OpenRemoteFile(remotePath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	content, err := a.sessions.DownloadFile(remotePath)
+	content, err := a.sessions.DownloadFile(listed)
 	if err != nil {
 		return "", err
 	}
@@ -2217,7 +2275,8 @@ func (a *App) OpenRemoteFile(remotePath string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		local := filepath.Join(dir, name)
+		local := filepath.Join(dir, remoteCacheName(remotePath))
+		sqlite.Close(local)
 		if err := os.WriteFile(local, content, 0o644); err != nil {
 			return "", err
 		}
@@ -2268,12 +2327,13 @@ func (a *App) OpenRemoteFile(remotePath string) (string, error) {
 // OpenRemoteFileAsText downloads a file and opens it in the Monaco text editor
 // regardless of type — even binary files are shown as text (may be garbage, but
 // that's the point: force a text view).
-func (a *App) OpenRemoteFileAsText(remotePath string) error {
+func (a *App) OpenRemoteFileAsText(listed string) error {
+	remotePath := qualifyRemotePath(a.sessions.ShownFileBrowserFolder(), listed)
 	identity, err := a.sessions.SessionIdentity()
 	if err != nil {
 		return err
 	}
-	content, err := a.sessions.DownloadFile(remotePath)
+	content, err := a.sessions.DownloadFile(listed)
 	if err != nil {
 		return err
 	}
@@ -2303,23 +2363,30 @@ func (a *App) GetTextFile(remotePath string) (string, error) {
 // SaveTextFile uploads edited text content back to the remote path.
 func (a *App) SaveTextFile(remotePath, content string) error {
 	a.openMu.Lock()
-	previous, hasPrevious := a.textOriginalCache[remotePath]
-	previous = append([]byte(nil), previous...)
+	baseline, hasBaseline := a.textOriginalCache[remotePath]
+	baseline = append([]byte(nil), baseline...)
 	a.openMu.Unlock()
-	if !hasPrevious {
-		var loadErr error
-		previous, hasPrevious, loadErr = a.loadRemoteTextForBackup(remotePath)
-		if loadErr != nil {
-			a.recordAudit("save", "textfile", remotePath, "failed", "could not read the current version for a safety backup: "+loadErr.Error())
-			return fmt.Errorf("read remote file before saving: %w", loadErr)
+	var detail string
+	err := a.withRemoteFile(remotePath, func(file remoteFile) error {
+		if err := file.requireExisting(); err != nil {
+			return err
 		}
-	}
-	backup, hasBackup, backupErr := a.saveDeploymentBackup("textfile", remotePath, previous, hasPrevious)
-	if backupErr != nil {
-		a.recordAudit("save", "textfile", remotePath, "failed", "safety backup failed: "+backupErr.Error())
-		return fmt.Errorf("create safety backup before saving: %w", backupErr)
-	}
-	if err := a.sessions.UploadFile(remotePath, []byte(content)); err != nil {
+		previous, err := file.Read()
+		if err != nil {
+			return err
+		}
+		if detail, err = a.backupBeforeWrite("textfile", file, previous); err != nil {
+			return err
+		}
+		if serverChangedSinceOpen(string(baseline), hasBaseline, string(previous), content) {
+			a.openMu.Lock()
+			a.textOriginalCache[remotePath] = append([]byte(nil), previous...)
+			a.openMu.Unlock()
+			return errServerChanged
+		}
+		return file.Write([]byte(content))
+	})
+	if err != nil {
 		a.recordAudit("save", "textfile", remotePath, "failed", err.Error())
 		return err
 	}
@@ -2327,10 +2394,6 @@ func (a *App) SaveTextFile(remotePath, content string) error {
 	a.textCache[remotePath] = []byte(content)
 	a.textOriginalCache[remotePath] = []byte(content)
 	a.openMu.Unlock()
-	detail := "new remote file"
-	if hasBackup {
-		detail = "backup " + backup.ID
-	}
 	a.recordAudit("save", "textfile", remotePath, "success", detail)
 	return nil
 }
@@ -2463,39 +2526,35 @@ func (a *App) GetSqliteSchema(remotePath string) ([]sqlite.TableSchema, error) {
 // best-effort preserves the SQLite version, and uploads it. A failing statement
 // rolls back (nothing written, no upload) and returns an error naming the op.
 func (a *App) CommitSqlite(remotePath string, changes sqlite.Changes) error {
-	backup, hasBackup, backupErr := a.backupRemoteContent("sqlite", remotePath)
-	if backupErr != nil {
-		a.recordAudit("save", "sqlite", remotePath, "failed", "safety backup failed: "+backupErr.Error())
-		return fmt.Errorf("create safety backup before committing SQLite changes: %w", backupErr)
-	}
 	h, err := a.sqliteDB(remotePath)
-	if err != nil {
-		return err
-	}
-	if err := sqlite.Commit(h.db, changes); err != nil {
-		return err
-	}
-	// Flush WAL so the main file holds all committed edits, then read + upload.
-	if _, err := h.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
-		return err
-	}
-	content, err := os.ReadFile(h.local)
 	if err != nil {
 		return err
 	}
 	a.openMu.Lock()
 	hdr := a.dbHeaders[remotePath]
 	a.openMu.Unlock()
-	if hdr != nil && len(content) >= 100 {
-		copy(content[96:100], hdr[96:100]) // preserve version-valid-for
+	patch := func(content []byte) {
+		if hdr != nil && len(content) >= 100 {
+			copy(content[96:100], hdr[96:100]) // preserve version-valid-for
+		}
 	}
-	if err := a.sessions.UploadFile(remotePath, content); err != nil {
+	var detail string
+	err = a.withRemoteFile(remotePath, func(file remoteFile) error {
+		if err := file.requireExisting(); err != nil {
+			return err
+		}
+		previous, err := file.Read()
+		if err != nil {
+			return err
+		}
+		if detail, err = a.backupBeforeWrite("sqlite", file, previous); err != nil {
+			return err
+		}
+		return commitSqliteStaged(h.local, changes, patch, file.Write)
+	})
+	if err != nil {
 		a.recordAudit("save", "sqlite", remotePath, "failed", err.Error())
 		return err
-	}
-	detail := "new remote database"
-	if hasBackup {
-		detail = "backup " + backup.ID
 	}
 	a.recordAudit("save", "sqlite", remotePath, "success", detail)
 	return nil
@@ -2543,11 +2602,6 @@ func (a *App) SqliteDeleteRow(remotePath, table string, rowid int64) error {
 // original SQLite version (copy the header's version-valid-for bytes), and
 // uploads it. modernc preserves the schema-format version it read.
 func (a *App) SaveSqliteFile(remotePath string) error {
-	backup, hasBackup, backupErr := a.backupRemoteContent("sqlite", remotePath)
-	if backupErr != nil {
-		a.recordAudit("save", "sqlite", remotePath, "failed", "safety backup failed: "+backupErr.Error())
-		return fmt.Errorf("create safety backup before saving SQLite file: %w", backupErr)
-	}
 	h, err := a.sqliteDB(remotePath)
 	if err != nil {
 		return err
@@ -2565,13 +2619,23 @@ func (a *App) SaveSqliteFile(remotePath string) error {
 		// Bytes 96–99 = "version valid for" (SQLite version that last wrote).
 		copy(content[96:100], hdr[96:100])
 	}
-	if err := a.sessions.UploadFile(remotePath, content); err != nil {
+	var detail string
+	err = a.withRemoteFile(remotePath, func(file remoteFile) error {
+		if err := file.requireExisting(); err != nil {
+			return err
+		}
+		previous, err := file.Read()
+		if err != nil {
+			return err
+		}
+		if detail, err = a.backupBeforeWrite("sqlite", file, previous); err != nil {
+			return err
+		}
+		return file.Write(content)
+	})
+	if err != nil {
 		a.recordAudit("save", "sqlite", remotePath, "failed", err.Error())
 		return err
-	}
-	detail := "new remote database"
-	if hasBackup {
-		detail = "backup " + backup.ID
 	}
 	a.recordAudit("save", "sqlite", remotePath, "success", detail)
 	return nil
