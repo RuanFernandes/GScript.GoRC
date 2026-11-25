@@ -37,7 +37,12 @@ const RIGHTS_LAYOUT: {labelKey: string; bit: number}[] = [
   {labelKey: "rights.label.resetAttributes", bit: 8},
   {labelKey: "rights.label.npcControl", bit: 19},
   {labelKey: "rights.label.adminMessage", bit: 9},
+  {labelKey: "rights.label.unnamed13", bit: 13},
 ]
+
+// The presets and "Clear all" of the Alpaxis RC set bits 0-19 and keep any above.
+const PRESET_RIGHTS = [0b111, 0b11101111, (1 << 15) - 1, (1 << 20) - 1]
+const KNOWN_MASK = (1 << 20) - 1
 
 function readAccount(): string {
   const hash = window.location.hash
@@ -77,6 +82,7 @@ export function RightsWindowScreen() {
   }, [account])
 
   const toggle = (bit: number) => setFlags((f) => f ^ (1 << bit))
+  const setBits = (value: number) => setFlags((f) => (f & ~KNOWN_MASK) | value)
   const target = data?.account ?? account
 
   const apply = async () => {
@@ -123,7 +129,12 @@ export function RightsWindowScreen() {
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-xs font-medium uppercase text-muted-foreground">{t("rights.flags")}</span>
-                <Button variant="ghost" size="sm" onClick={() => setFlags(0)}>{t("rights.clearAll")}</Button>
+                <div className="flex items-center gap-1">
+                  {PRESET_RIGHTS.map((value, index) => (
+                    <Button key={value} variant="outline" size="sm" onClick={() => setBits(value)}>{index + 1}</Button>
+                  ))}
+                  <Button variant="ghost" size="sm" onClick={() => setBits(0)}>{t("rights.clearAll")}</Button>
+                </div>
               </div>
               <div className="grid grid-cols-2 gap-1.5">
                 {RIGHTS_LAYOUT.map(({labelKey, bit}) => {

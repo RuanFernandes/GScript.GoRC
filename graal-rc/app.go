@@ -363,6 +363,14 @@ func (a *App) attach(app *application.App) {
 		})
 	}
 	var seq uint64
+	a.sessions.SetRightsWindowOpener(func(account string) {
+		// Called on the grclib pump, which must not wait for the window.
+		go func() {
+			if err := a.OpenRightsWindow(account); err != nil {
+				log.Printf("[editor] open rights window account=%q: %v", account, err)
+			}
+		}()
+	})
 	a.sessions.SetEmitter(func(name string, data ...any) {
 		mentionTarget := a.handleChatMentionEvent(name, data)
 		// A disconnect can arrive without a user clicking the logout button. Tear

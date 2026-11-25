@@ -116,6 +116,7 @@ func sessionCanceled(done <-chan struct{}) bool {
 // signal while the old native handle is still being cleaned up.
 func (s *Service) invalidateSessionLocked() {
 	s.serverEpoch++
+	s.clearUserRights()
 	if s.sessionDone != nil && !sessionCanceled(s.sessionDone) {
 		close(s.sessionDone)
 	}

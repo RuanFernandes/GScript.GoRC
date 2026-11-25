@@ -827,6 +827,7 @@
   "rights.ipRanges": "IP range(s)",
   "rights.flags": "Right flags",
   "rights.clearAll": "Clear all",
+  "rights.label.unnamed13": "Right 13 (unnamed)",
   "rights.folderRights": "Folder rights",
   "rights.label.warptoXY": "Warpto XY",
   "rights.label.setServerFlags": "Set server flags",

@@ -827,6 +827,7 @@
   "rights.ipRanges": "Faixa(s) de IP",
   "rights.flags": "Flags de direitos",
   "rights.clearAll": "Limpar tudo",
+  "rights.label.unnamed13": "Direito 13 (sem nome)",
   "rights.folderRights": "Direitos de pasta",
   "rights.label.warptoXY": "Teleportar para XY",
   "rights.label.setServerFlags": "Definir flags do servidor",

@@ -109,6 +109,13 @@ type Service struct {
 	rightsMu         sync.RWMutex
 	rightsRefreshMu  sync.Mutex
 	rightsRequestSeq uint64
+
+	// Typed /openrights commands and their replies (rights_command.go).
+	userRightsMu       sync.Mutex
+	userRightsRequests []userRightsRequest
+	userRightsReplies  map[string]userRightsReply
+	openRightsEditor   func(account string)
+
 	selfRights       folderrights.Access
 	selfStaffRights  int
 	selfRightsLoaded bool
@@ -1866,12 +1873,7 @@ func (s *Service) connectToServer(ctx context.Context, index int) (resultErr err
 			data := RightsData{
 				Account: account, Rights: rights, IPRange: ipRange, FolderAccess: folderAccess,
 			}
-			resolved := s.resolveEditorForAccount("rights", account, data)
-			if resolved {
-				log.Printf("[rights callback] resolved pending request account=%q", account)
-			} else {
-				log.Printf("[rights callback] no pending waiter for account=%q", account)
-			}
+			s.deliverRightsReply(data)
 			s.emitEvent("rc:playerRights", account, rights, ipRange, folderAccess)
 		},
 		PlayerAttributes: func(account, propertiesJSON, editorText string) {
@@ -2260,7 +2262,15 @@ func (s *Service) Execute(message string) error {
 	if err != nil {
 		return err
 	}
-	return rclib.Execute(h, message)
+	command, target, isRights := rightsChatCommand(message, s.SelfAccount())
+	if !isRights {
+		return rclib.Execute(h, message)
+	}
+	if target != "" {
+		s.addUserRightsRequest(target, time.Now())
+	}
+	log.Printf("[rights] typed command=%q", command)
+	return rclib.Execute(h, command)
 }
 
 // SetNickname changes the RC nickname on the active handle.
@@ -2741,10 +2751,9 @@ func (s *Service) HasWritableScriptAccess() bool {
 	return loaded && access.HasWriteAccessForScriptTypes("weapon", "class", "npc")
 }
 
-// OpenRights requests an account's staff rights and waits for the reply. An
-// empty account sends /openrights without an argument so the server resolves
-// the current RC session to itself; explicit accounts use the direct rights
-// request packet.
+// OpenRights requests an account's staff rights and waits for the reply. The
+// current account is asked for with "/openrights <account>" in the RC chat;
+// other accounts use the direct rights request packet.
 func (s *Service) OpenRights(account string) (RightsData, error) {
 	account = strings.TrimSpace(account)
 	selfAccount := strings.TrimSpace(s.SelfAccount())
@@ -2755,6 +2764,13 @@ func (s *Service) OpenRights(account string) (RightsData, error) {
 	}
 	if expectedAccount == "" {
 		return RightsData{}, errors.New("account is required")
+	}
+	// An editor opened by a typed /openrights already has its reply. A call with
+	// no account is a permission refresh and always asks the server.
+	if account != "" {
+		if data, ok := s.takeRightsReply(account, time.Now()); ok {
+			return data, nil
+		}
 	}
 	requestID := atomic.AddUint64(&s.rightsRequestSeq, 1)
 	started := time.Now()
@@ -2769,20 +2785,19 @@ func (s *Service) OpenRights(account string) (RightsData, error) {
 	}
 	w, isNew := s.registerEditor(key)
 	if isNew {
-		log.Printf("[rights #%d] dispatch target=%q self=%v expected=%q command=%q", requestID, account, selfRequest, expectedAccount, func() string {
-			if selfRequest {
-				return "/openrights"
-			}
-			return "PLI_RC_PLAYERRIGHTSGET"
-		}())
+		command := "PLI_RC_PLAYERRIGHTSGET"
+		if selfRequest {
+			command, _, _ = rightsChatCommand("/openrights", selfAccount)
+		}
+		log.Printf("[rights #%d] dispatch target=%q self=%v expected=%q command=%q", requestID, account, selfRequest, expectedAccount, command)
 		var requestErr error
 		if selfRequest {
-			// The server's /openrights command resolves an omitted account to
-			// the current RC session. Passing the cached account string can be
-			// rejected when its casing differs from the server's canonical name.
-			requestErr = rclib.Execute(h, "/openrights")
+			requestErr = rclib.Execute(h, command)
 		} else {
-			requestErr = rclib.RequestPlayerRights(h, account)
+			var argument string
+			if argument, requestErr = rightsRequestArgument(account); requestErr == nil {
+				requestErr = rclib.RequestPlayerRights(h, argument)
+			}
 		}
 		if requestErr != nil {
 			log.Printf("[rights #%d] dispatch failed after %s: %v", requestID, time.Since(started), requestErr)
