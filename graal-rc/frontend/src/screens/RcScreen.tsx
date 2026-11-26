@@ -3,7 +3,7 @@
 // command input, an NC (script socket) status badge, a toggleable player list
 // panel, and a chat-color settings dialog. Mirrors the reference client's
 // TRemoteFrame.
-import {useCallback, useEffect, useMemo, useRef, useState} from "react"
+import {useCallback, useEffect, useId, useMemo, useRef, useState} from "react"
 import {Events} from "@wailsio/runtime"
 import {Bell, BellRing, BookmarkPlus, Command, LayoutDashboard, LogOut, Plus, Puzzle, Search, ScrollText, Send, Settings, Terminal, Trash2, UserRound, X} from "lucide-react"
 import {toast} from "sonner"
@@ -11,6 +11,7 @@ import {toast} from "sonner"
 import {Button} from "@/components/ui/button"
 import {Input} from "@/components/ui/input"
 import {Tabs, TabsContent, TabsList, TabsTrigger} from "@/components/ui/tabs"
+import {ChatCompletionList, completionOptionId} from "@/components/features/chat/ChatCompletionList"
 import {ChatLine} from "@/components/features/chat/ChatLine"
 import {PlayerContextMenu} from "@/components/features/playerlist/PlayerContextMenu"
 import {ScriptHelpResult} from "@/components/features/chat/ScriptHelpResult"
@@ -153,8 +154,9 @@ function ChatPane({
   const setMacroValues = (change: (current: Record<string, string>) => Record<string, string>) =>
     updateComposer(channel, (current) => ({macroValues: change(current.macroValues)}))
   const clearMacroValues = () => updateComposer(channel, () => ({macroValues: {}}))
-  const [ghostOff, setGhostOff] = useState(false)
-  const autocomplete = useChatAutocomplete(players)
+  const autocomplete = useChatAutocomplete(players, text, setText)
+  const completionListId = useId()
+  const completionVisible = !selectedMacro && autocomplete.visible
   const [macrosOpen, setMacrosOpen] = useState(false)
   const [macroName, setMacroName] = useState("")
   const [macroCommand, setMacroCommand] = useState("")
@@ -200,6 +202,7 @@ function ChatPane({
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (selectedMacro && missingMacroParameters.length > 0) return
+    autocomplete.close()
     const command = selectedMacro ? renderMacroCommand(selectedMacro, macroValues, false) : text.trim()
     await composers.submit(channel, () => onSend(command), () => history.record(command))
   }
@@ -352,7 +355,7 @@ function ChatPane({
                       type="button"
                       className="min-w-0 flex-1 text-left"
                       onClick={() => {
-                        setGhostOff(false)
+                        autocomplete.close()
                         setText(macro.command)
                         setMacroCommand(macro.command)
                         clearMacroValues()
@@ -462,98 +465,33 @@ function ChatPane({
         </div>
       )}
       <form onSubmit={submit} className="flex gap-2">
-        {/* Ghost-text completion: the suggestion renders behind the input as a
-            transparent copy of the typed text (reserving its exact width) plus a
-            muted suffix. The input paints its opaque text on top, so only the
-            suffix reads as a grey hint — Tab accepts it. No pixel math: the
-            transparent run is the same glyphs at the same font, so the suffix
-            always starts where the caret is. */}
         <div className="relative flex-1">
-          {!selectedMacro && (() => {
-            const options = autocomplete.options(text)
-            if (!options.length) return null
-            const accountPhase = /^\/\S+\s/.test(text)
-            return (
-              <div
-                role="listbox"
-                aria-label={accountPhase ? t("rc.playerSuggestions") : t("rc.commandSuggestions")}
-                className="bg-popover text-popover-foreground absolute right-0 bottom-full left-0 z-30 mb-2 max-h-64 overflow-y-auto rounded-md border p-1 shadow-lg"
-              >
-                <div className="text-muted-foreground flex items-center justify-between px-2 py-1 text-[11px]">
-                  <span>{accountPhase ? t("rc.players") : t("rc.commands")}</span>
-                  <span>{t("rc.tabToComplete")}</span>
-                </div>
-                {options.map((option) => (
-                  <button
-                    key={option}
-                    type="button"
-                    role="option"
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => {
-                      setGhostOff(false)
-                      autocomplete.select(text, option, setText)
-                    }}
-                    className="hover:bg-accent hover:text-accent-foreground flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-left font-mono text-xs transition-colors"
-                  >
-                    <span>{accountPhase ? option : `/${option}`}</span>
-                    {!accountPhase && (
-                      <span className="text-muted-foreground ml-3 font-sans text-[10px]">
-                        {option === "open" || option === "openrights" || option === "opencomments" || option === "openaccess" || option === "openacc" || option === "openprofile" || option === "playerinfo" || option === "disconnect" || option === "reset" || option === "staffactivity" ? t("rc.playerType") : t("rc.commandType")}
-                      </span>
-                    )}
-                  </button>
-                ))}
-              </div>
-            )
-          })()}
-          {!selectedMacro && (() => {
-            const ghost = !ghostOff ? autocomplete.suggest(text) : null
-            if (!ghost) return null
-            // Split at the first case-sensitive divergence between typed text
-            // and the suggestion. The identical run renders transparent (reserves
-            // its exact width); the rest renders muted. So a lowercase "r" typing
-            // toward "Ruan" greys from the "R" onward, and Tab swaps in the
-            // canonical casing.
-            let div = 0
-            const n = Math.min(text.length, ghost.length)
-            while (div < n && text[div] === ghost[div]) div++
-            return (
-              <span
-                aria-hidden
-                className="pointer-events-none absolute inset-0 flex items-center overflow-hidden px-3 text-base whitespace-pre md:text-sm"
-              >
-                <span className="text-transparent">{text.slice(0, div)}</span>
-                <span className="text-muted-foreground/60">{ghost.slice(div)}</span>
-              </span>
-            )
-          })()}
+          {completionVisible && (
+            <ChatCompletionList
+              id={completionListId}
+              items={autocomplete.items}
+              selected={autocomplete.selected}
+              onAccept={autocomplete.accept}
+            />
+          )}
           <Input
-            className="relative z-10"
+            role="combobox"
+            aria-autocomplete="list"
+            aria-expanded={completionVisible}
+            aria-controls={completionVisible ? completionListId : undefined}
+            aria-activedescendant={completionVisible && autocomplete.selected >= 0 ? completionOptionId(completionListId, autocomplete.selected) : undefined}
             value={selectedMacro ? macroPreview : text}
             readOnly={Boolean(selectedMacro)}
             onChange={(e) => {
               if (selectedMacro) return
-              setGhostOff(false)
               setText(history.onTextChange(e.target.value))
+              autocomplete.onEdit()
             }}
+            onBlur={autocomplete.close}
             onKeyDown={(e) => {
               if (selectedMacro) return
-              // Escape hides the ghost preview until the next edit.
-              if (e.key === "Escape") {
-                if (!ghostOff && autocomplete.suggest(text)) {
-                  e.preventDefault()
-                  setGhostOff(true)
-                }
-                return
-              }
-              // Tab completes the current token (Shift+Tab cycles back). Captured
-              // only in a "/" command context so plain Tab still works elsewhere.
-              if (e.key === "Tab" && text.startsWith("/")) {
-                e.preventDefault()
-                setGhostOff(false)
-                if (autocomplete.complete(text, setText, e.shiftKey)) return
-              }
-              history.handleKeyDown(e, text, setText)
+              if (autocomplete.handleKeyDown(e)) return
+              if (history.handleKeyDown(e, text, setText)) autocomplete.close()
             }}
             placeholder={t("rc.messagePlaceholder")}
             autoComplete="off"

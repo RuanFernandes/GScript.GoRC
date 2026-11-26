@@ -90,7 +90,7 @@
   "rc.commandSuggestions": "Sugestões de comandos",
   "rc.players": "Jogadores",
   "rc.commands": "Comandos",
-  "rc.tabToComplete": "Tab para completar",
+  "rc.completionHint": "Tab/Enter aceita · Esc fecha",
   "rc.playerType": "jogador",
   "rc.commandType": "comando",
   "rc.noNcServer": "Nenhum servidor NC",
