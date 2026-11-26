@@ -1887,6 +1887,7 @@ func (s *Service) connectToServer(ctx context.Context, index int) (resultErr err
 		},
 		PlayerAttributes: func(account, propertiesJSON, editorText string) {
 			log.Printf("[editor-cb] player_attributes account=%q editorLen=%d", account, len(editorText))
+			editorText = attrsEditorText(propertiesJSON, editorText)
 			taken := s.deliverEditorReply("attrs", account, AttrsData{
 				Account: account, PropertiesJSON: propertiesJSON, EditorText: editorText,
 			})

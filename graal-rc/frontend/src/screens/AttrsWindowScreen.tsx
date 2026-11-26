@@ -13,7 +13,7 @@ import {Button} from "@/components/ui/button"
 import {Input} from "@/components/ui/input"
 import {ScrollArea} from "@/components/ui/scroll-area"
 import {Tabs, TabsContent, TabsList, TabsTrigger} from "@/components/ui/tabs"
-import {isAttrOn} from "@/lib/playerAttrs"
+import {isAttrOn, withReplyWorld} from "@/lib/playerAttrs"
 import {rcService} from "@/services/rcService"
 import type {AttrsData} from "@/types"
 import {useLanguage} from "@/hooks/useLanguage"
@@ -184,7 +184,7 @@ export function AttrsWindowScreen() {
     setSaving(true)
     try {
       const json = await rcService.parseAttrsText(rebuildIni())
-      await rcService.setAttrs(data?.account ?? account, json)
+      await rcService.setAttrs(data?.account ?? account, withReplyWorld(json, data?.propertiesJson ?? ""))
       toast.success(t("attrs.saved", {account: data?.account ?? account}))
     } catch (e) {
       toast.error(t("common.saveFailed"), {description: e instanceof Error ? e.message : String(e)})
