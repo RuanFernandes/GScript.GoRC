@@ -290,9 +290,10 @@ const sharedReplyTimeout = 2*scriptTimeout + replyQuarantine + time.Second
 var errNCUnavailable = errors.New("NC is not connected")
 
 const (
-	rightsChangedMessage = "has set rights of"
-	rightsLoadedMessage  = "loaded the rights of"
-	banPlayersRightBit   = 11
+	rightsChangedMessage        = "has set rights of"
+	alpaxisRightsChangedMessage = "has set the rights of"
+	rightsLoadedMessage         = "loaded the rights of"
+	banPlayersRightBit          = 11
 )
 
 // downloadTimeout is how long a file download waits for the full content. File
@@ -801,12 +802,17 @@ func parseLoadedRightsMessage(text string) (loadedRightsMessage, bool) {
 // member may perform the change on behalf of the logged-in player.
 func rightsChangedTarget(text string) string {
 	lower := strings.ToLower(text)
-	marker := strings.Index(lower, rightsChangedMessage)
+	phrase := rightsChangedMessage
+	marker := strings.Index(lower, phrase)
+	if marker < 0 {
+		phrase = alpaxisRightsChangedMessage
+		marker = strings.Index(lower, phrase)
+	}
 	if marker < 0 {
 		return ""
 	}
 
-	target := strings.TrimSpace(text[marker+len(rightsChangedMessage):])
+	target := strings.TrimSpace(text[marker+len(phrase):])
 	for _, prefix := range []string{"(offline) player ", "(online) player ", "player "} {
 		if strings.HasPrefix(strings.ToLower(target), prefix) {
 			target = strings.TrimSpace(target[len(prefix):])
