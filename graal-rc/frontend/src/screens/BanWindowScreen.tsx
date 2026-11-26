@@ -11,24 +11,12 @@ import {Button} from "@/components/ui/button"
 import {Input} from "@/components/ui/input"
 import {ScrollArea} from "@/components/ui/scroll-area"
 import {Tabs, TabsContent, TabsList, TabsTrigger} from "@/components/ui/tabs"
+import {buildScopes, isLegacyBanDetails, trimBanName, type ScopeState} from "@/lib/banData"
 import {rcService} from "@/services/rcService"
 import type {BanData} from "@/types"
 import {useLanguage} from "@/hooks/useLanguage"
 
-interface ScopeState {
-  target: string
-  banned: boolean
-  reset: boolean
-  banType: string
-  releaseTime: string
-  reason: string
-}
-
 const SCOPE_KEYS = ["ban.scopeLocal", "ban.scopeGlobal", "ban.scopeComputer", "ban.scopeGlobalComputer"] as const
-
-function trimBanName(s: string): string {
-  return s.replace(/^\s+|\s+$/g, "")
-}
 
 function parseBanTypes(raw: string): {name: string; seconds: number}[] {
   const out: {name: string; seconds: number}[] = []
@@ -42,39 +30,6 @@ function parseBanTypes(raw: string): {name: string; seconds: number}[] {
     }
   }
   return out
-}
-
-function buildScopes(account: string, computerId: string, details: string, typeNames: string[]): ScopeState[] {
-  const scopes: ScopeState[] = SCOPE_KEYS.map((_, index) => ({
-    target: index < 2 ? account : computerId ? "pc:" + computerId : "",
-    banned: false,
-    reset: false,
-    banType: typeNames[0] ?? "",
-    releaseTime: "",
-    reason: "",
-  }))
-  for (const record of details.split(/\r?\n/)) {
-    if (!record.trim()) continue
-    const fields: Record<string, string> = {}
-    for (const kv of record.split(",")) {
-      const sep = kv.indexOf("=")
-      if (sep >= 0) fields[kv.slice(0, sep)] = kv.slice(sep + 1)
-    }
-    const target = fields.account
-    const world = fields.world
-    if (target === undefined || world === undefined) continue
-    const computer = target.startsWith("pc:")
-    const index = (computer ? 2 : 0) + (world === "all" ? 1 : 0)
-    if (!scopes[index].target) continue
-    scopes[index].banned = true
-    if (fields.bantype) {
-      const bt = trimBanName(fields.bantype)
-      if (typeNames.includes(bt)) scopes[index].banType = bt
-    }
-    if (fields.releasetime) scopes[index].releaseTime = fields.releasetime
-    if (fields.reason) scopes[index].reason = fields.reason
-  }
-  return scopes
 }
 
 function banTimeText(seconds: number, t: (key: string, vars?: Record<string, string | number>) => string): string {
@@ -136,8 +91,12 @@ export function BanWindowScreen() {
     const s = scopes[index]
     if (!s.target) return
     try {
-      const world = index % 2 === 0 ? "local" : "all"
-      await rcService.setBan(s.target, world, s.banned, s.banType, s.reset ? "" : s.releaseTime, s.reason)
+      if (legacy) {
+        await rcService.setLegacyBan(s.target, s.banned, s.reason)
+      } else {
+        const world = index % 2 === 0 ? "local" : "all"
+        await rcService.setBan(s.target, world, s.banned, s.banType, s.reset ? "" : s.releaseTime, s.reason)
+      }
       toast.success(t("ban.saved", {scope: t(SCOPE_KEYS[index] ?? "ban.scopeLocal")}))
     } catch (e) {
       toast.error(t("common.saveFailed"), {description: e instanceof Error ? e.message : String(e)})
@@ -162,6 +121,7 @@ export function BanWindowScreen() {
   }
 
   const target = data?.account ?? account
+  const legacy = isLegacyBanDetails(data?.details ?? "")
 
   return (
     <div className="bg-background flex h-svh flex-col">
@@ -196,22 +156,26 @@ export function BanWindowScreen() {
                     <input type="checkbox" checked={s.banned} onChange={(e) => patch(i, {banned: e.target.checked})} />
                     {t("ban.banned")}
                   </label>
-                  <div className="space-y-1">
-                    <span className="text-xs font-medium uppercase text-muted-foreground">{t("ban.type")}</span>
-                    <select
-                      className="bg-background h-8 w-full rounded-md border px-2 text-sm"
-                      value={s.banType}
-                      onChange={(e) => patch(i, {banType: e.target.value})}
-                    >
-                      {typeNames.length === 0 && <option value="">{t("ban.noTypes")}</option>}
-                      {typeNames.map((n) => <option key={n} value={n}>{n}</option>)}
-                    </select>
-                  </div>
-                  <div className="text-xs text-muted-foreground">{t("ban.timeLeft", {time: s.banned ? banTimeText(dur, t) : "-"})}</div>
-                  <label className="flex items-center gap-2 text-sm">
-                    <input type="checkbox" checked={s.reset} onChange={(e) => patch(i, {reset: e.target.checked})} />
-                    {t("ban.resetTime")}
-                  </label>
+                  {!legacy && (
+                    <>
+                      <div className="space-y-1">
+                        <span className="text-xs font-medium uppercase text-muted-foreground">{t("ban.type")}</span>
+                        <select
+                          className="bg-background h-8 w-full rounded-md border px-2 text-sm"
+                          value={s.banType}
+                          onChange={(e) => patch(i, {banType: e.target.value})}
+                        >
+                          {typeNames.length === 0 && <option value="">{t("ban.noTypes")}</option>}
+                          {typeNames.map((n) => <option key={n} value={n}>{n}</option>)}
+                        </select>
+                      </div>
+                      <div className="text-xs text-muted-foreground">{t("ban.timeLeft", {time: s.banned ? banTimeText(dur, t) : "-"})}</div>
+                      <label className="flex items-center gap-2 text-sm">
+                        <input type="checkbox" checked={s.reset} onChange={(e) => patch(i, {reset: e.target.checked})} />
+                        {t("ban.resetTime")}
+                      </label>
+                    </>
+                  )}
                   <div className="space-y-1">
                     <span className="text-xs font-medium uppercase text-muted-foreground">{t("ban.reason")}</span>
                     <Input value={s.reason} onChange={(e) => patch(i, {reason: e.target.value})} className="h-8" />

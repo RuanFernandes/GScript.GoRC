@@ -286,11 +286,11 @@ export function useChat(service: RcService, onLine?: (message: ChatMessage) => v
         void handleRefreshLsp(channel)
         return true
       }
-      // /openaccess, /opencomments, /open, /staffactivity {account} open a
+      // /openaccess, /opencomments, /staffactivity {account} open a
       // client-side editor/viewer window. An omitted account targets the
       // account resolved by the latest openrights response for this RC
       // session. Intercepted locally — never sent to the server.
-      const adminCmd = trimmed.match(/^\/(openaccess|opencomments|open|staffactivity)(?:\s+(.*))?$/i)
+      const adminCmd = trimmed.match(/^\/(openaccess|opencomments|staffactivity)(?:\s+(.*))?$/i)
       if (adminCmd) {
         const arg = (adminCmd[2] ?? "").trim()
         const cmdName = adminCmd[1].toLowerCase()
@@ -301,9 +301,6 @@ export function useChat(service: RcService, onLine?: (message: ChatMessage) => v
               break
             case "opencomments":
               await service.openCommentsWindow(arg)
-              break
-            case "open":
-              await service.openAttrsWindow(arg)
               break
             case "staffactivity":
               await service.openStaffActivityWindow(arg)
@@ -326,9 +323,9 @@ export function useChat(service: RcService, onLine?: (message: ChatMessage) => v
         }
         return true
       }
-      // /openrights goes to the server like in the Alpaxis RC, from any tab; the
-      // editor opens when the reply arrives.
-      if (/^\/openrights(\s|$)/i.test(trimmed)) {
+      // /open and /openrights go to the server like in the Alpaxis RC, from any
+      // tab; the editor opens when the reply arrives.
+      if (/^\/(open|openrights)(\s|$)/i.test(trimmed)) {
         try {
           await service.execute(trimmed)
         } catch (err) {

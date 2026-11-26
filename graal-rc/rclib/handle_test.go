@@ -138,6 +138,7 @@ var handleCalls = map[string]func(Handle) handleResult{
 	"RequestBanTypes":      func(h Handle) handleResult { return errorOnly(RequestBanTypes(h)) },
 	"RequestBanHistory":    func(h Handle) handleResult { return errorOnly(RequestBanHistory(h, "a")) },
 	"RequestStaffActivity": func(h Handle) handleResult { return errorOnly(RequestStaffActivity(h, "a")) },
+	"SetLegacyPlayerBan": func(h Handle) handleResult { return errorOnly(SetLegacyPlayerBan(h, "a", true, "r")) },
 	"SetBan": func(h Handle) handleResult {
 		return errorOnly(SetBan(h, "a", "local", true, "t", "r", "why"))
 	},

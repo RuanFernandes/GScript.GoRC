@@ -363,11 +363,15 @@ func (a *App) attach(app *application.App) {
 		})
 	}
 	var seq uint64
-	a.sessions.SetRightsWindowOpener(func(account string) {
+	a.sessions.SetEditorWindowOpener(func(kind, account string) {
+		open := a.OpenRightsWindow
+		if kind == "attrs" {
+			open = a.OpenAttrsWindow
+		}
 		// Called on the grclib pump, which must not wait for the window.
 		go func() {
-			if err := a.OpenRightsWindow(account); err != nil {
-				log.Printf("[editor] open rights window account=%q: %v", account, err)
+			if err := open(account); err != nil {
+				log.Printf("[editor] open %s window account=%q: %v", kind, account, err)
 			}
 		}()
 	})
@@ -1496,6 +1500,11 @@ func (a *App) SetComments(account, comments string) error {
 	return a.sessions.SetComments(a.resolveAccount(account), comments)
 }
 
+// SetLegacyBan writes the ban of an account whose ban came in the legacy form.
+func (a *App) SetLegacyBan(account string, banned bool, reason string) error {
+	return a.sessions.SetLegacyBan(a.resolveAccount(account), banned, reason)
+}
+
 // SetBan writes ban data for a target.
 func (a *App) SetBan(target, world string, banned bool, banType, releaseTime, reason string) error {
 	return a.sessions.SetBan(target, world, banned, banType, releaseTime, reason)
@@ -1565,8 +1574,8 @@ func (a *App) OpenRightsWindow(account string) error {
 	return a.openPlayerWindow("rights", "Rights", account, 480, 560)
 }
 
-// OpenAttrsWindow opens the /open (attributes) editor window for an account
-// (self if empty). Triggered by typing /open in the RC chat.
+// OpenAttrsWindow opens the attributes editor window for an account (self if
+// empty): from the player menu, or when the reply to a typed /open arrives.
 func (a *App) OpenAttrsWindow(account string) error {
 	return a.openPlayerWindow("attrs", "Attributes", account, 480, 600)
 }

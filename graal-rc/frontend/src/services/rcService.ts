@@ -123,6 +123,7 @@ export interface RcService {
   openBanHistoryWindow(account: string): Promise<void>
   openStaffActivityWindow(account: string): Promise<void>
   setBan(target: string, world: string, banned: boolean, banType: string, releaseTime: string, reason: string): Promise<void>
+  setLegacyBan(account: string, banned: boolean, reason: string): Promise<void>
   getBanTypes(): Promise<string>
   requestBanHistory(account: string): Promise<string>
   requestStaffActivity(account: string): Promise<string>
@@ -375,6 +376,7 @@ export const rcService: RcService = {
   openCommentsWindow: (account) => App.OpenCommentsWindow(account),
   openBanHistoryWindow: (account) => App.OpenBanHistoryWindow(account),
   openStaffActivityWindow: (account) => App.OpenStaffActivityWindow(account),
+  setLegacyBan: (account, banned, reason) => App.SetLegacyBan(account, banned, reason),
   setBan: (target, world, banned, banType, releaseTime, reason) =>
     App.SetBan(target, world, banned, banType, releaseTime, reason),
   getBanTypes: () => App.GetBanTypes(),

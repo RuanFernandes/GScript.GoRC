@@ -111,11 +111,12 @@ type Service struct {
 	rightsRefreshMu  sync.Mutex
 	rightsRequestSeq uint64
 
-	// Typed /openrights commands and their replies (rights_command.go).
-	userRightsMu       sync.Mutex
-	userRightsRequests []userRightsRequest
-	userRightsReplies  map[string]userRightsReply
-	openRightsEditor   func(account string)
+	// Typed /open and /openrights commands and their replies
+	// (chat_editor_command.go).
+	userEditorMu       sync.Mutex
+	userEditorRequests []userEditorRequest
+	userEditorReplies  map[string]userEditorReply
+	openUserEditor     func(kind, account string)
 
 	selfRights       folderrights.Access
 	selfStaffRights  int
@@ -1881,15 +1882,15 @@ func (s *Service) connectToServer(ctx context.Context, index int) (resultErr err
 			data := RightsData{
 				Account: account, Rights: rights, IPRange: ipRange, FolderAccess: folderAccess,
 			}
-			s.deliverRightsReply(data)
+			s.deliverEditorReply("rights", account, data)
 			s.emitEvent("rc:playerRights", account, rights, ipRange, folderAccess)
 		},
 		PlayerAttributes: func(account, propertiesJSON, editorText string) {
 			log.Printf("[editor-cb] player_attributes account=%q editorLen=%d", account, len(editorText))
-			resolved := s.resolveEditorForAccount("attrs", account, AttrsData{
+			taken := s.deliverEditorReply("attrs", account, AttrsData{
 				Account: account, PropertiesJSON: propertiesJSON, EditorText: editorText,
 			})
-			if !resolved {
+			if !taken {
 				log.Printf("[editor-cb] no pending attrs waiter for account=%q", account)
 			}
 			s.emitEvent("rc:playerAttributes", account, propertiesJSON, editorText)
@@ -2270,14 +2271,14 @@ func (s *Service) Execute(message string) error {
 	if err != nil {
 		return err
 	}
-	command, target, isRights := rightsChatCommand(message, s.SelfAccount())
-	if !isRights {
+	command, kind, target, isEditor := editorChatCommand(message, s.SelfAccount())
+	if !isEditor {
 		return rclib.Execute(h, message)
 	}
 	if target != "" {
-		s.addUserRightsRequest(target, time.Now())
+		s.addUserEditorRequest(kind, target, time.Now())
 	}
-	log.Printf("[rights] typed command=%q", command)
+	log.Printf("[%s] typed command=%q", kind, command)
 	return rclib.Execute(h, command)
 }
 
@@ -2776,8 +2777,10 @@ func (s *Service) OpenRights(account string) (RightsData, error) {
 	// An editor opened by a typed /openrights already has its reply. A call with
 	// no account is a permission refresh and always asks the server.
 	if account != "" {
-		if data, ok := s.takeRightsReply(account, time.Now()); ok {
-			return data, nil
+		if reply, ok := s.takeEditorReply("rights", account, time.Now()); ok {
+			if data, ok := reply.(RightsData); ok {
+				return data, nil
+			}
 		}
 	}
 	requestID := atomic.AddUint64(&s.rightsRequestSeq, 1)
@@ -2795,7 +2798,7 @@ func (s *Service) OpenRights(account string) (RightsData, error) {
 	if isNew {
 		command := "PLI_RC_PLAYERRIGHTSGET"
 		if selfRequest {
-			command, _, _ = rightsChatCommand("/openrights", selfAccount)
+			command = selfEditorCommand("/openrights", selfAccount)
 		}
 		log.Printf("[rights #%d] dispatch target=%q self=%v expected=%q command=%q", requestID, account, selfRequest, expectedAccount, command)
 		var requestErr error
@@ -2842,6 +2845,14 @@ func (s *Service) SetRights(account string, rights int, ipRange, folderAccess st
 
 // OpenAttrs requests an account's attributes and waits for the reply.
 func (s *Service) OpenAttrs(account string) (AttrsData, error) {
+	// An editor opened by a typed /open already has its reply.
+	if strings.TrimSpace(account) != "" {
+		if reply, ok := s.takeEditorReply("attrs", account, time.Now()); ok {
+			if data, ok := reply.(AttrsData); ok {
+				return data, nil
+			}
+		}
+	}
 	target, selfRequest, err := s.editorTarget(account)
 	if err != nil {
 		return AttrsData{}, err
@@ -2859,7 +2870,7 @@ func (s *Service) OpenAttrs(account string) (AttrsData, error) {
 		log.Printf("[editor] request attrs account=%q self=%v (self creds.Account=%q nickname=%q)", target, selfRequest, s.creds.Account, s.creds.Nickname)
 		var requestErr error
 		if selfRequest {
-			requestErr = rclib.Execute(h, "/open")
+			requestErr = rclib.Execute(h, selfEditorCommand("/open", target))
 		} else {
 			requestErr = rclib.RequestPlayerAttrs(h, target)
 		}
@@ -2925,7 +2936,7 @@ func (s *Service) OpenBan(account string) (BanData, error) {
 		err := s.banGate.exchange(scope.done, target, func() error {
 			log.Printf("[editor] request ban account=%q self=%v (self creds.Account=%q nickname=%q)", target, selfRequest, s.creds.Account, s.creds.Nickname)
 			if selfRequest {
-				return rclib.Execute(h, "/openaccess")
+				return rclib.Execute(h, selfEditorCommand("/openaccess", target))
 			}
 			return rclib.RequestPlayerBanByAccount(h, target)
 		}, w.done, scriptTimeout, replyQuarantine)
@@ -2950,6 +2961,19 @@ func (s *Service) OpenBan(account string) (BanData, error) {
 		return BanData{}, fmt.Errorf("unexpected player ban callback type %T", reply)
 	}
 	return data, nil
+}
+
+// SetLegacyBan writes the ban of an account whose ban came in the legacy form:
+// the flag and the reason only.
+func (s *Service) SetLegacyBan(account string, banned bool, reason string) error {
+	if err := s.RequireBanPlayersRight(); err != nil {
+		return err
+	}
+	h, err := s.requireHandle()
+	if err != nil {
+		return err
+	}
+	return rclib.SetLegacyPlayerBan(h, account, banned, reason)
 }
 
 // SetBan writes ban data for a target. world is "local" or "all"; target is the
@@ -2984,7 +3008,7 @@ func (s *Service) OpenComments(account string) (CommentsData, error) {
 		log.Printf("[editor] request comments account=%q self=%v (self creds.Account=%q nickname=%q)", target, selfRequest, s.creds.Account, s.creds.Nickname)
 		var requestErr error
 		if selfRequest {
-			requestErr = rclib.Execute(h, "/opencomments")
+			requestErr = rclib.Execute(h, selfEditorCommand("/opencomments", target))
 		} else {
 			requestErr = rclib.RequestPlayerComments(h, target)
 		}

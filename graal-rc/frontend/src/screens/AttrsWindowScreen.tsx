@@ -13,6 +13,7 @@ import {Button} from "@/components/ui/button"
 import {Input} from "@/components/ui/input"
 import {ScrollArea} from "@/components/ui/scroll-area"
 import {Tabs, TabsContent, TabsList, TabsTrigger} from "@/components/ui/tabs"
+import {isAttrOn} from "@/lib/playerAttrs"
 import {rcService} from "@/services/rcService"
 import type {AttrsData} from "@/types"
 import {useLanguage} from "@/hooks/useLanguage"
@@ -147,9 +148,9 @@ export function AttrsWindowScreen() {
     const basicKv = getKv(sections, "Basic Attributes")
     setLook({...lookKv})
     setBasic({...basicKv})
-    setMale(basicKv["Male"] === "1" || lookKv["Male"] === "1")
-    setWeaponsOn(basicKv["Weapons Enabled"] === "1")
-    setSpin(basicKv["Spin Attack"] === "1")
+    setMale(isAttrOn(basicKv["Male"]) || isAttrOn(lookKv["Male"]))
+    setWeaponsOn(isAttrOn(basicKv["Weapons Enabled"]))
+    setSpin(isAttrOn(basicKv["Spin Attack"]))
     setChests(getRaw(sections, "Chests"))
     setWeapons(getRaw(sections, "Weapons"))
     setFlags(getRaw(sections, "Script Flags"))

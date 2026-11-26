@@ -260,6 +260,7 @@ var (
 	procRequestBanHistory         *connectionProc
 	procRequestStaffActivity      *connectionProc
 	procSetBan                    *connectionProc
+	procSetLegacyPlayerBan        *connectionProc
 	procOnPlayerRights            *connectionProc
 	procOnPlayerAttributes        *connectionProc
 	procOnBanData                 *connectionProc
@@ -560,6 +561,7 @@ func registerAll(resolve func(name string) (*proc, error)) error {
 	procRequestBanHistory = connection("rc_request_ban_history")
 	procRequestStaffActivity = connection("rc_request_staff_activity")
 	procSetBan = connection("rc_set_ban")
+	procSetLegacyPlayerBan = connection("rc_set_legacy_player_ban")
 	procOnPlayerRights = connection("rc_on_player_rights")
 	procOnPlayerAttributes = connection("rc_on_player_attributes")
 	procOnBanData = connection("rc_on_ban_data")
@@ -1924,6 +1926,33 @@ func SetBan(h Handle, target, world string, banned bool, banType, releaseTime, r
 	runtime.KeepAlive(wld)
 	runtime.KeepAlive(bt)
 	runtime.KeepAlive(rt)
+	runtime.KeepAlive(rsn)
+	return err
+}
+
+// SetLegacyPlayerBan writes an account's ban with the legacy ban packet.
+func SetLegacyPlayerBan(h Handle, account string, banned bool, reason string) error {
+	if err := load(); err != nil {
+		return err
+	}
+	acc, err := cString(account)
+	if err != nil {
+		return fmt.Errorf("account: %w", err)
+	}
+	rsn, err := cString(reason)
+	if err != nil {
+		return fmt.Errorf("reason: %w", err)
+	}
+	var bannedInt int32
+	if banned {
+		bannedInt = 1
+	}
+	err = invokeStatus(h, procSetLegacyPlayerBan, "",
+		uintptr(unsafe.Pointer(acc)),
+		uintptr(bannedInt),
+		uintptr(unsafe.Pointer(rsn)),
+	)
+	runtime.KeepAlive(acc)
 	runtime.KeepAlive(rsn)
 	return err
 }
