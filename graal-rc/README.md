@@ -38,4 +38,4 @@ frente dela. Para barrar páginas web, o endpoint recusa requisições com `Orig
 que não seja de loopback (ou o de `RC_MCP_ADDR`) e sem `Content-Type: application/json`. Isso não
 autentica programas locais. `filebrowser_cd`, `filebrowser_list` e `filebrowser_search` só respondem depois que o
 servidor entrega a listagem (limite de 20 segundos). `get_rc_chat` retorna no máximo 50 mensagens com timestamp UTC e `filebrowser_read`
-recusa caminhos com traversal e conteúdo que não seja UTF-8.
+recusa caminhos com traversal, arquivos binários (pela extensão, sem pedir ao servidor) e conteúdo que não seja texto UTF-8.

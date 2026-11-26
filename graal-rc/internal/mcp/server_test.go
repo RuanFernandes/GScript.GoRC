@@ -98,7 +98,7 @@ func (f *fakeBackend) FileBrowserList(_ context.Context, folder string) (Listing
 	f.current = &folder
 	return Listing{Folder: folder, Files: files}, nil
 }
-func (f *fakeBackend) ReadFile(path string) ([]byte, error) {
+func (f *fakeBackend) ReadFile(_ context.Context, path string) ([]byte, error) {
 	if path != "scripts/main.txt" {
 		return nil, errors.New("not found")
 	}
@@ -106,6 +106,11 @@ func (f *fakeBackend) ReadFile(path string) ([]byte, error) {
 }
 
 func callTool(t *testing.T, backend *fakeBackend, name string, args map[string]any) map[string]any {
+	t.Helper()
+	return callToolOn(t, backend, name, args)
+}
+
+func callToolOn(t *testing.T, backend Backend, name string, args map[string]any) map[string]any {
 	t.Helper()
 	body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": name, "arguments": args}})
 	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))

@@ -8,6 +8,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"graal-rc/internal/appid"
 	"graal-rc/internal/mcp"
@@ -39,6 +40,22 @@ func mcpDownloadPath(remotePath string) (string, error) {
 	return filepath.Join(dir, appid.ID(), "mcp-downloads", remoteCacheName(remotePath)), nil
 }
 
+// mcpDownloadTimeout bounds an MCP download, queue included: while it waits,
+// the rest of the File Browser is kept out.
+const mcpDownloadTimeout = 2 * time.Minute
+
+// readRemote reads a file from its own folder: the server only knows bare names
+// in its current one.
+func (b appMCPBackend) readRemote(ctx context.Context, remotePath string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, mcpDownloadTimeout)
+	defer cancel()
+	content, err := b.app.readRemoteFileContext(ctx, remotePath)
+	if errors.Is(err, context.DeadlineExceeded) {
+		return nil, fmt.Errorf("the server did not send %q within %s: %w", remotePath, mcpDownloadTimeout, err)
+	}
+	return content, err
+}
+
 func checkUploadSize(size, limit int64) error {
 	if limit > 0 && size > limit {
 		return fmt.Errorf("file exceeds upload limit of %d bytes", limit)
@@ -51,10 +68,7 @@ func (b appMCPBackend) DownloadFile(ctx context.Context, remotePath string) (mcp
 	if err != nil {
 		return mcp.DownloadedFile{}, err
 	}
-	if err := ctx.Err(); err != nil {
-		return mcp.DownloadedFile{}, err
-	}
-	content, err := b.app.readRemoteFile(remotePath)
+	content, err := b.readRemote(ctx, remotePath)
 	if err != nil {
 		return mcp.DownloadedFile{}, err
 	}

@@ -9,7 +9,6 @@ import (
 	"errors"
 	"net/http"
 	"strings"
-	"unicode/utf8"
 
 
 	"graal-rc/internal/appid"
@@ -25,7 +24,7 @@ type Backend interface {
 	// FileBrowserList opens a folder and returns only after the server has
 	// delivered its listing, making it the current folder.
 	FileBrowserList(ctx context.Context, folder string) (Listing, error)
-	ReadFile(path string) ([]byte, error)
+	ReadFile(ctx context.Context, path string) ([]byte, error)
 
 	FileTransferBackend
 	ScriptBackend
@@ -170,7 +169,7 @@ func sessionToolDefinitions() []map[string]any {
 			"query": map[string]any{"type": "string", "minLength": 1},
 			"path":  map[string]any{"type": "string"},
 		}, "query")},
-		{"name": "filebrowser_read", "description": "Baixa e lê um arquivo remoto como texto UTF-8.", "inputSchema": objectSchema(map[string]any{
+		{"name": "filebrowser_read", "description": "Baixa e lê um arquivo remoto como texto UTF-8. Recusa arquivos binários: use filebrowser_download para eles.", "inputSchema": objectSchema(map[string]any{
 			"path": map[string]any{"type": "string", "minLength": 1},
 		})},
 	}
@@ -208,7 +207,7 @@ func toolDone(err error) (any, *rpcError) {
 	return textResult(map[string]any{"ok": true})
 }
 
-func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcError) {
+func (s *Server) dispatchTool(ctx context.Context, raw json.RawMessage) (any, *rpcError) {
 	var p struct {
 		Name      string         `json:"name"`
 		Arguments map[string]any `json:"arguments"`
@@ -293,12 +292,15 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 		if !ok {
 			return nil, &rpcError{-32602, "path is required"}
 		}
-		content, err := s.backend.ReadFile(path)
+		if hasBinaryExtension(path) {
+			return fail(errBinaryRead)
+		}
+		content, err := s.backend.ReadFile(ctx, path)
 		if err != nil {
 			return fail(err)
 		}
-		if !utf8.Valid(content) {
-			return fail(errors.New("remote file is not valid UTF-8 text"))
+		if !isText(content) {
+			return fail(errBinaryRead)
 		}
 		return textResult(map[string]any{"path": path, "content": string(content)})
 	default:

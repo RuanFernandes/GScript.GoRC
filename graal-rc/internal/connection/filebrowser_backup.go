@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	pathpkg "path"
 	"sort"
 	"strings"
@@ -181,6 +182,7 @@ func (s *Service) listFileBrowserFolderContext(ctx context.Context, scope sessio
 	if requestFolder != "" {
 		requestFolder += "/"
 	}
+	log.Printf("[filebrowser] open folder %q requested", folder)
 	if err := rclib.FileBrowserCd(scope.handle, requestFolder); err != nil {
 		s.cancelFileBrowserListing(wait, err)
 		return nil, err

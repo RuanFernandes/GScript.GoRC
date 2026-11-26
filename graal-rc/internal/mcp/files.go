@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"path"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -20,6 +22,27 @@ const (
 	// which can wait ten minutes for the queue or for the game server.
 	transferWriteTimeout = 15 * time.Minute
 )
+
+// binaryExtensions are refused by filebrowser_read before the file is asked
+// for. Content with any other name is checked once it arrives.
+var binaryExtensions = map[string]bool{
+	".png": true, ".gif": true, ".jpg": true, ".jpeg": true, ".bmp": true, ".webp": true, ".ico": true, ".mng": true,
+	".wav": true, ".mp3": true, ".ogg": true, ".m4a": true, ".flac": true, ".mid": true,
+	".mp4": true, ".webm": true, ".mov": true, ".avi": true, ".mkv": true,
+	".zip": true, ".gz": true, ".7z": true, ".rar": true,
+	".db": true, ".sqlite": true, ".sqlite3": true,
+	".ttf": true, ".otf": true, ".pdf": true, ".exe": true, ".dll": true,
+}
+
+var errBinaryRead = errors.New("filebrowser_read only reads text and this file is binary: use filebrowser_download")
+
+func hasBinaryExtension(remotePath string) bool {
+	return binaryExtensions[strings.ToLower(path.Ext(strings.ReplaceAll(remotePath, "\\", "/")))]
+}
+
+func isText(content []byte) bool {
+	return utf8.Valid(content) && bytes.IndexByte(content, 0) < 0
+}
 
 // DownloadedFile is a remote file saved on this machine.
 type DownloadedFile struct {
@@ -69,7 +92,8 @@ func extendTransferDeadline(w http.ResponseWriter, method string, params json.Ra
 	if method != "tools/call" || json.Unmarshal(params, &p) != nil {
 		return
 	}
-	if p.Name == "filebrowser_download" || p.Name == "filebrowser_upload" {
+	switch p.Name {
+	case "filebrowser_read", "filebrowser_download", "filebrowser_upload":
 		// A writer without deadlines has none to extend.
 		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(transferWriteTimeout))
 	}
@@ -125,7 +149,7 @@ func downloadedResult(file DownloadedFile) (any, *rpcError) {
 	metadata := map[string]any{"path": file.Path, "localPath": file.LocalPath, "size": len(file.Content)}
 	mimeType := http.DetectContentType(file.Content)
 	isImage := mimeType == "image/png" || mimeType == "image/gif" || mimeType == "image/jpeg"
-	if !isImage && len(file.Content) <= maxInlineTextBytes && utf8.Valid(file.Content) && bytes.IndexByte(file.Content, 0) < 0 {
+	if !isImage && len(file.Content) <= maxInlineTextBytes && isText(file.Content) {
 		metadata["content"] = string(file.Content)
 	}
 	encoded, err := json.Marshal(metadata)

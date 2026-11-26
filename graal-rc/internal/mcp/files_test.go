@@ -135,3 +135,30 @@ func TestFileBrowserTransferOutlivesTheServerWriteTimeout(t *testing.T) {
 		t.Fatalf("answer = %q, err %v", answer, err)
 	}
 }
+
+type slowReadBackend struct{ *fakeBackend }
+
+func (s slowReadBackend) ReadFile(ctx context.Context, path string) ([]byte, error) {
+	time.Sleep(400 * time.Millisecond)
+	return s.fakeBackend.ReadFile(ctx, path)
+}
+
+func TestFileBrowserReadOutlivesTheServerWriteTimeout(t *testing.T) {
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		NewServer(slowReadBackend{&fakeBackend{}}).ServeHTTP(w, r)
+	}))
+	server.Config.WriteTimeout = 100 * time.Millisecond
+	server.Start()
+	defer server.Close()
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"filebrowser_read","arguments":{"path":"scripts/main.txt"}}}`
+	response, err := http.Post(server.URL+"/mcp", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("the response was dropped: %v", err)
+	}
+	defer response.Body.Close()
+	answer, err := io.ReadAll(response.Body)
+	if err != nil || !strings.Contains(string(answer), "echo hello") {
+		t.Fatalf("answer = %q, err %v", answer, err)
+	}
+}

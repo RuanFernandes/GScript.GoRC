@@ -7,8 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"graal-rc/internal/mcp"
+	"graal-rc/rclib"
 )
 
 func mcpDownloadSandbox(t *testing.T) string {
@@ -131,5 +133,51 @@ func TestCheckUploadSize(t *testing.T) {
 	}
 	if err := checkUploadSize(11, 10); err == nil {
 		t.Fatal("expected the limit to be enforced")
+	}
+}
+
+// The server only knows bare names in its current folder: asking for the full
+// path left the transfer waiting and blocked the File Browser.
+func TestMCPReadOpensTheFolderOfTheFile(t *testing.T) {
+	a, remote := remoteApp(t, map[string]string{"levels/town.nw": "level data"})
+	content, err := (appMCPBackend{app: a}).ReadFile(context.Background(), "levels/town.nw")
+	if err != nil || string(content) != "level data" {
+		t.Fatalf("content %q, err %v", content, err)
+	}
+	wantCalls(t, remote, "download levels/town.nw")
+}
+
+// While it waits, an MCP download keeps the rest of the File Browser out.
+func TestMCPDownloadsStopWaitingSoon(t *testing.T) {
+	mcpDownloadSandbox(t)
+	for name, read := range map[string]func(appMCPBackend, context.Context) error{
+		"read": func(b appMCPBackend, ctx context.Context) error {
+			_, err := b.ReadFile(ctx, "levels/town.nw")
+			return err
+		},
+		"download": func(b appMCPBackend, ctx context.Context) error {
+			_, err := b.DownloadFile(ctx, "levels/town.nw")
+			return err
+		},
+	} {
+		a, _ := remoteApp(t, map[string]string{"levels/town.nw": "x"})
+		open := a.openRemoteFolder
+		var seen context.Context
+		a.openRemoteFolder = func(ctx context.Context, folder string, use func(fileBrowserUploadFolder, []rclib.FileBrowserEntry) error) error {
+			seen = ctx
+			deadline, ok := ctx.Deadline()
+			if !ok || time.Until(deadline) > mcpDownloadTimeout {
+				t.Errorf("%s: deadline = %v (set %v)", name, deadline, ok)
+			}
+			return open(ctx, folder, use)
+		}
+		caller, cancel := context.WithCancel(context.Background())
+		if err := read(appMCPBackend{app: a}, caller); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		cancel()
+		if seen == nil || seen.Err() == nil {
+			t.Errorf("%s: the wait does not end with its context", name)
+		}
 	}
 }

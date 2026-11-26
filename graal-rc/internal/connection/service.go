@@ -1866,7 +1866,7 @@ func (s *Service) connectToServer(ctx context.Context, index int) (resultErr err
 				s.emitEvent("rc:fbFiles", label, count)
 			}
 		},
-		FileBrowserMessage: func(message string) { s.emitEvent("rc:fbMessage", message) },
+		FileBrowserMessage: s.handleFileBrowserMessage,
 		MaxUploadSize: func(maxSize int64) {
 			s.mu.Lock()
 			s.maxUpload = maxSize
@@ -4306,6 +4306,7 @@ func (s *Service) FileBrowserCd(folder string) error {
 		return err
 	}
 	s.fileBrowserView.requested(folder)
+	log.Printf("[filebrowser] open folder %q requested by the window", folder)
 	return rclib.FileBrowserCd(h, folder)
 }
 
@@ -4439,6 +4440,7 @@ func (s *Service) downloadFileContext(ctx context.Context, scope sessionScope, p
 	}
 	waiter, isNew := s.registerFile(path)
 	if isNew {
+		log.Printf("[filebrowser] download %q requested", path)
 		if err := rclib.FileBrowserDownload(h, path); err != nil {
 			s.cancelFile(path, waiter, err)
 			s.fileTransferDispatchMu.RUnlock()
@@ -4487,9 +4489,12 @@ func (s *Service) uploadFileLocked(path string, content []byte) error {
 	if max := s.MaxUploadFileSize(); max > 0 && int64(len(content)) > max {
 		return fmt.Errorf("file is %d bytes; server max upload is %d bytes", len(content), max)
 	}
+	log.Printf("[filebrowser] upload %q bytes=%d sending", path, len(content))
 	if err := rclib.UploadFile(h, path, content); err != nil {
+		log.Printf("[filebrowser] upload %q failed: %v", path, err)
 		return err
 	}
+	log.Printf("[filebrowser] upload %q handed to the connection", path)
 	s.emitEvent("rc:fbChanged")
 	return nil
 }

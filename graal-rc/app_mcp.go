@@ -139,6 +139,8 @@ File Browser
   current folder, without entering subfolders. Before any folder is opened it
   matches the accessible folder patterns.
 - filebrowser_read: download and read a remote UTF-8 text file with {"path"}.
+  It refuses binary files such as images, sounds and databases: use
+  filebrowser_download for those.
 - filebrowser_download: download any remote file with {"path"}. It is saved on
   this computer and the reply gives "localPath" and "size". Text up to 256 KiB
   also comes in "content"; PNG, GIF and JPG up to 2 MiB also come as an image.
@@ -368,12 +370,12 @@ func (b appMCPBackend) FileBrowserList(ctx context.Context, folder string) (mcp.
 	}
 	return mcp.Listing{Folder: opened, Files: files}, nil
 }
-func (b appMCPBackend) ReadFile(path string) ([]byte, error) {
-	normalized, err := normalizePluginRemotePath(path)
+func (b appMCPBackend) ReadFile(ctx context.Context, path string) ([]byte, error) {
+	normalized, err := mcpRemoteFilePath(path)
 	if err != nil {
 		return nil, err
 	}
-	return b.app.sessions.DownloadFile(normalized)
+	return b.readRemote(ctx, normalized)
 }
 
 func (a *App) startMCPServer() {

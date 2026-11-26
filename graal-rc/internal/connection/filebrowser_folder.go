@@ -156,7 +156,8 @@ func (d FileBrowserDirectory) Upload(path string, content []byte) error {
 // WithFileBrowserFolder opens folder, confirms it with its listing and runs use
 // while no other File Browser operation can change the server's current folder.
 // use must only reach the File Browser through the directory it receives. ctx
-// bounds the wait for transfers already running.
+// bounds the wait for transfers already running and the downloads made by use,
+// which keep every other operation out while they wait.
 func (s *Service) WithFileBrowserFolder(ctx context.Context, folder string, use func(FileBrowserDirectory) error) error {
 	cleaned, err := normalizeFileBrowserBackupPath(folder, true)
 	if err != nil {
@@ -183,7 +184,9 @@ func (s *Service) WithFileBrowserFolder(ctx context.Context, folder string, use 
 		return use(FileBrowserDirectory{
 			Entries: entries,
 			download: func(name string) ([]byte, error) {
-				return s.downloadFileContext(context.Background(), scope, name)
+				return downloadListed(entries, name, func(name string) ([]byte, error) {
+					return s.downloadFileContext(ctx, scope, name)
+				})
 			},
 			upload: func(path string, content []byte) error {
 				if err := s.checkSession(scope); err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"strconv"
 	"strings"
@@ -162,6 +163,7 @@ func (s *Service) disconnectSession(h rclib.Handle, epoch uint64, reason string)
 		s.mu.Unlock()
 		return false
 	}
+	log.Printf("[connection] disconnected reason=%q", reason)
 	s.serverName = ""
 	s.serverEndpoint = ""
 	s.invalidateSessionLocked()

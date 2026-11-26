@@ -50,6 +50,10 @@ func (f remoteFile) requireExisting() error {
 func (a *App) withRemoteFile(remotePath string, use func(remoteFile) error) error {
 	ctx, cancel := context.WithTimeout(context.Background(), uploadQueueTimeout)
 	defer cancel()
+	return a.withRemoteFileContext(ctx, remotePath, use)
+}
+
+func (a *App) withRemoteFileContext(ctx context.Context, remotePath string, use func(remoteFile) error) error {
 	open := a.openRemoteFolder
 	if open == nil {
 		open = func(ctx context.Context, folder string, use func(fileBrowserUploadFolder, []rclib.FileBrowserEntry) error) error {
@@ -108,8 +112,14 @@ func requireBackupFolder(meta DeploymentBackup) error {
 
 // readRemoteFile reads a file from its own folder.
 func (a *App) readRemoteFile(remotePath string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), uploadQueueTimeout)
+	defer cancel()
+	return a.readRemoteFileContext(ctx, remotePath)
+}
+
+func (a *App) readRemoteFileContext(ctx context.Context, remotePath string) ([]byte, error) {
 	var content []byte
-	err := a.withRemoteFile(remotePath, func(file remoteFile) error {
+	err := a.withRemoteFileContext(ctx, remotePath, func(file remoteFile) error {
 		if !file.Exists {
 			return fmt.Errorf("%q is not in its remote folder", remotePath)
 		}
