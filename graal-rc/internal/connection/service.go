@@ -68,12 +68,13 @@ type Service struct {
 	pumpCancel               context.CancelFunc
 	pumpDone                 chan struct{}
 	pumpErr                  error
-	ncConnectMu              sync.Mutex // serializes native NC connect/disconnect operations
-	ncConnectionAttempted    bool       // initial automatic attempt for this main-server session
-	ncManuallyDisconnected   bool       // disabled by an explicit DisconnectNC call
-	nextNCConnectAttempt     time.Time  // scheduled after refreshing the NPC-server location
-	nextNCKeepalive          time.Time  // next empty PLI_NC_NPCGET packet, guarded by mu
-	ncConnectionWasUp        bool       // NC was observed connected at least once
+	ncConnectMu              sync.Mutex  // serializes native NC connect/disconnect operations
+	ncConnectionAttempted    bool        // initial automatic attempt for this main-server session
+	ncManuallyDisconnected   bool        // disabled by an explicit DisconnectNC call
+	nextNCConnectAttempt     time.Time   // scheduled after refreshing the NPC-server location
+	nextNCKeepalive          time.Time   // next empty PLI_NC_NPCGET packet, guarded by mu
+	rcKeepalive              rcKeepalive // guarded by mu
+	ncConnectionWasUp        bool        // NC was observed connected at least once
 	ncReconnectAttempts      int
 	nextNCAutomaticReconnect time.Time
 	ncAttemptDeadline        time.Time
@@ -1191,6 +1192,7 @@ func (s *Service) pumpTick(h rclib.Handle) (err error) {
 	}
 	s.maybeConnectNC(h)
 	s.processNCKeepalive(h)
+	s.processRCKeepalive(h)
 	s.settleChannelLeaves()
 	return nil
 }
